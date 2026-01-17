@@ -41,6 +41,51 @@ export type Database = {
         }
         Relationships: []
       }
+      transactions: {
+        Row: {
+          amount: number
+          created_at: string | null
+          currency: string | null
+          customer_email: string | null
+          failure_code: string | null
+          failure_message: string | null
+          id: string
+          metadata: Json | null
+          status: string
+          stripe_created_at: string | null
+          stripe_customer_id: string | null
+          stripe_payment_intent_id: string
+        }
+        Insert: {
+          amount: number
+          created_at?: string | null
+          currency?: string | null
+          customer_email?: string | null
+          failure_code?: string | null
+          failure_message?: string | null
+          id?: string
+          metadata?: Json | null
+          status: string
+          stripe_created_at?: string | null
+          stripe_customer_id?: string | null
+          stripe_payment_intent_id: string
+        }
+        Update: {
+          amount?: number
+          created_at?: string | null
+          currency?: string | null
+          customer_email?: string | null
+          failure_code?: string | null
+          failure_message?: string | null
+          id?: string
+          metadata?: Json | null
+          status?: string
+          stripe_created_at?: string | null
+          stripe_customer_id?: string | null
+          stripe_payment_intent_id?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
