@@ -3,9 +3,11 @@ import { Sidebar } from "@/components/dashboard/Sidebar";
 import { Header } from "@/components/dashboard/Header";
 import { StatsCard } from "@/components/dashboard/StatsCard";
 import { ClientsTable } from "@/components/dashboard/ClientsTable";
+import { TransactionsTable } from "@/components/dashboard/TransactionsTable";
 import { AddClientDialog } from "@/components/dashboard/AddClientDialog";
 import { useClients } from "@/hooks/useClients";
-import { Users, UserCheck, UserX, Clock } from "lucide-react";
+import { useTransactions } from "@/hooks/useTransactions";
+import { Users, UserCheck, UserX, Clock, CreditCard, AlertTriangle } from "lucide-react";
 
 const Index = () => {
   const [activeMenuItem, setActiveMenuItem] = useState("dashboard");
@@ -13,6 +15,7 @@ const Index = () => {
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   
   const { clients, isLoading, addClient, deleteClient } = useClients();
+  const { transactions, isLoading: isLoadingTransactions, syncStripe } = useTransactions();
 
   const stats = useMemo(() => {
     const total = clients.length;
@@ -61,6 +64,8 @@ const Index = () => {
             searchValue={searchQuery}
             onSearchChange={setSearchQuery}
             onAddClient={() => setIsAddDialogOpen(true)}
+            onSyncData={() => syncStripe.mutate()}
+            isSyncing={syncStripe.isPending}
           />
 
           {/* Stats Grid */}
@@ -107,6 +112,23 @@ const Index = () => {
               clients={filteredClients}
               isLoading={isLoading}
               onDelete={(email) => deleteClient.mutate(email)}
+            />
+          </div>
+
+          {/* Transactions Table */}
+          <div>
+            <div className="mb-4 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="h-5 w-5 text-amber-500" />
+                <h2 className="text-lg font-semibold text-foreground">Pagos Fallidos</h2>
+              </div>
+              <p className="text-sm text-muted-foreground">
+                {transactions.length} {transactions.length === 1 ? "transacción" : "transacciones"}
+              </p>
+            </div>
+            <TransactionsTable
+              transactions={transactions}
+              isLoading={isLoadingTransactions}
             />
           </div>
         </div>

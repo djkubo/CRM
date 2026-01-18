@@ -1,4 +1,4 @@
-import { Search, Bell, Plus } from "lucide-react";
+import { Search, Bell, Plus, RefreshCw } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 
@@ -6,11 +6,21 @@ interface HeaderProps {
   title: string;
   subtitle?: string;
   onAddClient?: () => void;
+  onSyncData?: () => void;
+  isSyncing?: boolean;
   searchValue?: string;
   onSearchChange?: (value: string) => void;
 }
 
-export function Header({ title, subtitle, onAddClient, searchValue, onSearchChange }: HeaderProps) {
+export function Header({ 
+  title, 
+  subtitle, 
+  onAddClient, 
+  onSyncData,
+  isSyncing,
+  searchValue, 
+  onSearchChange 
+}: HeaderProps) {
   return (
     <header className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
       <div>
@@ -32,6 +42,16 @@ export function Header({ title, subtitle, onAddClient, searchValue, onSearchChan
         <Button variant="ghost" size="icon" className="relative">
           <Bell className="h-5 w-5" />
           <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-primary" />
+        </Button>
+
+        <Button 
+          onClick={onSyncData} 
+          disabled={isSyncing}
+          variant="outline"
+          className="gap-2"
+        >
+          <RefreshCw className={`h-4 w-4 ${isSyncing ? 'animate-spin' : ''}`} />
+          Sync Data
         </Button>
         
         <Button onClick={onAddClient} className="gap-2 bg-primary text-primary-foreground hover:bg-primary/90">
