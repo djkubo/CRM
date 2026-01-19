@@ -136,12 +136,16 @@ serve(async (req) => {
       stripeError.code === "card_declined" ||
       stripeError.code === "insufficient_funds" ||
       stripeError.code === "payment_intent_authentication_failure" ||
+      stripeError.code === "invoice_no_longer_payable" ||
       errorMsg.includes("insufficient funds") ||
       errorMsg.includes("sufficient funds") ||
       errorMsg.includes("card") ||
       errorMsg.includes("declined") ||
       errorMsg.includes("payment") ||
-      errorMsg.includes("charge");
+      errorMsg.includes("charge") ||
+      errorMsg.includes("can no longer be paid") ||
+      errorMsg.includes("voiding") ||
+      errorMsg.includes("uncollectible");
     
     if (isPaymentError) {
       return new Response(
