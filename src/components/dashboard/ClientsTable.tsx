@@ -1,8 +1,9 @@
+import { useState } from "react";
 import { cn } from "@/lib/utils";
 import { formatDistanceToNow } from "date-fns";
 import { es } from "date-fns/locale";
 import { Badge } from "@/components/ui/badge";
-import { MoreHorizontal, Mail, Phone, MessageCircle } from "lucide-react";
+import { MoreHorizontal, Mail, Phone, MessageCircle, Activity } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -17,6 +18,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { openWhatsApp, getGreetingMessage, getRecoveryMessage } from "./RecoveryTable";
+import { ClientEventsTimeline } from "./ClientEventsTimeline";
 
 export interface Client {
   id: string;
@@ -70,6 +72,7 @@ export function ClientsTable({
   recoveryEmails = new Set(),
   recoveryAmounts = {}
 }: ClientsTableProps) {
+  const [timelineClient, setTimelineClient] = useState<{ id: string; name: string } | null>(null);
   
   const handleWhatsAppClick = (client: Client) => {
     if (!client.phone) return;
@@ -187,6 +190,21 @@ export function ClientsTable({
                     </td>
                     <td className="px-6 py-4">
                       <div className="flex items-center justify-end gap-2">
+                        {/* Timeline Button */}
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-8 w-8 text-primary/70 hover:text-primary hover:bg-primary/10"
+                              onClick={() => setTimelineClient({ id: client.id, name: client.full_name || "Cliente" })}
+                            >
+                              <Activity className="h-4 w-4" />
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent>Ver historial de eventos</TooltipContent>
+                        </Tooltip>
+
                         {/* WhatsApp Button */}
                         {client.phone ? (
                           <Tooltip>
@@ -275,6 +293,16 @@ export function ClientsTable({
           </div>
         )}
       </div>
+
+      {/* Client Events Timeline Dialog */}
+      {timelineClient && (
+        <ClientEventsTimeline
+          clientId={timelineClient.id}
+          clientName={timelineClient.name}
+          open={!!timelineClient}
+          onOpenChange={(open) => !open && setTimelineClient(null)}
+        />
+      )}
     </TooltipProvider>
   );
 }
