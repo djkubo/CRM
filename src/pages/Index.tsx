@@ -11,7 +11,7 @@ import { RecoveryTable } from "@/components/dashboard/RecoveryTable";
 import { useClients } from "@/hooks/useClients";
 import { useTransactions } from "@/hooks/useTransactions";
 import { useMetrics } from "@/hooks/useMetrics";
-import { Users, UserCheck, UserX, Clock, AlertTriangle } from "lucide-react";
+import { Users, UserCheck, UserX, Clock } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 const Index = () => {
@@ -62,14 +62,14 @@ const Index = () => {
   };
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-screen bg-[#0f1225]">
       {/* Background glow effect */}
       <div className="fixed inset-0 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-primary/5 via-transparent to-transparent pointer-events-none" />
       
       <Sidebar activeItem={activeMenuItem} onItemClick={setActiveMenuItem} />
       
       <main className="pl-64">
-        <div className="p-8 space-y-8">
+        <div className="p-8 space-y-6">
           <Header
             title="Dashboard"
             subtitle="Gestiona tus clientes y monitorea el estado de tu SaaS"
@@ -80,19 +80,14 @@ const Index = () => {
             isSyncing={syncStripe.isPending}
           />
 
-          {/* Metrics Cards */}
-          <MetricsCards
-            salesToday={metrics.salesToday}
-            conversionRate={metrics.conversionRate}
-            trialCount={metrics.trialCount}
-            convertedCount={metrics.convertedCount}
-          />
+          {/* KPI Metrics Cards */}
+          <MetricsCards metrics={metrics} />
 
           {/* CSV Uploader */}
           <CSVUploader onProcessingComplete={handleProcessingComplete} />
 
           {/* Stats Grid */}
-          <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <StatsCard
               title="Total Clientes"
               value={stats.total}
@@ -123,46 +118,49 @@ const Index = () => {
             />
           </div>
 
-          {/* Tabs for Tables */}
+          {/* Recovery Table - CRM Action Table */}
+          <RecoveryTable clients={metrics.recoveryList} />
+
+          {/* Tabs for Data Tables */}
           <Tabs defaultValue="clients" className="space-y-4">
-            <TabsList>
-              <TabsTrigger value="clients">Clientes</TabsTrigger>
-              <TabsTrigger value="transactions">Transacciones</TabsTrigger>
-              <TabsTrigger value="recovery">Recuperación</TabsTrigger>
+            <TabsList className="bg-[#1a1f36] border border-gray-700/50">
+              <TabsTrigger value="clients" className="data-[state=active]:bg-primary/20 data-[state=active]:text-primary">
+                Clientes
+              </TabsTrigger>
+              <TabsTrigger value="transactions" className="data-[state=active]:bg-primary/20 data-[state=active]:text-primary">
+                Transacciones
+              </TabsTrigger>
             </TabsList>
 
             <TabsContent value="clients">
-              <div className="mb-4 flex items-center justify-between">
-                <h2 className="text-lg font-semibold text-foreground">Clientes Recientes</h2>
-                <p className="text-sm text-muted-foreground">
-                  {filteredClients.length} {filteredClients.length === 1 ? "cliente" : "clientes"}
-                </p>
+              <div className="rounded-xl border border-border/50 bg-[#1a1f36] p-6">
+                <div className="mb-4 flex items-center justify-between">
+                  <h2 className="text-lg font-semibold text-white">Clientes Recientes</h2>
+                  <p className="text-sm text-gray-400">
+                    {filteredClients.length} {filteredClients.length === 1 ? "cliente" : "clientes"}
+                  </p>
+                </div>
+                <ClientsTable
+                  clients={filteredClients}
+                  isLoading={isLoading}
+                  onDelete={(email) => deleteClient.mutate(email)}
+                />
               </div>
-              <ClientsTable
-                clients={filteredClients}
-                isLoading={isLoading}
-                onDelete={(email) => deleteClient.mutate(email)}
-              />
             </TabsContent>
 
             <TabsContent value="transactions">
-              <div className="mb-4 flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <AlertTriangle className="h-5 w-5 text-amber-500" />
-                  <h2 className="text-lg font-semibold text-foreground">Pagos Fallidos</h2>
+              <div className="rounded-xl border border-border/50 bg-[#1a1f36] p-6">
+                <div className="mb-4 flex items-center justify-between">
+                  <h2 className="text-lg font-semibold text-white">Todas las Transacciones</h2>
+                  <p className="text-sm text-gray-400">
+                    {transactions.length} {transactions.length === 1 ? "transacción" : "transacciones"}
+                  </p>
                 </div>
-                <p className="text-sm text-muted-foreground">
-                  {transactions.length} {transactions.length === 1 ? "transacción" : "transacciones"}
-                </p>
+                <TransactionsTable
+                  transactions={transactions}
+                  isLoading={isLoadingTransactions}
+                />
               </div>
-              <TransactionsTable
-                transactions={transactions}
-                isLoading={isLoadingTransactions}
-              />
-            </TabsContent>
-
-            <TabsContent value="recovery">
-              <RecoveryTable clients={metrics.recoveryList} />
             </TabsContent>
           </Tabs>
         </div>

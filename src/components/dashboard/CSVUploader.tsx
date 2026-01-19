@@ -1,17 +1,23 @@
 import { useState, useRef } from 'react';
-import { Upload, FileText, Check, AlertCircle, Loader2 } from 'lucide-react';
+import { Upload, FileText, Check, AlertCircle, Loader2, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { processWebCSV, processPaymentCSV, ProcessingResult } from '@/lib/csvProcessor';
+import { 
+  processWebUsersCSV, 
+  processPayPalCSV, 
+  processPaymentCSV,
+  processSubscriptionsCSV,
+  ProcessingResult 
+} from '@/lib/csvProcessor';
 import { toast } from 'sonner';
 
 interface CSVFile {
   name: string;
-  type: 'web' | 'stripe' | 'paypal';
+  type: 'web' | 'stripe' | 'paypal' | 'subscriptions';
   file: File;
   status: 'pending' | 'processing' | 'done' | 'error';
   result?: ProcessingResult;
+  subscriptionCount?: number;
 }
 
 interface CSVUploaderProps {
@@ -23,10 +29,12 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
   const [isProcessing, setIsProcessing] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const detectFileType = (fileName: string): 'web' | 'stripe' | 'paypal' => {
+  const detectFileType = (fileName: string): 'web' | 'stripe' | 'paypal' | 'subscriptions' => {
     const lowerName = fileName.toLowerCase();
+    if (lowerName.includes('download') || lowerName.includes('paypal')) return 'paypal';
     if (lowerName.includes('stripe')) return 'stripe';
-    if (lowerName.includes('paypal')) return 'paypal';
+    if (lowerName.includes('subscription') || lowerName.includes('suscripcion')) return 'subscriptions';
+    if (lowerName.includes('user') || lowerName.includes('usuario')) return 'web';
     return 'web';
   };
 
@@ -45,7 +53,7 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
     }
   };
 
-  const updateFileType = (index: number, type: 'web' | 'stripe' | 'paypal') => {
+  const updateFileType = (index: number, type: 'web' | 'stripe' | 'paypal' | 'subscriptions') => {
     setFiles(prev => prev.map((f, i) => i === index ? { ...f, type } : f));
   };
 
@@ -58,11 +66,10 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
     
     setIsProcessing(true);
     
-    // Process Web files first (to have client data), then payment files
+    // Process in order: Web (for phones) -> Subscriptions -> Payments
     const sortedFiles = [...files].sort((a, b) => {
-      if (a.type === 'web' && b.type !== 'web') return -1;
-      if (a.type !== 'web' && b.type === 'web') return 1;
-      return 0;
+      const priority = { web: 0, subscriptions: 1, stripe: 2, paypal: 3 };
+      return priority[a.type] - priority[b.type];
     });
 
     for (let i = 0; i < sortedFiles.length; i++) {
@@ -75,22 +82,38 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
 
       try {
         const text = await file.file.text();
-        let result: ProcessingResult;
 
-        if (file.type === 'web') {
-          result = await processWebCSV(text);
+        if (file.type === 'subscriptions') {
+          const subs = processSubscriptionsCSV(text);
+          setFiles(prev => prev.map((f, idx) => 
+            idx === originalIndex ? { 
+              ...f, 
+              status: 'done', 
+              subscriptionCount: subs.length 
+            } : f
+          ));
+          toast.success(`${file.name}: ${subs.length} suscripciones procesadas`);
         } else {
-          result = await processPaymentCSV(text, file.type);
-        }
+          let result: ProcessingResult;
 
-        setFiles(prev => prev.map((f, idx) => 
-          idx === originalIndex ? { ...f, status: 'done', result } : f
-        ));
+          if (file.type === 'web') {
+            result = await processWebUsersCSV(text);
+          } else if (file.type === 'paypal') {
+            result = await processPayPalCSV(text);
+          } else {
+            result = await processPaymentCSV(text, 'stripe');
+          }
 
-        if (result.errors.length > 0) {
-          toast.warning(`${file.name}: ${result.errors.length} errores durante el procesamiento`);
+          setFiles(prev => prev.map((f, idx) => 
+            idx === originalIndex ? { ...f, status: 'done', result } : f
+          ));
+
+          if (result.errors.length > 0) {
+            toast.warning(`${file.name}: ${result.errors.length} errores`);
+          }
         }
       } catch (error) {
+        console.error('Error processing file:', error);
         setFiles(prev => prev.map((f, idx) => 
           idx === originalIndex ? { ...f, status: 'error' } : f
         ));
@@ -99,24 +122,35 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
     }
 
     setIsProcessing(false);
-    toast.success('Procesamiento de archivos completado');
+    toast.success('Procesamiento completado');
     onProcessingComplete();
   };
 
   const getTypeColor = (type: string) => {
     switch (type) {
-      case 'web': return 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-300';
-      case 'stripe': return 'bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-300';
-      case 'paypal': return 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-300';
+      case 'web': return 'bg-blue-500/20 text-blue-400 border-blue-500/30';
+      case 'stripe': return 'bg-purple-500/20 text-purple-400 border-purple-500/30';
+      case 'paypal': return 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30';
+      case 'subscriptions': return 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30';
       default: return 'bg-muted text-muted-foreground';
+    }
+  };
+
+  const getTypeLabel = (type: string) => {
+    switch (type) {
+      case 'web': return 'Usuarios Web';
+      case 'stripe': return 'Stripe';
+      case 'paypal': return 'PayPal';
+      case 'subscriptions': return 'Suscripciones';
+      default: return type;
     }
   };
 
   const getStatusIcon = (status: string) => {
     switch (status) {
       case 'processing': return <Loader2 className="h-4 w-4 animate-spin text-primary" />;
-      case 'done': return <Check className="h-4 w-4 text-green-600" />;
-      case 'error': return <AlertCircle className="h-4 w-4 text-destructive" />;
+      case 'done': return <Check className="h-4 w-4 text-emerald-500" />;
+      case 'error': return <AlertCircle className="h-4 w-4 text-red-500" />;
       default: return null;
     }
   };
@@ -128,112 +162,122 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
       acc.transactionsCreated += f.result.transactionsCreated;
       acc.transactionsSkipped += f.result.transactionsSkipped;
     }
+    if (f.subscriptionCount) {
+      acc.subscriptions += f.subscriptionCount;
+    }
     return acc;
-  }, { clientsCreated: 0, clientsUpdated: 0, transactionsCreated: 0, transactionsSkipped: 0 });
+  }, { clientsCreated: 0, clientsUpdated: 0, transactionsCreated: 0, transactionsSkipped: 0, subscriptions: 0 });
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <Upload className="h-5 w-5" />
-          Cargar Archivos CSV
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <div 
-          className="border-2 border-dashed border-muted-foreground/25 rounded-lg p-8 text-center hover:border-primary/50 transition-colors cursor-pointer"
-          onClick={() => fileInputRef.current?.click()}
-        >
-          <input
-            type="file"
-            ref={fileInputRef}
-            onChange={handleFileSelect}
-            accept=".csv"
-            multiple
-            className="hidden"
-          />
-          <FileText className="h-10 w-10 mx-auto text-muted-foreground mb-2" />
-          <p className="text-sm text-muted-foreground">
-            Arrastra archivos CSV o haz clic para seleccionar
-          </p>
-          <p className="text-xs text-muted-foreground mt-1">
-            Nombra los archivos con "stripe", "paypal" o "web" para detección automática
-          </p>
+    <div className="rounded-xl border border-border/50 bg-[#1a1f36] p-6">
+      <div className="flex items-center gap-3 mb-4">
+        <div className="p-2 rounded-lg bg-primary/10">
+          <Upload className="h-5 w-5 text-primary" />
         </div>
+        <div>
+          <h3 className="text-lg font-semibold text-white">Cargar Archivos CSV</h3>
+          <p className="text-sm text-gray-400">PayPal, Usuarios Web, Suscripciones</p>
+        </div>
+      </div>
 
-        {files.length > 0 && (
-          <div className="space-y-2">
-            {files.map((file, index) => (
-              <div key={index} className="flex items-center justify-between p-3 bg-muted/50 rounded-lg">
-                <div className="flex items-center gap-3">
-                  {getStatusIcon(file.status)}
-                  <span className="text-sm font-medium">{file.name}</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <select
-                    value={file.type}
-                    onChange={(e) => updateFileType(index, e.target.value as 'web' | 'stripe' | 'paypal')}
-                    disabled={file.status !== 'pending'}
-                    className="text-xs border rounded px-2 py-1 bg-background"
+      <div 
+        className="border-2 border-dashed border-gray-600 rounded-lg p-8 text-center hover:border-primary/50 transition-colors cursor-pointer bg-[#0f1225]/50"
+        onClick={() => fileInputRef.current?.click()}
+      >
+        <input
+          type="file"
+          ref={fileInputRef}
+          onChange={handleFileSelect}
+          accept=".csv"
+          multiple
+          className="hidden"
+        />
+        <FileText className="h-10 w-10 mx-auto text-gray-500 mb-3" />
+        <p className="text-sm text-gray-400 mb-1">
+          Arrastra archivos o haz clic para seleccionar
+        </p>
+        <p className="text-xs text-gray-500">
+          Detecta automáticamente: Download-X.csv (PayPal), users.csv (Web), subscriptions.csv
+        </p>
+      </div>
+
+      {files.length > 0 && (
+        <div className="mt-4 space-y-2">
+          {files.map((file, index) => (
+            <div key={index} className="flex items-center justify-between p-3 bg-[#0f1225] rounded-lg border border-gray-700/50">
+              <div className="flex items-center gap-3">
+                {getStatusIcon(file.status)}
+                <span className="text-sm font-medium text-white">{file.name}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <select
+                  value={file.type}
+                  onChange={(e) => updateFileType(index, e.target.value as 'web' | 'stripe' | 'paypal' | 'subscriptions')}
+                  disabled={file.status !== 'pending'}
+                  className="text-xs border border-gray-600 rounded px-2 py-1 bg-[#1a1f36] text-white"
+                >
+                  <option value="web">Usuarios Web</option>
+                  <option value="paypal">PayPal</option>
+                  <option value="stripe">Stripe</option>
+                  <option value="subscriptions">Suscripciones</option>
+                </select>
+                <Badge className={`${getTypeColor(file.type)} border`}>
+                  {getTypeLabel(file.type)}
+                </Badge>
+                {file.status === 'pending' && (
+                  <button 
+                    onClick={() => removeFile(index)}
+                    className="p-1 hover:bg-gray-700 rounded"
                   >
-                    <option value="web">Web</option>
-                    <option value="stripe">Stripe</option>
-                    <option value="paypal">PayPal</option>
-                  </select>
-                  <Badge className={getTypeColor(file.type)}>{file.type}</Badge>
-                  {file.status === 'pending' && (
-                    <Button variant="ghost" size="sm" onClick={() => removeFile(index)}>
-                      ×
-                    </Button>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {files.some(f => f.status === 'done') && (
-          <div className="p-4 bg-green-50 dark:bg-green-900/20 rounded-lg">
-            <h4 className="font-medium text-green-800 dark:text-green-300 mb-2">Resumen del Procesamiento</h4>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-sm">
-              <div>
-                <span className="text-muted-foreground">Clientes creados:</span>
-                <span className="ml-2 font-medium">{totalResults.clientsCreated}</span>
-              </div>
-              <div>
-                <span className="text-muted-foreground">Clientes actualizados:</span>
-                <span className="ml-2 font-medium">{totalResults.clientsUpdated}</span>
-              </div>
-              <div>
-                <span className="text-muted-foreground">Transacciones nuevas:</span>
-                <span className="ml-2 font-medium">{totalResults.transactionsCreated}</span>
-              </div>
-              <div>
-                <span className="text-muted-foreground">Duplicados ignorados:</span>
-                <span className="ml-2 font-medium">{totalResults.transactionsSkipped}</span>
+                    <X className="h-4 w-4 text-gray-400" />
+                  </button>
+                )}
               </div>
             </div>
-          </div>
-        )}
+          ))}
+        </div>
+      )}
 
-        <Button 
-          onClick={processFiles} 
-          disabled={files.length === 0 || isProcessing || files.every(f => f.status === 'done')}
-          className="w-full"
-        >
-          {isProcessing ? (
-            <>
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              Procesando...
-            </>
-          ) : (
-            <>
-              <Upload className="mr-2 h-4 w-4" />
-              Procesar Archivos ({files.filter(f => f.status === 'pending').length})
-            </>
-          )}
-        </Button>
-      </CardContent>
-    </Card>
+      {files.some(f => f.status === 'done') && (
+        <div className="mt-4 p-4 bg-emerald-500/10 border border-emerald-500/20 rounded-lg">
+          <h4 className="font-medium text-emerald-400 mb-2">Resumen</h4>
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-2 text-sm">
+            <div className="text-gray-400">
+              Clientes nuevos: <span className="text-white font-medium ml-1">{totalResults.clientsCreated}</span>
+            </div>
+            <div className="text-gray-400">
+              Actualizados: <span className="text-white font-medium ml-1">{totalResults.clientsUpdated}</span>
+            </div>
+            <div className="text-gray-400">
+              Transacciones: <span className="text-white font-medium ml-1">{totalResults.transactionsCreated}</span>
+            </div>
+            <div className="text-gray-400">
+              Duplicados: <span className="text-white font-medium ml-1">{totalResults.transactionsSkipped}</span>
+            </div>
+            <div className="text-gray-400">
+              Suscripciones: <span className="text-white font-medium ml-1">{totalResults.subscriptions}</span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <Button 
+        onClick={processFiles} 
+        disabled={files.length === 0 || isProcessing || files.every(f => f.status === 'done')}
+        className="w-full mt-4 bg-primary hover:bg-primary/90 text-primary-foreground"
+      >
+        {isProcessing ? (
+          <>
+            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            Procesando...
+          </>
+        ) : (
+          <>
+            <Upload className="mr-2 h-4 w-4" />
+            Procesar Archivos ({files.filter(f => f.status === 'pending').length})
+          </>
+        )}
+      </Button>
+    </div>
   );
 }

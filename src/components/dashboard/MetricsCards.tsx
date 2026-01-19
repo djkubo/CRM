@@ -1,66 +1,127 @@
-import { DollarSign, TrendingUp, Users } from 'lucide-react';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { DollarSign, TrendingUp, TrendingDown, Users, UserMinus } from 'lucide-react';
+import { DashboardMetrics } from '@/lib/csvProcessor';
 
 interface MetricsCardsProps {
-  salesToday: number;
-  conversionRate: number;
-  trialCount: number;
-  convertedCount: number;
+  metrics: DashboardMetrics;
 }
 
-export function MetricsCards({ salesToday, conversionRate, trialCount, convertedCount }: MetricsCardsProps) {
+export function MetricsCards({ metrics }: MetricsCardsProps) {
+  const cards = [
+    {
+      title: 'Ventas Netas Hoy',
+      value: `$${metrics.salesTodayTotal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+      subtitle: `$${metrics.salesTodayUSD.toFixed(2)} USD + $${metrics.salesTodayMXN.toFixed(2)} MXN`,
+      icon: DollarSign,
+      trend: 'up',
+      color: 'emerald'
+    },
+    {
+      title: 'Tasa de Conversión',
+      value: `${metrics.conversionRate.toFixed(1)}%`,
+      subtitle: `${metrics.convertedCount} de ${metrics.trialCount} trials`,
+      icon: TrendingUp,
+      trend: metrics.conversionRate > 10 ? 'up' : 'neutral',
+      color: 'blue'
+    },
+    {
+      title: 'Total Trials',
+      value: metrics.trialCount.toString(),
+      subtitle: 'Usuarios en periodo de prueba',
+      icon: Users,
+      trend: 'neutral',
+      color: 'purple'
+    },
+    {
+      title: 'Churn (30 días)',
+      value: metrics.churnCount.toString(),
+      subtitle: 'Expired + Canceled',
+      icon: UserMinus,
+      trend: metrics.churnCount > 5 ? 'down' : 'neutral',
+      color: 'red'
+    }
+  ];
+
+  const getColorClasses = (color: string) => {
+    const colors: Record<string, { bg: string; text: string; icon: string; glow: string }> = {
+      emerald: {
+        bg: 'bg-emerald-500/10',
+        text: 'text-emerald-400',
+        icon: 'text-emerald-500',
+        glow: 'shadow-emerald-500/20'
+      },
+      blue: {
+        bg: 'bg-blue-500/10',
+        text: 'text-blue-400',
+        icon: 'text-blue-500',
+        glow: 'shadow-blue-500/20'
+      },
+      purple: {
+        bg: 'bg-purple-500/10',
+        text: 'text-purple-400',
+        icon: 'text-purple-500',
+        glow: 'shadow-purple-500/20'
+      },
+      red: {
+        bg: 'bg-red-500/10',
+        text: 'text-red-400',
+        icon: 'text-red-500',
+        glow: 'shadow-red-500/20'
+      }
+    };
+    return colors[color] || colors.blue;
+  };
+
   return (
-    <div className="grid gap-4 md:grid-cols-3">
-      <Card className="bg-gradient-to-br from-green-50 to-green-100 dark:from-green-900/20 dark:to-green-800/20 border-green-200 dark:border-green-800">
-        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-          <CardTitle className="text-sm font-medium text-green-800 dark:text-green-300">
-            Ventas Hoy
-          </CardTitle>
-          <DollarSign className="h-4 w-4 text-green-600 dark:text-green-400" />
-        </CardHeader>
-        <CardContent>
-          <div className="text-2xl font-bold text-green-900 dark:text-green-100">
-            ${salesToday.toLocaleString('es-MX', { minimumFractionDigits: 2 })}
-          </div>
-          <p className="text-xs text-green-600 dark:text-green-400">
-            Suma de transacciones exitosas de hoy
-          </p>
-        </CardContent>
-      </Card>
+    <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+      {cards.map((card, index) => {
+        const colors = getColorClasses(card.color);
+        const Icon = card.icon;
+        
+        return (
+          <div 
+            key={index}
+            className={`relative rounded-xl border border-border/50 bg-[#1a1f36] p-6 transition-all hover:shadow-lg ${colors.glow}`}
+          >
+            {/* Sparkline indicator */}
+            <div className="absolute top-4 right-4">
+              <div className={`w-16 h-8 flex items-end gap-0.5`}>
+                {[40, 65, 45, 70, 55, 80, 60, 75].map((height, i) => (
+                  <div
+                    key={i}
+                    className={`w-1.5 rounded-full ${
+                      card.trend === 'up' 
+                        ? 'bg-emerald-500/60' 
+                        : card.trend === 'down' 
+                          ? 'bg-red-500/60' 
+                          : 'bg-gray-500/60'
+                    }`}
+                    style={{ height: `${height}%` }}
+                  />
+                ))}
+              </div>
+            </div>
 
-      <Card className="bg-gradient-to-br from-blue-50 to-blue-100 dark:from-blue-900/20 dark:to-blue-800/20 border-blue-200 dark:border-blue-800">
-        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-          <CardTitle className="text-sm font-medium text-blue-800 dark:text-blue-300">
-            Tasa de Conversión
-          </CardTitle>
-          <TrendingUp className="h-4 w-4 text-blue-600 dark:text-blue-400" />
-        </CardHeader>
-        <CardContent>
-          <div className="text-2xl font-bold text-blue-900 dark:text-blue-100">
-            {conversionRate.toFixed(1)}%
-          </div>
-          <p className="text-xs text-blue-600 dark:text-blue-400">
-            {convertedCount} de {trialCount} trials convertidos
-          </p>
-        </CardContent>
-      </Card>
+            <div className={`inline-flex p-2 rounded-lg ${colors.bg} mb-3`}>
+              <Icon className={`h-5 w-5 ${colors.icon}`} />
+            </div>
+            
+            <p className="text-sm text-gray-400 mb-1">{card.title}</p>
+            <p className="text-2xl font-bold text-white mb-1">{card.value}</p>
+            <p className={`text-xs ${colors.text}`}>{card.subtitle}</p>
 
-      <Card className="bg-gradient-to-br from-purple-50 to-purple-100 dark:from-purple-900/20 dark:to-purple-800/20 border-purple-200 dark:border-purple-800">
-        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-          <CardTitle className="text-sm font-medium text-purple-800 dark:text-purple-300">
-            Total Trials
-          </CardTitle>
-          <Users className="h-4 w-4 text-purple-600 dark:text-purple-400" />
-        </CardHeader>
-        <CardContent>
-          <div className="text-2xl font-bold text-purple-900 dark:text-purple-100">
-            {trialCount}
+            {card.trend === 'up' && (
+              <div className="absolute bottom-4 right-4">
+                <TrendingUp className="h-4 w-4 text-emerald-500" />
+              </div>
+            )}
+            {card.trend === 'down' && (
+              <div className="absolute bottom-4 right-4">
+                <TrendingDown className="h-4 w-4 text-red-500" />
+              </div>
+            )}
           </div>
-          <p className="text-xs text-purple-600 dark:text-purple-400">
-            Usuarios en periodo de prueba
-          </p>
-        </CardContent>
-      </Card>
+        );
+      })}
     </div>
   );
 }
