@@ -9,7 +9,8 @@ import {
   Rocket,
   RefreshCw,
   StopCircle,
-  Layers
+  Layers,
+  PlayCircle
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -35,15 +36,18 @@ export function SmartRecoveryCard() {
     result, 
     selectedRange,
     progress,
+    hasPendingResume,
     runRecovery, 
+    resumeRecovery,
     cancelRecovery,
+    dismissPendingResume,
     exportToCSV, 
     clearResult 
   } = useSmartRecovery();
   const [activeTab, setActiveTab] = useState<"succeeded" | "failed" | "skipped">("succeeded");
 
   const handleRunRecovery = (hours: HoursLookback) => {
-    runRecovery(hours);
+    runRecovery(hours, false);
   };
 
   return (
@@ -368,8 +372,45 @@ export function SmartRecoveryCard() {
         </>
       )}
 
+      {/* Resume Banner */}
+      {hasPendingResume && !isRunning && (
+        <div className="mb-6 rounded-lg bg-amber-500/10 border border-amber-500/30 p-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <PlayCircle className="h-6 w-6 text-amber-400" />
+              <div>
+                <p className="font-medium text-amber-300">
+                  Proceso interrumpido - {selectedRange && RECOVERY_RANGES.find(r => r.hours === selectedRange)?.label}
+                </p>
+                <p className="text-sm text-muted-foreground">
+                  Tienes {result?.summary.batches_processed || 0} lotes procesados. Puedes continuar donde te quedaste.
+                </p>
+              </div>
+            </div>
+            <div className="flex gap-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={dismissPendingResume}
+                className="text-muted-foreground hover:text-white"
+              >
+                Descartar
+              </Button>
+              <Button
+                size="sm"
+                onClick={resumeRecovery}
+                className="bg-amber-600 hover:bg-amber-700 text-white"
+              >
+                <PlayCircle className="h-4 w-4 mr-2" />
+                Reanudar
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Empty State */}
-      {!result && !isRunning && (
+      {!result && !isRunning && !hasPendingResume && (
         <div className="flex flex-col items-center justify-center py-12 text-center">
           <div className="h-16 w-16 rounded-full bg-red-500/10 flex items-center justify-center mb-4">
             <Rocket className="h-8 w-8 text-red-400" />
