@@ -1,8 +1,15 @@
 import { DollarSign, TrendingUp, TrendingDown, Users, UserMinus } from 'lucide-react';
 import { DashboardMetrics } from '@/lib/csvProcessor';
+import { IncomingRevenueCard } from './IncomingRevenueCard';
 
 interface MetricsCardsProps {
   metrics: DashboardMetrics;
+  invoiceData?: {
+    totalNext72h: number;
+    totalPending: number;
+    invoiceCount: number;
+    isLoading: boolean;
+  };
 }
 
 const defaultMetrics: DashboardMetrics = {
@@ -16,7 +23,7 @@ const defaultMetrics: DashboardMetrics = {
   recoveryList: []
 };
 
-export function MetricsCards({ metrics: propMetrics }: MetricsCardsProps) {
+export function MetricsCards({ metrics: propMetrics, invoiceData }: MetricsCardsProps) {
   // Ensure metrics is always defined with fallback values
   const metrics = propMetrics || defaultMetrics;
   const cards = [
@@ -85,56 +92,69 @@ export function MetricsCards({ metrics: propMetrics }: MetricsCardsProps) {
   };
 
   return (
-    <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-      {cards.map((card, index) => {
-        const colors = getColorClasses(card.color);
-        const Icon = card.icon;
-        
-        return (
-          <div 
-            key={index}
-            className={`relative rounded-xl border border-border/50 bg-[#1a1f36] p-6 transition-all hover:shadow-lg ${colors.glow}`}
-          >
-            {/* Sparkline indicator */}
-            <div className="absolute top-4 right-4">
-              <div className={`w-16 h-8 flex items-end gap-0.5`}>
-                {[40, 65, 45, 70, 55, 80, 60, 75].map((height, i) => (
-                  <div
-                    key={i}
-                    className={`w-1.5 rounded-full ${
-                      card.trend === 'up' 
-                        ? 'bg-emerald-500/60' 
-                        : card.trend === 'down' 
-                          ? 'bg-red-500/60' 
-                          : 'bg-gray-500/60'
-                    }`}
-                    style={{ height: `${height}%` }}
-                  />
-                ))}
+    <div className="space-y-4">
+      {/* Incoming Revenue Card - Prominent at top */}
+      {invoiceData && (
+        <IncomingRevenueCard
+          totalNext72h={invoiceData.totalNext72h}
+          totalPending={invoiceData.totalPending}
+          invoiceCount={invoiceData.invoiceCount}
+          isLoading={invoiceData.isLoading}
+        />
+      )}
+      
+      {/* Regular metrics grid */}
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+        {cards.map((card, index) => {
+          const colors = getColorClasses(card.color);
+          const Icon = card.icon;
+          
+          return (
+            <div 
+              key={index}
+              className={`relative rounded-xl border border-border/50 bg-[#1a1f36] p-6 transition-all hover:shadow-lg ${colors.glow}`}
+            >
+              {/* Sparkline indicator */}
+              <div className="absolute top-4 right-4">
+                <div className={`w-16 h-8 flex items-end gap-0.5`}>
+                  {[40, 65, 45, 70, 55, 80, 60, 75].map((height, i) => (
+                    <div
+                      key={i}
+                      className={`w-1.5 rounded-full ${
+                        card.trend === 'up' 
+                          ? 'bg-emerald-500/60' 
+                          : card.trend === 'down' 
+                            ? 'bg-red-500/60' 
+                            : 'bg-gray-500/60'
+                      }`}
+                      style={{ height: `${height}%` }}
+                    />
+                  ))}
+                </div>
               </div>
-            </div>
 
-            <div className={`inline-flex p-2 rounded-lg ${colors.bg} mb-3`}>
-              <Icon className={`h-5 w-5 ${colors.icon}`} />
-            </div>
-            
-            <p className="text-sm text-gray-400 mb-1">{card.title}</p>
-            <p className="text-2xl font-bold text-white mb-1">{card.value}</p>
-            <p className={`text-xs ${colors.text}`}>{card.subtitle}</p>
+              <div className={`inline-flex p-2 rounded-lg ${colors.bg} mb-3`}>
+                <Icon className={`h-5 w-5 ${colors.icon}`} />
+              </div>
+              
+              <p className="text-sm text-gray-400 mb-1">{card.title}</p>
+              <p className="text-2xl font-bold text-white mb-1">{card.value}</p>
+              <p className={`text-xs ${colors.text}`}>{card.subtitle}</p>
 
-            {card.trend === 'up' && (
-              <div className="absolute bottom-4 right-4">
-                <TrendingUp className="h-4 w-4 text-emerald-500" />
-              </div>
-            )}
-            {card.trend === 'down' && (
-              <div className="absolute bottom-4 right-4">
-                <TrendingDown className="h-4 w-4 text-red-500" />
-              </div>
-            )}
-          </div>
-        );
-      })}
+              {card.trend === 'up' && (
+                <div className="absolute bottom-4 right-4">
+                  <TrendingUp className="h-4 w-4 text-emerald-500" />
+                </div>
+              )}
+              {card.trend === 'down' && (
+                <div className="absolute bottom-4 right-4">
+                  <TrendingDown className="h-4 w-4 text-red-500" />
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

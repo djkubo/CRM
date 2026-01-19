@@ -1,13 +1,14 @@
 project_id = "qskmzaxzhkrlchycbria"
 
-# CRITICAL FIX #6: Enable JWT for protected functions
 [functions.fetch-stripe]
 verify_jwt = false
 
 [functions.fetch-paypal]
 verify_jwt = false
 
-# Webhooks must remain public (called by external services)
+[functions.fetch-invoices]
+verify_jwt = false
+
 [functions.stripe-webhook]
 verify_jwt = false
 
@@ -18,4 +19,7 @@ verify_jwt = false
 verify_jwt = false
 
 [functions.analyze-business]
+verify_jwt = false
+
+[functions.sync-clients]
 verify_jwt = false
