@@ -1,4 +1,5 @@
 import { useState, useMemo } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { Sidebar } from "@/components/dashboard/Sidebar";
 import { Header } from "@/components/dashboard/Header";
 import { StatsCard } from "@/components/dashboard/StatsCard";
@@ -18,6 +19,7 @@ import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 
 const Index = () => {
+  const queryClient = useQueryClient();
   const [activeMenuItem, setActiveMenuItem] = useState("dashboard");
   const [searchQuery, setSearchQuery] = useState("");
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
@@ -63,7 +65,27 @@ const Index = () => {
     });
   };
 
+  // Build recovery data for ClientsTable
+  const recoveryEmails = useMemo(() => {
+    return new Set(metrics.recoveryList.map(r => r.email));
+  }, [metrics.recoveryList]);
+
+  const recoveryAmounts = useMemo(() => {
+    const amounts: Record<string, number> = {};
+    for (const r of metrics.recoveryList) {
+      amounts[r.email] = r.amount;
+    }
+    return amounts;
+  }, [metrics.recoveryList]);
+
   const handleProcessingComplete = () => {
+    // Force invalidate ALL related queries to ensure fresh data
+    queryClient.invalidateQueries({ queryKey: ["clients"] });
+    queryClient.invalidateQueries({ queryKey: ["clients-count"] });
+    queryClient.invalidateQueries({ queryKey: ["transactions"] });
+    queryClient.invalidateQueries({ queryKey: ["metrics"] });
+    
+    // Also call refetch for immediate update
     refetchClients();
     refetchTransactions();
     refetchMetrics();
@@ -183,6 +205,8 @@ const Index = () => {
                   page={page}
                   totalPages={totalPages}
                   onPageChange={setPage}
+                  recoveryEmails={recoveryEmails}
+                  recoveryAmounts={recoveryAmounts}
                 />
               </div>
             </TabsContent>

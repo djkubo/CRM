@@ -15,20 +15,30 @@ interface RecoveryTableProps {
   clients: RecoveryClient[];
 }
 
+// Utility function to clean phone number (removes all non-digits)
+export const cleanPhoneNumber = (phone: string): string => {
+  return phone.replace(/\D/g, '');
+};
+
+// Utility function to open WhatsApp with Safari/iOS compatible URL
+export const openWhatsApp = (phone: string, name: string, message: string) => {
+  const cleanPhone = cleanPhoneNumber(phone);
+  const encodedMessage = encodeURIComponent(message);
+  // Using wa.me format for Safari/iOS compatibility
+  window.open(`https://wa.me/${cleanPhone}?text=${encodedMessage}`, '_blank');
+};
+
+// Pre-built message for recovery/debt collection
+export const getRecoveryMessage = (name: string, amount: number): string => {
+  return `Hola ${name || 'usuario'}, notamos que hubo un problema con tu pago de $${amount.toFixed(2)}. ¿Podemos ayudarte a completarlo?`;
+};
+
+// Pre-built message for general greeting
+export const getGreetingMessage = (name: string): string => {
+  return `Hola ${name || ''}, ¿cómo podemos ayudarte?`.trim();
+};
+
 export function RecoveryTable({ clients }: RecoveryTableProps) {
-  const cleanPhoneNumber = (phone: string): string => {
-    // Remove all non-digit characters
-    return phone.replace(/\D/g, '');
-  };
-
-  const openWhatsApp = (phone: string, name: string, amount: number) => {
-    const cleanPhone = cleanPhoneNumber(phone);
-    const message = encodeURIComponent(
-      `Hola ${name || 'usuario'}, notamos que hubo un problema con tu pago de $${amount.toFixed(2)}. ¿Podemos ayudarte a completarlo?`
-    );
-    window.open(`https://wa.me/${cleanPhone}?text=${message}`, '_blank');
-  };
-
   const getSourceBadge = (source: string) => {
     switch (source.toLowerCase()) {
       case 'stripe':
@@ -118,7 +128,11 @@ export function RecoveryTable({ clients }: RecoveryTableProps) {
                     <Button
                       size="sm"
                       className="gap-2 bg-[#25D366] hover:bg-[#1da851] text-white border-0"
-                      onClick={() => openWhatsApp(client.phone!, client.full_name || '', client.amount)}
+                      onClick={() => openWhatsApp(
+                        client.phone!, 
+                        client.full_name || '', 
+                        getRecoveryMessage(client.full_name || '', client.amount)
+                      )}
                     >
                       <MessageCircle className="h-4 w-4" />
                       WhatsApp
