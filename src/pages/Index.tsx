@@ -10,11 +10,12 @@ import { CSVUploader } from "@/components/dashboard/CSVUploader";
 import { APISyncPanel } from "@/components/dashboard/APISyncPanel";
 import { MetricsCards } from "@/components/dashboard/MetricsCards";
 import { RecoveryTable } from "@/components/dashboard/RecoveryTable";
+import { AnalyticsPanel } from "@/components/dashboard/analytics/AnalyticsPanel";
 import { useClients } from "@/hooks/useClients";
 import { useTransactions } from "@/hooks/useTransactions";
 import { useMetrics } from "@/hooks/useMetrics";
 import { useAuth } from "@/hooks/useAuth";
-import { Users, UserCheck, UserX, Clock, LogOut } from "lucide-react";
+import { Users, UserCheck, UserX, Clock, LogOut, BarChart3 } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
@@ -192,6 +193,10 @@ const Index = () => {
               <TabsTrigger value="transactions" className="data-[state=active]:bg-primary/20 data-[state=active]:text-primary">
                 Transacciones
               </TabsTrigger>
+              <TabsTrigger value="analytics" className="data-[state=active]:bg-primary/20 data-[state=active]:text-primary gap-2">
+                <BarChart3 className="h-4 w-4" />
+                Analytics
+              </TabsTrigger>
             </TabsList>
 
             <TabsContent value="clients">
@@ -228,6 +233,13 @@ const Index = () => {
                   isLoading={isLoadingTransactions}
                 />
               </div>
+            </TabsContent>
+
+            <TabsContent value="analytics">
+              <AnalyticsPanel 
+                transactions={transactions} 
+                clients={clients} 
+              />
             </TabsContent>
           </Tabs>
         </div>

@@ -9,6 +9,10 @@ export interface Client {
   phone: string | null;
   full_name: string | null;
   status: string | null;
+  payment_status: string | null;
+  total_paid: number | null;
+  trial_started_at: string | null;
+  converted_at: string | null;
   last_sync: string | null;
   created_at: string | null;
 }
@@ -59,7 +63,12 @@ export function useClients() {
   const totalPages = Math.ceil(totalCount / PAGE_SIZE);
 
   const addClient = useMutation({
-    mutationFn: async (client: Omit<Client, "id" | "last_sync" | "created_at">) => {
+    mutationFn: async (client: {
+      email: string | null;
+      phone: string | null;
+      full_name: string | null;
+      status: string;
+    }) => {
       const { data, error } = await supabase
         .from("clients")
         .insert([{ ...client, last_sync: new Date().toISOString() }])

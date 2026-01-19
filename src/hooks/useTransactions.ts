@@ -14,6 +14,9 @@ export interface Transaction {
   stripe_customer_id: string | null;
   stripe_created_at: string | null;
   created_at: string | null;
+  source: string | null;
+  external_transaction_id: string | null;
+  metadata: any | null;
 }
 
 export function useTransactions() {
