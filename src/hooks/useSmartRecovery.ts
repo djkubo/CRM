@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
 
@@ -71,38 +71,149 @@ export const RECOVERY_RANGES: { hours: HoursLookback; label: string }[] = [
   { hours: 1440, label: "60 Días" },
 ];
 
+// Storage keys for persistence
+const STORAGE_KEY_RESULT = "smart_recovery_result";
+const STORAGE_KEY_STATE = "smart_recovery_state";
+
+interface PersistedState {
+  hours_lookback: HoursLookback;
+  starting_after?: string;
+  aggregated: AggregatedResult;
+  timestamp: number;
+}
+
+function saveState(state: PersistedState) {
+  try {
+    localStorage.setItem(STORAGE_KEY_STATE, JSON.stringify(state));
+  } catch (e) {
+    console.warn("Failed to save recovery state:", e);
+  }
+}
+
+function loadState(): PersistedState | null {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_STATE);
+    if (!raw) return null;
+    const state = JSON.parse(raw) as PersistedState;
+    // Expire after 1 hour
+    if (Date.now() - state.timestamp > 60 * 60 * 1000) {
+      localStorage.removeItem(STORAGE_KEY_STATE);
+      return null;
+    }
+    return state;
+  } catch {
+    return null;
+  }
+}
+
+function clearState() {
+  localStorage.removeItem(STORAGE_KEY_STATE);
+}
+
+function saveResult(result: AggregatedResult) {
+  try {
+    localStorage.setItem(STORAGE_KEY_RESULT, JSON.stringify({ result, timestamp: Date.now() }));
+  } catch (e) {
+    console.warn("Failed to save recovery result:", e);
+  }
+}
+
+function loadResult(): AggregatedResult | null {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_RESULT);
+    if (!raw) return null;
+    const { result, timestamp } = JSON.parse(raw);
+    // Expire after 24 hours
+    if (Date.now() - timestamp > 24 * 60 * 60 * 1000) {
+      localStorage.removeItem(STORAGE_KEY_RESULT);
+      return null;
+    }
+    return result;
+  } catch {
+    return null;
+  }
+}
+
+function clearResult() {
+  localStorage.removeItem(STORAGE_KEY_RESULT);
+}
+
 export function useSmartRecovery() {
   const [isRunning, setIsRunning] = useState(false);
   const [result, setResult] = useState<AggregatedResult | null>(null);
   const [selectedRange, setSelectedRange] = useState<HoursLookback | null>(null);
   const [progress, setProgress] = useState<{ batch: number; message: string } | null>(null);
+  const [hasPendingResume, setHasPendingResume] = useState(false);
   const abortRef = useRef(false);
   const { toast } = useToast();
 
-  const runRecovery = useCallback(async (hours_lookback: HoursLookback) => {
+  // Load persisted result on mount
+  useEffect(() => {
+    const savedResult = loadResult();
+    if (savedResult) {
+      setResult(savedResult);
+    }
+    const pendingState = loadState();
+    if (pendingState) {
+      setHasPendingResume(true);
+      setSelectedRange(pendingState.hours_lookback);
+      // Also restore partial results if available
+      if (pendingState.aggregated.summary.batches_processed > 0) {
+        setResult(pendingState.aggregated);
+      }
+    }
+  }, []);
+
+  const createEmptyAggregated = (): AggregatedResult => ({
+    succeeded: [],
+    failed: [],
+    skipped: [],
+    summary: {
+      total_invoices: 0,
+      total_recovered: 0,
+      total_failed_amount: 0,
+      total_skipped_amount: 0,
+      currency: "usd",
+      batches_processed: 0,
+    },
+  });
+
+  const runRecovery = useCallback(async (hours_lookback: HoursLookback, resume = false) => {
     setIsRunning(true);
     setSelectedRange(hours_lookback);
-    setResult(null);
-    setProgress({ batch: 0, message: "Iniciando Smart Recovery..." });
+    setHasPendingResume(false);
     abortRef.current = false;
 
-    const aggregated: AggregatedResult = {
-      succeeded: [],
-      failed: [],
-      skipped: [],
-      summary: {
-        total_invoices: 0,
-        total_recovered: 0,
-        total_failed_amount: 0,
-        total_skipped_amount: 0,
-        currency: "usd",
-        batches_processed: 0,
-      },
-    };
-
+    // Check for pending state to resume
+    let aggregated: AggregatedResult;
     let starting_after: string | undefined;
-    let hasMore = true;
     let batchNum = 0;
+
+    if (resume) {
+      const pendingState = loadState();
+      if (pendingState && pendingState.hours_lookback === hours_lookback) {
+        aggregated = pendingState.aggregated;
+        starting_after = pendingState.starting_after;
+        batchNum = pendingState.aggregated.summary.batches_processed;
+        setResult(aggregated);
+        setProgress({ batch: batchNum, message: `Reanudando desde lote ${batchNum + 1}...` });
+        toast({
+          title: "Reanudando Smart Recovery",
+          description: `Continuando desde lote ${batchNum + 1} con ${aggregated.succeeded.length} ya recuperados`,
+        });
+      } else {
+        aggregated = createEmptyAggregated();
+        setResult(null);
+      }
+    } else {
+      aggregated = createEmptyAggregated();
+      setResult(null);
+      clearState();
+    }
+
+    setProgress({ batch: batchNum, message: resume ? `Reanudando...` : "Iniciando Smart Recovery..." });
+
+    let hasMore = true;
 
     try {
       while (hasMore && !abortRef.current) {
@@ -137,6 +248,15 @@ export function useSmartRecovery() {
         if (batchResult.summary.is_partial && batchResult.summary.next_starting_after) {
           starting_after = batchResult.summary.next_starting_after;
           hasMore = true;
+          
+          // Save state for resume capability
+          saveState({
+            hours_lookback,
+            starting_after,
+            aggregated: { ...aggregated },
+            timestamp: Date.now(),
+          });
+          
           // Small delay between batches
           await new Promise(r => setTimeout(r, 1000));
         } else {
@@ -146,10 +266,25 @@ export function useSmartRecovery() {
 
       const { summary } = aggregated;
       
+      // Clear pending state on completion
+      clearState();
+      // Save final result
+      saveResult(aggregated);
+      
       if (abortRef.current) {
+        // Keep state for resume if cancelled
+        if (hasMore) {
+          saveState({
+            hours_lookback,
+            starting_after,
+            aggregated: { ...aggregated },
+            timestamp: Date.now(),
+          });
+          setHasPendingResume(true);
+        }
         toast({
-          title: "Smart Recovery Cancelado",
-          description: `Parcial: Recuperados $${(summary.total_recovered / 100).toFixed(2)} en ${batchNum} lotes`,
+          title: "Smart Recovery Pausado",
+          description: `Parcial: Recuperados $${(summary.total_recovered / 100).toFixed(2)} en ${batchNum} lotes. Puedes reanudar.`,
         });
       } else {
         toast({
@@ -163,10 +298,19 @@ export function useSmartRecovery() {
       console.error("Smart Recovery error:", error);
       const errMsg = error instanceof Error ? error.message : "Error desconocido";
       
-      // If we have partial results, show them
+      // Save state for resume on error
       if (aggregated.summary.batches_processed > 0) {
+        saveState({
+          hours_lookback,
+          starting_after,
+          aggregated: { ...aggregated },
+          timestamp: Date.now(),
+        });
+        setHasPendingResume(true);
+        saveResult(aggregated);
+        
         toast({
-          title: "Error en Smart Recovery (Resultados Parciales)",
+          title: "Error en Smart Recovery (Puedes Reanudar)",
           description: `Recuperados: $${(aggregated.summary.total_recovered / 100).toFixed(2)} antes del error. ${errMsg}`,
           variant: "destructive",
         });
@@ -185,8 +329,20 @@ export function useSmartRecovery() {
     }
   }, [toast]);
 
+  const resumeRecovery = useCallback(async () => {
+    const pendingState = loadState();
+    if (pendingState) {
+      return runRecovery(pendingState.hours_lookback, true);
+    }
+  }, [runRecovery]);
+
   const cancelRecovery = useCallback(() => {
     abortRef.current = true;
+  }, []);
+
+  const dismissPendingResume = useCallback(() => {
+    clearState();
+    setHasPendingResume(false);
   }, []);
 
   const exportToCSV = useCallback(() => {
@@ -229,9 +385,12 @@ export function useSmartRecovery() {
     });
   }, [result, toast]);
 
-  const clearResult = useCallback(() => {
+  const clearResults = useCallback(() => {
     setResult(null);
     setSelectedRange(null);
+    clearState();
+    clearResult();
+    setHasPendingResume(false);
   }, []);
 
   return {
@@ -239,9 +398,12 @@ export function useSmartRecovery() {
     result,
     selectedRange,
     progress,
+    hasPendingResume,
     runRecovery,
+    resumeRecovery,
     cancelRecovery,
+    dismissPendingResume,
     exportToCSV,
-    clearResult,
+    clearResult: clearResults,
   };
 }
