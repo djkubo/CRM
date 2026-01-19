@@ -14,7 +14,13 @@ const SKIP_SUBSCRIPTION_STATUSES = ["canceled", "unpaid", "incomplete_expired"];
 const SKIP_INVOICE_STATUSES = ["paid", "void", "uncollectible"];
 
 // Delay between API calls to respect rate limits (ms)
-const API_DELAY_MS = 200;
+const API_DELAY_MS = 150;
+
+// Max invoices to process per batch to avoid timeout
+const BATCH_SIZE = 15;
+
+// Max execution time before returning partial results (ms) - leave buffer for response
+const MAX_EXECUTION_MS = 45000;
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -44,17 +50,170 @@ interface RecoveryResult {
   }>;
   summary: {
     total_invoices: number;
+    processed_invoices: number;
     total_recovered: number;
     total_failed_amount: number;
     total_skipped_amount: number;
     currency: string;
+    is_partial: boolean;
+    remaining_invoices: number;
+    next_starting_after?: string;
   };
+}
+
+async function processInvoice(
+  stripe: Stripe,
+  invoice: Stripe.Invoice,
+  result: RecoveryResult
+): Promise<boolean> {
+  const customerEmail = typeof invoice.customer === "object" 
+    ? (invoice.customer as Stripe.Customer)?.email 
+    : null;
+  const customerId = typeof invoice.customer === "string" 
+    ? invoice.customer 
+    : (invoice.customer as Stripe.Customer)?.id;
+
+  console.log(`\n💳 Processing invoice ${invoice.id} - $${(invoice.amount_due / 100).toFixed(2)}`);
+
+  // SAFETY CHECK 1: Skip invoices that are already paid/void/uncollectible
+  if (SKIP_INVOICE_STATUSES.includes(invoice.status!)) {
+    console.log(`🚫 SKIPPING: Invoice ${invoice.id} is ${invoice.status}`);
+    result.skipped.push({
+      invoice_id: invoice.id,
+      customer_email: customerEmail,
+      amount_due: invoice.amount_due,
+      currency: invoice.currency,
+      reason: `Invoice is ${invoice.status}`,
+    });
+    result.summary.total_skipped_amount += invoice.amount_due;
+    return true;
+  }
+
+  // SAFETY CHECK 2: Check subscription status
+  if (invoice.subscription) {
+    const subscription = invoice.subscription as Stripe.Subscription;
+    
+    if (SKIP_SUBSCRIPTION_STATUSES.includes(subscription.status)) {
+      console.log(`🚫 SKIPPING: Subscription ${subscription.id} is ${subscription.status}`);
+      result.skipped.push({
+        invoice_id: invoice.id,
+        customer_email: customerEmail,
+        amount_due: invoice.amount_due,
+        currency: invoice.currency,
+        reason: `Subscription is ${subscription.status}`,
+        subscription_status: subscription.status,
+      });
+      result.summary.total_skipped_amount += invoice.amount_due;
+      return true;
+    }
+    console.log(`✅ Subscription status: ${subscription.status} - proceeding`);
+  }
+
+  // Get customer's payment methods
+  await sleep(API_DELAY_MS);
+  let paymentMethods: Stripe.PaymentMethod[] = [];
+  try {
+    const pmList = await stripe.paymentMethods.list({
+      customer: customerId!,
+      type: "card",
+    });
+    paymentMethods = pmList.data;
+    console.log(`💳 Customer has ${paymentMethods.length} payment method(s)`);
+  } catch (pmError) {
+    console.error(`❌ Error fetching payment methods:`, pmError);
+  }
+
+  // Try to charge with multi-card attack
+  let charged = false;
+  let lastError = "";
+  let cardsTried = 0;
+
+  // First, try with default (no specific payment method)
+  try {
+    await sleep(API_DELAY_MS);
+    console.log(`💰 Attempting to pay with default payment method...`);
+    const paidInvoice = await stripe.invoices.pay(invoice.id);
+    
+    if (paidInvoice.status === "paid") {
+      console.log(`✅ SUCCESS with default payment method!`);
+      result.succeeded.push({
+        invoice_id: invoice.id,
+        customer_email: customerEmail,
+        amount_recovered: paidInvoice.amount_paid,
+        currency: paidInvoice.currency,
+        payment_method_used: "default",
+      });
+      result.summary.total_recovered += paidInvoice.amount_paid;
+      charged = true;
+    }
+  } catch (error: any) {
+    cardsTried++;
+    lastError = error.message || "Unknown error";
+    console.log(`❌ Default payment failed: ${lastError}`);
+  }
+
+  // If default failed, try other payment methods (max 2 alternates to save time)
+  if (!charged && paymentMethods.length > 0) {
+    const methodsToTry = paymentMethods.slice(0, 2); // Limit to 2 alternate cards
+    
+    for (const pm of methodsToTry) {
+      if (charged) break;
+      
+      try {
+        await sleep(API_DELAY_MS);
+        console.log(`💳 Trying payment method ${pm.id} (${pm.card?.brand} ****${pm.card?.last4})...`);
+        
+        // Update invoice's default payment method and retry
+        await stripe.invoices.update(invoice.id, {
+          default_payment_method: pm.id,
+        });
+        
+        await sleep(API_DELAY_MS);
+        const paidInvoice = await stripe.invoices.pay(invoice.id);
+        
+        if (paidInvoice.status === "paid") {
+          console.log(`✅ SUCCESS with ${pm.card?.brand} ****${pm.card?.last4}!`);
+          result.succeeded.push({
+            invoice_id: invoice.id,
+            customer_email: customerEmail,
+            amount_recovered: paidInvoice.amount_paid,
+            currency: paidInvoice.currency,
+            payment_method_used: `${pm.card?.brand} ****${pm.card?.last4}`,
+          });
+          result.summary.total_recovered += paidInvoice.amount_paid;
+          charged = true;
+        }
+      } catch (error: any) {
+        cardsTried++;
+        lastError = error.message || "Unknown error";
+        console.log(`❌ Card ${pm.card?.last4} failed: ${lastError}`);
+      }
+    }
+  }
+
+  // If all cards failed
+  if (!charged) {
+    console.log(`❌ FAILED: All ${cardsTried} payment attempts failed`);
+    result.failed.push({
+      invoice_id: invoice.id,
+      customer_email: customerEmail,
+      amount_due: invoice.amount_due,
+      currency: invoice.currency,
+      error: lastError,
+      cards_tried: cardsTried,
+    });
+    result.summary.total_failed_amount += invoice.amount_due;
+  }
+
+  return true;
 }
 
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
   }
+
+  const startTime = Date.now();
 
   try {
     // Verify authentication
@@ -82,7 +241,7 @@ serve(async (req) => {
 
     console.log("✅ User authenticated:", user.email);
 
-    const { hours_lookback = 24 } = await req.json();
+    const { hours_lookback = 24, starting_after } = await req.json();
     
     // Validate hours_lookback
     const validHours = [24, 168, 360, 720, 1440];
@@ -94,6 +253,9 @@ serve(async (req) => {
     }
 
     console.log(`🔍 Smart Recovery starting - Looking back ${hours_lookback} hours`);
+    if (starting_after) {
+      console.log(`📍 Resuming from invoice: ${starting_after}`);
+    }
 
     const stripeSecretKey = Deno.env.get("STRIPE_SECRET_KEY");
     if (!stripeSecretKey) {
@@ -108,30 +270,21 @@ serve(async (req) => {
     const cutoffTimestamp = Math.floor(Date.now() / 1000) - (hours_lookback * 60 * 60);
     console.log(`📅 Cutoff date: ${new Date(cutoffTimestamp * 1000).toISOString()}`);
 
-    // Fetch open invoices created after cutoff
-    const invoices: Stripe.Invoice[] = [];
-    let hasMore = true;
-    let startingAfter: string | undefined;
+    // Fetch open invoices - only one page at a time for chunking
+    const params: Stripe.InvoiceListParams = {
+      status: "open",
+      limit: BATCH_SIZE,
+      created: { gte: cutoffTimestamp },
+      expand: ["data.subscription", "data.customer"],
+    };
+    if (starting_after) params.starting_after = starting_after;
 
-    while (hasMore) {
-      const params: Stripe.InvoiceListParams = {
-        status: "open",
-        limit: 100,
-        created: { gte: cutoffTimestamp },
-        expand: ["data.subscription", "data.customer"],
-      };
-      if (startingAfter) params.starting_after = startingAfter;
+    await sleep(API_DELAY_MS);
+    const response = await stripe.invoices.list(params);
+    const invoices = response.data;
+    const hasMore = response.has_more;
 
-      await sleep(API_DELAY_MS);
-      const response = await stripe.invoices.list(params);
-      invoices.push(...response.data);
-      hasMore = response.has_more;
-      if (response.data.length > 0) {
-        startingAfter = response.data[response.data.length - 1].id;
-      }
-    }
-
-    console.log(`📄 Found ${invoices.length} open invoices in the last ${hours_lookback} hours`);
+    console.log(`📄 Fetched ${invoices.length} open invoices (hasMore: ${hasMore})`);
 
     const result: RecoveryResult = {
       succeeded: [],
@@ -139,156 +292,52 @@ serve(async (req) => {
       skipped: [],
       summary: {
         total_invoices: invoices.length,
+        processed_invoices: 0,
         total_recovered: 0,
         total_failed_amount: 0,
         total_skipped_amount: 0,
         currency: "usd",
+        is_partial: false,
+        remaining_invoices: 0,
       },
     };
 
+    let lastProcessedId: string | undefined;
+
     for (const invoice of invoices) {
-      const customerEmail = typeof invoice.customer === "object" 
-        ? (invoice.customer as Stripe.Customer)?.email 
-        : null;
-      const customerId = typeof invoice.customer === "string" 
-        ? invoice.customer 
-        : (invoice.customer as Stripe.Customer)?.id;
-
-      console.log(`\n💳 Processing invoice ${invoice.id} - $${(invoice.amount_due / 100).toFixed(2)}`);
-
-      // SAFETY CHECK 1: Skip invoices that are already paid/void/uncollectible
-      if (SKIP_INVOICE_STATUSES.includes(invoice.status)) {
-        console.log(`🚫 SKIPPING: Invoice ${invoice.id} is ${invoice.status}`);
-        result.skipped.push({
-          invoice_id: invoice.id,
-          customer_email: customerEmail,
-          amount_due: invoice.amount_due,
-          currency: invoice.currency,
-          reason: `Invoice is ${invoice.status}`,
-        });
-        result.summary.total_skipped_amount += invoice.amount_due;
-        continue;
-      }
-
-      // SAFETY CHECK 2: Check subscription status
-      if (invoice.subscription) {
-        const subscription = invoice.subscription as Stripe.Subscription;
-        
-        if (SKIP_SUBSCRIPTION_STATUSES.includes(subscription.status)) {
-          console.log(`🚫 SKIPPING: Subscription ${subscription.id} is ${subscription.status}`);
-          result.skipped.push({
-            invoice_id: invoice.id,
-            customer_email: customerEmail,
-            amount_due: invoice.amount_due,
-            currency: invoice.currency,
-            reason: `Subscription is ${subscription.status}`,
-            subscription_status: subscription.status,
-          });
-          result.summary.total_skipped_amount += invoice.amount_due;
-          continue;
+      // Check if we're running out of time
+      const elapsed = Date.now() - startTime;
+      if (elapsed > MAX_EXECUTION_MS) {
+        console.log(`⏰ Time limit approaching (${elapsed}ms), returning partial results`);
+        result.summary.is_partial = true;
+        result.summary.remaining_invoices = invoices.length - result.summary.processed_invoices;
+        if (lastProcessedId) {
+          result.summary.next_starting_after = lastProcessedId;
         }
-        console.log(`✅ Subscription status: ${subscription.status} - proceeding`);
+        break;
       }
 
-      // Get customer's payment methods
-      await sleep(API_DELAY_MS);
-      let paymentMethods: Stripe.PaymentMethod[] = [];
-      try {
-        const pmList = await stripe.paymentMethods.list({
-          customer: customerId!,
-          type: "card",
-        });
-        paymentMethods = pmList.data;
-        console.log(`💳 Customer has ${paymentMethods.length} payment method(s)`);
-      } catch (pmError) {
-        console.error(`❌ Error fetching payment methods:`, pmError);
-      }
-
-      // Try to charge with multi-card attack
-      let charged = false;
-      let lastError = "";
-      let cardsTried = 0;
-
-      // First, try with default (no specific payment method)
-      try {
-        await sleep(API_DELAY_MS);
-        console.log(`💰 Attempting to pay with default payment method...`);
-        const paidInvoice = await stripe.invoices.pay(invoice.id);
-        
-        if (paidInvoice.status === "paid") {
-          console.log(`✅ SUCCESS with default payment method!`);
-          result.succeeded.push({
-            invoice_id: invoice.id,
-            customer_email: customerEmail,
-            amount_recovered: paidInvoice.amount_paid,
-            currency: paidInvoice.currency,
-            payment_method_used: "default",
-          });
-          result.summary.total_recovered += paidInvoice.amount_paid;
-          charged = true;
-        }
-      } catch (error: any) {
-        cardsTried++;
-        lastError = error.message || "Unknown error";
-        console.log(`❌ Default payment failed: ${lastError}`);
-      }
-
-      // If default failed, try other payment methods
-      if (!charged && paymentMethods.length > 0) {
-        for (const pm of paymentMethods) {
-          if (charged) break;
-          
-          try {
-            await sleep(API_DELAY_MS);
-            console.log(`💳 Trying payment method ${pm.id} (${pm.card?.brand} ****${pm.card?.last4})...`);
-            
-            // Update invoice's default payment method and retry
-            await stripe.invoices.update(invoice.id, {
-              default_payment_method: pm.id,
-            });
-            
-            await sleep(API_DELAY_MS);
-            const paidInvoice = await stripe.invoices.pay(invoice.id);
-            
-            if (paidInvoice.status === "paid") {
-              console.log(`✅ SUCCESS with ${pm.card?.brand} ****${pm.card?.last4}!`);
-              result.succeeded.push({
-                invoice_id: invoice.id,
-                customer_email: customerEmail,
-                amount_recovered: paidInvoice.amount_paid,
-                currency: paidInvoice.currency,
-                payment_method_used: `${pm.card?.brand} ****${pm.card?.last4}`,
-              });
-              result.summary.total_recovered += paidInvoice.amount_paid;
-              charged = true;
-            }
-          } catch (error: any) {
-            cardsTried++;
-            lastError = error.message || "Unknown error";
-            console.log(`❌ Card ${pm.card?.last4} failed: ${lastError}`);
-          }
-        }
-      }
-
-      // If all cards failed
-      if (!charged) {
-        console.log(`❌ FAILED: All ${cardsTried} payment attempts failed`);
-        result.failed.push({
-          invoice_id: invoice.id,
-          customer_email: customerEmail,
-          amount_due: invoice.amount_due,
-          currency: invoice.currency,
-          error: lastError,
-          cards_tried: cardsTried,
-        });
-        result.summary.total_failed_amount += invoice.amount_due;
-      }
+      await processInvoice(stripe, invoice, result);
+      result.summary.processed_invoices++;
+      lastProcessedId = invoice.id;
     }
 
-    console.log(`\n🏁 Smart Recovery Complete!`);
+    // If there are more pages and we didn't timeout
+    if (hasMore && !result.summary.is_partial) {
+      result.summary.is_partial = true;
+      result.summary.remaining_invoices = -1; // Unknown exact count
+      result.summary.next_starting_after = lastProcessedId;
+    }
+
+    const elapsed = Date.now() - startTime;
+    console.log(`\n🏁 Smart Recovery Complete in ${elapsed}ms!`);
+    console.log(`📊 Processed: ${result.summary.processed_invoices}/${invoices.length}`);
     console.log(`✅ Recovered: $${(result.summary.total_recovered / 100).toFixed(2)}`);
     console.log(`❌ Failed: $${(result.summary.total_failed_amount / 100).toFixed(2)}`);
     console.log(`🚫 Skipped: $${(result.summary.total_skipped_amount / 100).toFixed(2)}`);
+    if (result.summary.is_partial) {
+      console.log(`⏳ Partial result - more invoices pending`);
+    }
 
     return new Response(
       JSON.stringify(result),
