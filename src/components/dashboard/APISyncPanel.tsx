@@ -1,0 +1,270 @@
+import { useState } from 'react';
+import { RefreshCw, Loader2, CheckCircle, AlertCircle, Zap } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
+import { supabase } from '@/integrations/supabase/client';
+import { useQueryClient } from '@tanstack/react-query';
+import { toast } from 'sonner';
+
+interface SyncResult {
+  success: boolean;
+  synced_transactions?: number;
+  synced_clients?: number;
+  paid_count?: number;
+  failed_count?: number;
+  total_fetched?: number;
+  message?: string;
+  error?: string;
+}
+
+export function APISyncPanel() {
+  const queryClient = useQueryClient();
+  const [stripeSyncing, setStripeSyncing] = useState(false);
+  const [paypalSyncing, setPaypalSyncing] = useState(false);
+  const [stripeResult, setStripeResult] = useState<SyncResult | null>(null);
+  const [paypalResult, setPaypalResult] = useState<SyncResult | null>(null);
+
+  const syncStripe = async (fetchAll = false) => {
+    setStripeSyncing(true);
+    setStripeResult(null);
+    
+    try {
+      const { data, error } = await supabase.functions.invoke('fetch-stripe', {
+        body: { fetchAll }
+      });
+
+      if (error) throw error;
+      
+      setStripeResult(data);
+      
+      if (data.success) {
+        toast.success(`Stripe: ${data.synced_transactions} transacciones sincronizadas`);
+      }
+      
+      // Refresh all data
+      queryClient.invalidateQueries({ queryKey: ['transactions'] });
+      queryClient.invalidateQueries({ queryKey: ['clients'] });
+      queryClient.invalidateQueries({ queryKey: ['clients-count'] });
+      queryClient.invalidateQueries({ queryKey: ['metrics'] });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Error desconocido';
+      setStripeResult({ success: false, error: errorMessage });
+      toast.error(`Error sincronizando Stripe: ${errorMessage}`);
+    } finally {
+      setStripeSyncing(false);
+    }
+  };
+
+  const syncPayPal = async (fetchAll = false) => {
+    setPaypalSyncing(true);
+    setPaypalResult(null);
+    
+    try {
+      // For fetchAll, we need to fetch in date chunks (PayPal limits to 31 days per request)
+      if (fetchAll) {
+        // Fetch last 6 months in 31-day chunks
+        const now = new Date();
+        let allResults = { synced_transactions: 0, synced_clients: 0, paid_count: 0, failed_count: 0 };
+        
+        for (let i = 0; i < 6; i++) {
+          const endDate = new Date(now.getTime() - (i * 31 * 24 * 60 * 60 * 1000));
+          const startDate = new Date(endDate.getTime() - (31 * 24 * 60 * 60 * 1000));
+          
+          const { data, error } = await supabase.functions.invoke('fetch-paypal', {
+            body: { 
+              fetchAll: true,
+              startDate: startDate.toISOString(),
+              endDate: endDate.toISOString()
+            }
+          });
+
+          if (error) throw error;
+          
+          if (data.success) {
+            allResults.synced_transactions += data.synced_transactions || 0;
+            allResults.synced_clients += data.synced_clients || 0;
+            allResults.paid_count += data.paid_count || 0;
+            allResults.failed_count += data.failed_count || 0;
+          }
+        }
+        
+        setPaypalResult({ 
+          success: true, 
+          ...allResults,
+          message: `Sincronizados últimos 6 meses` 
+        });
+        toast.success(`PayPal: ${allResults.synced_transactions} transacciones sincronizadas (6 meses)`);
+      } else {
+        const { data, error } = await supabase.functions.invoke('fetch-paypal', {
+          body: { fetchAll: false }
+        });
+
+        if (error) throw error;
+        
+        setPaypalResult(data);
+        
+        if (data.success) {
+          toast.success(`PayPal: ${data.synced_transactions} transacciones sincronizadas`);
+        }
+      }
+      
+      // Refresh all data
+      queryClient.invalidateQueries({ queryKey: ['transactions'] });
+      queryClient.invalidateQueries({ queryKey: ['clients'] });
+      queryClient.invalidateQueries({ queryKey: ['clients-count'] });
+      queryClient.invalidateQueries({ queryKey: ['metrics'] });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Error desconocido';
+      setPaypalResult({ success: false, error: errorMessage });
+      toast.error(`Error sincronizando PayPal: ${errorMessage}`);
+    } finally {
+      setPaypalSyncing(false);
+    }
+  };
+
+  const syncAll = async () => {
+    await Promise.all([
+      syncStripe(true),
+      syncPayPal(true)
+    ]);
+  };
+
+  return (
+    <Card className="bg-[#1a1f36] border-border/50">
+      <CardHeader className="pb-3">
+        <div className="flex items-center gap-3">
+          <div className="p-2 rounded-lg bg-primary/10">
+            <Zap className="h-5 w-5 text-primary" />
+          </div>
+          <div>
+            <CardTitle className="text-lg text-white">Sincronización API</CardTitle>
+            <CardDescription>
+              Importa automáticamente todas las transacciones desde Stripe y PayPal
+            </CardDescription>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {/* Stripe Sync */}
+        <div className="flex items-center justify-between p-4 bg-[#0f1225] rounded-lg border border-gray-700/50">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-lg bg-purple-500/20 flex items-center justify-center">
+              <span className="text-purple-400 font-bold text-sm">S</span>
+            </div>
+            <div>
+              <h4 className="font-medium text-white">Stripe</h4>
+              <p className="text-xs text-gray-400">
+                {stripeResult?.success 
+                  ? `${stripeResult.synced_transactions} transacciones (${stripeResult.paid_count} pagos, ${stripeResult.failed_count} fallidos)`
+                  : 'Sincroniza todo el historial de pagos'
+                }
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            {stripeResult && (
+              <Badge variant={stripeResult.success ? 'default' : 'destructive'} className="gap-1">
+                {stripeResult.success ? (
+                  <><CheckCircle className="h-3 w-3" /> OK</>
+                ) : (
+                  <><AlertCircle className="h-3 w-3" /> Error</>
+                )}
+              </Badge>
+            )}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => syncStripe(false)}
+              disabled={stripeSyncing}
+              className="gap-2"
+            >
+              {stripeSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+              Últimas 100
+            </Button>
+            <Button
+              size="sm"
+              onClick={() => syncStripe(true)}
+              disabled={stripeSyncing}
+              className="gap-2 bg-purple-600 hover:bg-purple-700"
+            >
+              {stripeSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+              Todo el Historial
+            </Button>
+          </div>
+        </div>
+
+        {/* PayPal Sync */}
+        <div className="flex items-center justify-between p-4 bg-[#0f1225] rounded-lg border border-gray-700/50">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-lg bg-yellow-500/20 flex items-center justify-center">
+              <span className="text-yellow-400 font-bold text-sm">P</span>
+            </div>
+            <div>
+              <h4 className="font-medium text-white">PayPal</h4>
+              <p className="text-xs text-gray-400">
+                {paypalResult?.success 
+                  ? `${paypalResult.synced_transactions} transacciones (${paypalResult.paid_count} pagos, ${paypalResult.failed_count} fallidos)`
+                  : 'Sincroniza últimos 31 días o 6 meses completos'
+                }
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            {paypalResult && (
+              <Badge variant={paypalResult.success ? 'default' : 'destructive'} className="gap-1">
+                {paypalResult.success ? (
+                  <><CheckCircle className="h-3 w-3" /> OK</>
+                ) : (
+                  <><AlertCircle className="h-3 w-3" /> Error</>
+                )}
+              </Badge>
+            )}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => syncPayPal(false)}
+              disabled={paypalSyncing}
+              className="gap-2"
+            >
+              {paypalSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+              Últimos 31 días
+            </Button>
+            <Button
+              size="sm"
+              onClick={() => syncPayPal(true)}
+              disabled={paypalSyncing}
+              className="gap-2 bg-yellow-600 hover:bg-yellow-700"
+            >
+              {paypalSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+              6 Meses
+            </Button>
+          </div>
+        </div>
+
+        {/* Sync All Button */}
+        <Button 
+          onClick={syncAll}
+          disabled={stripeSyncing || paypalSyncing}
+          className="w-full bg-gradient-to-r from-purple-600 to-yellow-600 hover:from-purple-700 hover:to-yellow-700"
+        >
+          {(stripeSyncing || paypalSyncing) ? (
+            <>
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              Sincronizando...
+            </>
+          ) : (
+            <>
+              <Zap className="mr-2 h-4 w-4" />
+              Sincronizar Todo (Stripe + PayPal)
+            </>
+          )}
+        </Button>
+
+        <p className="text-xs text-gray-500 text-center">
+          💡 Usa "Todo el Historial" para importar todas las transacciones desde que creaste tu cuenta
+        </p>
+      </CardContent>
+    </Card>
+  );
+}
