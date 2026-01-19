@@ -1,7 +1,8 @@
 import { useState } from "react";
-import { ExternalLink, RefreshCw, FileText, Clock, Zap, Loader2 } from "lucide-react";
+import { ExternalLink, RefreshCw, FileText, Clock, Zap, Loader2, PlayCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Progress } from "@/components/ui/progress";
 import {
   Table,
   TableBody,
@@ -29,6 +30,12 @@ interface PendingInvoicesTableProps {
   isSyncing: boolean;
 }
 
+interface ChargeAllResult {
+  succeeded: number;
+  failed: number;
+  totalRecovered: number;
+}
+
 export function PendingInvoicesTable({
   invoices,
   isLoading,
@@ -36,6 +43,9 @@ export function PendingInvoicesTable({
   isSyncing,
 }: PendingInvoicesTableProps) {
   const [chargingInvoice, setChargingInvoice] = useState<string | null>(null);
+  const [isChargingAll, setIsChargingAll] = useState(false);
+  const [chargeProgress, setChargeProgress] = useState(0);
+  const [chargeResult, setChargeResult] = useState<ChargeAllResult | null>(null);
   const { toast } = useToast();
 
   const getStatusBadge = (status: string) => {
@@ -76,7 +86,6 @@ export function PendingInvoicesTable({
           title: "¡Cobro exitoso!",
           description: `Factura cobrada: $${(data.amount_paid / 100).toFixed(2)}`,
         });
-        // Refresh the invoices list
         onSync();
       } else {
         toast({
@@ -98,6 +107,66 @@ export function PendingInvoicesTable({
     }
   };
 
+  const handleChargeAll = async () => {
+    if (invoices.length === 0) return;
+
+    setIsChargingAll(true);
+    setChargeProgress(0);
+    setChargeResult(null);
+
+    const result: ChargeAllResult = {
+      succeeded: 0,
+      failed: 0,
+      totalRecovered: 0,
+    };
+
+    const chargeableInvoices = invoices.filter(
+      (inv) => inv.status === "draft" || inv.status === "open"
+    );
+
+    for (let i = 0; i < chargeableInvoices.length; i++) {
+      const invoice = chargeableInvoices[i];
+      
+      try {
+        const { data, error } = await supabase.functions.invoke("force-charge-invoice", {
+          body: { stripe_invoice_id: invoice.stripe_invoice_id },
+        });
+
+        if (error) {
+          result.failed++;
+        } else if (data?.success) {
+          result.succeeded++;
+          result.totalRecovered += data.amount_paid || 0;
+        } else {
+          result.failed++;
+        }
+      } catch {
+        result.failed++;
+      }
+
+      // Update progress
+      setChargeProgress(Math.round(((i + 1) / chargeableInvoices.length) * 100));
+      
+      // Small delay to avoid rate limiting
+      if (i < chargeableInvoices.length - 1) {
+        await new Promise((resolve) => setTimeout(resolve, 300));
+      }
+    }
+
+    setChargeResult(result);
+    setIsChargingAll(false);
+
+    toast({
+      title: "Cobro masivo completado",
+      description: `✅ ${result.succeeded} cobradas ($${(result.totalRecovered / 100).toFixed(2)}) | ❌ ${result.failed} fallidas`,
+    });
+
+    // Sync to refresh the list and remove charged invoices
+    onSync();
+  };
+
+  const clearResult = () => setChargeResult(null);
+
   return (
     <TooltipProvider>
       <div className="rounded-xl border border-amber-500/20 bg-[#1a1f36] p-6">
@@ -113,17 +182,88 @@ export function PendingInvoicesTable({
               </p>
             </div>
           </div>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={onSync}
-            disabled={isSyncing}
-            className="gap-2 border-amber-500/30 text-amber-400 hover:bg-amber-500/10"
-          >
-            <RefreshCw className={`h-4 w-4 ${isSyncing ? "animate-spin" : ""}`} />
-            Sincronizar
-          </Button>
+          <div className="flex items-center gap-2">
+            {/* Charge All Button */}
+            {invoices.length > 0 && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="default"
+                    size="sm"
+                    onClick={handleChargeAll}
+                    disabled={isChargingAll || isSyncing}
+                    className="gap-2 bg-green-600 hover:bg-green-700 text-white"
+                  >
+                    {isChargingAll ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <PlayCircle className="h-4 w-4" />
+                    )}
+                    Cobrar Todas
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  Intenta cobrar todas las {invoices.length} facturas pendientes
+                </TooltipContent>
+              </Tooltip>
+            )}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={onSync}
+              disabled={isSyncing || isChargingAll}
+              className="gap-2 border-amber-500/30 text-amber-400 hover:bg-amber-500/10"
+            >
+              <RefreshCw className={`h-4 w-4 ${isSyncing ? "animate-spin" : ""}`} />
+              Sincronizar
+            </Button>
+          </div>
         </div>
+
+        {/* Charging All Progress */}
+        {isChargingAll && (
+          <div className="mb-4 p-4 rounded-lg bg-green-500/10 border border-green-500/20">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-sm text-green-400 font-medium">
+                Cobrando facturas...
+              </span>
+              <span className="text-sm text-green-300">{chargeProgress}%</span>
+            </div>
+            <Progress value={chargeProgress} className="h-2" />
+          </div>
+        )}
+
+        {/* Charge Result Summary */}
+        {chargeResult && !isChargingAll && (
+          <div className="mb-4 p-4 rounded-lg bg-gradient-to-r from-green-500/10 to-amber-500/10 border border-green-500/20">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-4">
+                <div className="text-center">
+                  <p className="text-2xl font-bold text-green-400">{chargeResult.succeeded}</p>
+                  <p className="text-xs text-muted-foreground">Cobradas</p>
+                </div>
+                <div className="text-center">
+                  <p className="text-2xl font-bold text-green-300">
+                    ${(chargeResult.totalRecovered / 100).toFixed(2)}
+                  </p>
+                  <p className="text-xs text-muted-foreground">Recuperado</p>
+                </div>
+                <div className="text-center">
+                  <p className="text-2xl font-bold text-red-400">{chargeResult.failed}</p>
+                  <p className="text-xs text-muted-foreground">Fallidas</p>
+                </div>
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={clearResult}
+                className="text-muted-foreground"
+              >
+                Cerrar
+              </Button>
+            </div>
+          </div>
+        )}
 
         {isLoading ? (
           <div className="space-y-3">
@@ -189,7 +329,7 @@ export function PendingInvoicesTable({
                               size="sm"
                               className="gap-2 bg-green-600 hover:bg-green-700 text-white"
                               onClick={() => handleForceCharge(invoice)}
-                              disabled={chargingInvoice === invoice.id}
+                              disabled={chargingInvoice === invoice.id || isChargingAll}
                             >
                               {chargingInvoice === invoice.id ? (
                                 <Loader2 className="h-4 w-4 animate-spin" />
