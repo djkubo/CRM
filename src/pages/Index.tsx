@@ -7,6 +7,7 @@ import { ClientsTable } from "@/components/dashboard/ClientsTable";
 import { TransactionsTable } from "@/components/dashboard/TransactionsTable";
 import { AddClientDialog } from "@/components/dashboard/AddClientDialog";
 import { CSVUploader } from "@/components/dashboard/CSVUploader";
+import { APISyncPanel } from "@/components/dashboard/APISyncPanel";
 import { MetricsCards } from "@/components/dashboard/MetricsCards";
 import { RecoveryTable } from "@/components/dashboard/RecoveryTable";
 import { useClients } from "@/hooks/useClients";
@@ -141,7 +142,10 @@ const Index = () => {
           {/* KPI Metrics Cards */}
           <MetricsCards metrics={metrics} />
 
-          {/* CSV Uploader */}
+          {/* API Sync Panel - Direct from Stripe/PayPal APIs */}
+          <APISyncPanel />
+
+          {/* CSV Uploader - Manual import */}
           <CSVUploader onProcessingComplete={handleProcessingComplete} />
 
           {/* Stats Grid */}
