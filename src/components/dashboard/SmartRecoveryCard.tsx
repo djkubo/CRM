@@ -7,10 +7,13 @@ import {
   XCircle, 
   AlertTriangle,
   Rocket,
-  RefreshCw
+  RefreshCw,
+  StopCircle,
+  Layers
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Progress } from "@/components/ui/progress";
 import {
   Table,
   TableBody,
@@ -30,8 +33,10 @@ export function SmartRecoveryCard() {
   const { 
     isRunning, 
     result, 
-    selectedRange, 
+    selectedRange,
+    progress,
     runRecovery, 
+    cancelRecovery,
     exportToCSV, 
     clearResult 
   } = useSmartRecovery();
@@ -52,11 +57,11 @@ export function SmartRecoveryCard() {
           <div>
             <h2 className="text-xl font-bold text-white">Smart Recovery</h2>
             <p className="text-sm text-muted-foreground">
-              Recuperación automática multi-tarjeta con filtro de seguridad
+              Recuperación automática multi-tarjeta con procesamiento por lotes
             </p>
           </div>
         </div>
-        {result && (
+        {result && !isRunning && (
           <Button
             variant="ghost"
             size="sm"
@@ -94,20 +99,60 @@ export function SmartRecoveryCard() {
         ))}
       </div>
 
-      {/* Loading State */}
+      {/* Loading State with Progress */}
       {isRunning && (
-        <div className="flex flex-col items-center justify-center py-12 text-center">
+        <div className="flex flex-col items-center justify-center py-8 text-center">
           <div className="relative">
             <Loader2 className="h-16 w-16 text-red-500 animate-spin" />
             <Zap className="h-6 w-6 text-yellow-400 absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2" />
           </div>
           <p className="mt-4 text-lg font-medium text-white">Ejecutando Smart Recovery...</p>
-          <p className="text-sm text-muted-foreground">
-            Procesando facturas y probando múltiples tarjetas
-          </p>
-          <p className="text-xs text-amber-400 mt-2">
-            Esto puede tomar varios minutos dependiendo del volumen
-          </p>
+          
+          {/* Progress Info */}
+          {progress && (
+            <div className="mt-4 w-full max-w-md">
+              <div className="flex items-center justify-center gap-2 mb-2">
+                <Layers className="h-4 w-4 text-red-400" />
+                <span className="text-sm text-muted-foreground">{progress.message}</span>
+              </div>
+              <Progress value={undefined} className="h-2 bg-red-500/20" />
+            </div>
+          )}
+
+          {/* Real-time partial results */}
+          {result && (
+            <div className="mt-4 grid grid-cols-3 gap-4 w-full max-w-lg">
+              <div className="text-center p-2 rounded bg-green-500/10">
+                <p className="text-lg font-bold text-green-400">
+                  ${(result.summary.total_recovered / 100).toFixed(0)}
+                </p>
+                <p className="text-xs text-muted-foreground">Recuperado</p>
+              </div>
+              <div className="text-center p-2 rounded bg-red-500/10">
+                <p className="text-lg font-bold text-red-400">
+                  {result.failed.length}
+                </p>
+                <p className="text-xs text-muted-foreground">Fallidos</p>
+              </div>
+              <div className="text-center p-2 rounded bg-amber-500/10">
+                <p className="text-lg font-bold text-amber-400">
+                  {result.summary.batches_processed}
+                </p>
+                <p className="text-xs text-muted-foreground">Lotes</p>
+              </div>
+            </div>
+          )}
+
+          {/* Cancel Button */}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={cancelRecovery}
+            className="mt-6 border-red-500/50 text-red-400 hover:bg-red-500/10"
+          >
+            <StopCircle className="h-4 w-4 mr-2" />
+            Cancelar (mantener resultados parciales)
+          </Button>
         </div>
       )}
 
@@ -115,7 +160,7 @@ export function SmartRecoveryCard() {
       {result && !isRunning && (
         <>
           {/* Summary Cards */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
             <div className="rounded-lg bg-green-500/10 border border-green-500/20 p-4">
               <div className="flex items-center gap-2 mb-2">
                 <CheckCircle2 className="h-5 w-5 text-green-400" />
@@ -152,6 +197,19 @@ export function SmartRecoveryCard() {
               </p>
               <p className="text-xs text-muted-foreground">
                 {result.skipped.length} por suscripción cancelada
+              </p>
+            </div>
+
+            <div className="rounded-lg bg-blue-500/10 border border-blue-500/20 p-4">
+              <div className="flex items-center gap-2 mb-2">
+                <Layers className="h-5 w-5 text-blue-400" />
+                <span className="text-sm font-medium text-blue-400">Lotes</span>
+              </div>
+              <p className="text-2xl font-bold text-blue-300">
+                {result.summary.batches_processed}
+              </p>
+              <p className="text-xs text-muted-foreground">
+                {result.summary.total_invoices} facturas procesadas
               </p>
             </div>
           </div>
@@ -320,8 +378,8 @@ export function SmartRecoveryCard() {
             Selecciona un rango para iniciar
           </p>
           <p className="text-sm text-muted-foreground max-w-md">
-            Smart Recovery buscará facturas abiertas, verificará el estado de suscripción 
-            y probará todas las tarjetas disponibles del cliente automáticamente.
+            Smart Recovery procesa facturas en <strong className="text-white">lotes automáticos</strong> de 15 
+            para evitar timeouts. Puedes cancelar en cualquier momento y conservar los resultados parciales.
           </p>
         </div>
       )}
