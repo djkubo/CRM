@@ -142,19 +142,8 @@ export async function processPayPalCSV(csvText: string): Promise<ProcessingResul
 
   const parsedRows = Array.from(parsedRowsMap.values());
 
-  // Step 2: Get existing transaction IDs in batch to check duplicates in DB
-  const transactionIds = parsedRows.map(r => r.transactionId);
-  const { data: existingTransactions } = await supabase
-    .from('transactions')
-    .select('external_transaction_id')
-    .eq('source', 'paypal')
-    .in('external_transaction_id', transactionIds);
-
-  const existingTxIds = new Set(existingTransactions?.map(t => t.external_transaction_id) || []);
-
-  // Filter out duplicates that already exist in DB
-  const newRows = parsedRows.filter(r => !existingTxIds.has(r.transactionId));
-  result.transactionsSkipped += parsedRows.length - newRows.length;
+  // Step 2: All rows will be processed (upsert mode - no skipping)
+  const newRows = parsedRows;
 
   // Step 3: Get all unique emails and fetch existing clients in batch
   const uniqueEmails = [...new Set(newRows.map(r => r.email))];
@@ -228,8 +217,8 @@ export async function processPayPalCSV(csvText: string): Promise<ProcessingResul
     result.errors.push(...clientBatchResult.allErrors);
   }
 
-  // Step 6: Prepare transactions for batch insert
-  const transactionsToInsert = newRows.map(row => ({
+  // Step 6: Prepare transactions for batch UPSERT (force update existing)
+  const transactionsToUpsert = newRows.map(row => ({
     customer_email: row.email,
     amount: Math.round(row.amount * 100),
     status: row.status,
@@ -242,15 +231,15 @@ export async function processPayPalCSV(csvText: string): Promise<ProcessingResul
     failure_message: row.status === 'failed' ? 'Pago rechazado/declinado por PayPal' : null
   }));
 
-  // Step 7: Batch insert transactions
-  if (transactionsToInsert.length > 0) {
-    const txBatchResult = await processBatches(transactionsToInsert, BATCH_SIZE, async (batch) => {
+  // Step 7: Batch UPSERT transactions (force update on conflict)
+  if (transactionsToUpsert.length > 0) {
+    const txBatchResult = await processBatches(transactionsToUpsert, BATCH_SIZE, async (batch) => {
       const { error } = await supabase
         .from('transactions')
-        .insert(batch);
+        .upsert(batch, { onConflict: 'stripe_payment_intent_id', ignoreDuplicates: false });
       
       if (error) {
-        return { success: 0, errors: [`Error batch insert transactions: ${error.message}`] };
+        return { success: 0, errors: [`Error batch upsert transactions: ${error.message}`] };
       }
       return { success: batch.length, errors: [] };
     });
@@ -685,17 +674,8 @@ export async function processPaymentCSV(
 
   const parsedRows = Array.from(parsedRowsMap.values());
 
-  // Step 2: Check for existing transactions in DB
-  const transactionIds = parsedRows.map(r => r.transactionId);
-  const { data: existingTransactions } = await supabase
-    .from('transactions')
-    .select('external_transaction_id')
-    .eq('source', 'stripe')
-    .in('external_transaction_id', transactionIds);
-
-  const existingTxIds = new Set(existingTransactions?.map(t => t.external_transaction_id) || []);
-  const newRows = parsedRows.filter(r => !existingTxIds.has(r.transactionId));
-  result.transactionsSkipped += parsedRows.length - newRows.length;
+  // Step 2: All rows will be processed (upsert mode - no skipping)
+  const newRows = parsedRows;
 
   // Step 3: Get existing clients in batch
   const uniqueEmails = [...new Set(newRows.map(r => r.email))];
@@ -769,8 +749,8 @@ export async function processPaymentCSV(
     result.errors.push(...clientBatchResult.allErrors);
   }
 
-  // Step 6: Prepare transactions for batch insert
-  const transactionsToInsert = newRows.map(row => ({
+  // Step 6: Prepare transactions for batch UPSERT (force update existing)
+  const transactionsToUpsert = newRows.map(row => ({
     customer_email: row.email,
     amount: Math.round(row.amount * 100),
     status: row.status,
@@ -782,15 +762,15 @@ export async function processPaymentCSV(
     failure_message: row.status === 'failed' ? 'Payment failed' : null
   }));
 
-  // Step 7: Batch insert transactions
-  if (transactionsToInsert.length > 0) {
-    const txBatchResult = await processBatches(transactionsToInsert, BATCH_SIZE, async (batch) => {
+  // Step 7: Batch UPSERT transactions (force update on conflict)
+  if (transactionsToUpsert.length > 0) {
+    const txBatchResult = await processBatches(transactionsToUpsert, BATCH_SIZE, async (batch) => {
       const { error } = await supabase
         .from('transactions')
-        .insert(batch);
+        .upsert(batch, { onConflict: 'stripe_payment_intent_id', ignoreDuplicates: false });
       
       if (error) {
-        return { success: 0, errors: [`Error batch insert transactions: ${error.message}`] };
+        return { success: 0, errors: [`Error batch upsert transactions: ${error.message}`] };
       }
       return { success: batch.length, errors: [] };
     });
