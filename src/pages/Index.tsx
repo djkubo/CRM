@@ -12,9 +12,11 @@ import { MetricsCards } from "@/components/dashboard/MetricsCards";
 import { RecoveryTable } from "@/components/dashboard/RecoveryTable";
 import { AnalyticsPanel } from "@/components/dashboard/analytics/AnalyticsPanel";
 import { AIInsightsWidget } from "@/components/dashboard/AIInsightsWidget";
+import { PendingInvoicesTable } from "@/components/dashboard/PendingInvoicesTable";
 import { useClients } from "@/hooks/useClients";
 import { useTransactions } from "@/hooks/useTransactions";
 import { useMetrics } from "@/hooks/useMetrics";
+import { useInvoices } from "@/hooks/useInvoices";
 import { useAuth } from "@/hooks/useAuth";
 import { Users, UserCheck, UserX, Clock, LogOut, BarChart3 } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -30,6 +32,14 @@ const Index = () => {
   const { clients, isLoading, addClient, deleteClient, refetch: refetchClients, totalCount, page, setPage, totalPages } = useClients();
   const { transactions, isLoading: isLoadingTransactions, syncStripe, refetch: refetchTransactions } = useTransactions();
   const { metrics, isLoading: _isLoadingMetrics, refetch: refetchMetrics } = useMetrics();
+  const { 
+    invoices, 
+    isLoading: isLoadingInvoices, 
+    syncInvoices, 
+    totalPending, 
+    totalNext72h, 
+    invoicesNext72h 
+  } = useInvoices();
   const { signOut, user } = useAuth();
   const { toast } = useToast();
 
@@ -163,8 +173,24 @@ const Index = () => {
         </div>
       </div>
 
-      {/* KPI Metrics Cards */}
-      <MetricsCards metrics={metrics} />
+      {/* KPI Metrics Cards with Incoming Revenue */}
+      <MetricsCards 
+        metrics={metrics} 
+        invoiceData={{
+          totalNext72h,
+          totalPending,
+          invoiceCount: invoicesNext72h.length,
+          isLoading: isLoadingInvoices,
+        }}
+      />
+
+      {/* Pending Invoices Table - Cash Flow */}
+      <PendingInvoicesTable
+        invoices={invoices}
+        isLoading={isLoadingInvoices}
+        onSync={() => syncInvoices.mutate()}
+        isSyncing={syncInvoices.isPending}
+      />
 
       {/* AI Insights Widget - El Oráculo */}
       <AIInsightsWidget />

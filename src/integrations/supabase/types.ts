@@ -121,6 +121,51 @@ export type Database = {
         }
         Relationships: []
       }
+      invoices: {
+        Row: {
+          amount_due: number
+          created_at: string | null
+          currency: string | null
+          customer_email: string | null
+          hosted_invoice_url: string | null
+          id: string
+          next_payment_attempt: string | null
+          period_end: string | null
+          status: string
+          stripe_customer_id: string | null
+          stripe_invoice_id: string
+          updated_at: string | null
+        }
+        Insert: {
+          amount_due: number
+          created_at?: string | null
+          currency?: string | null
+          customer_email?: string | null
+          hosted_invoice_url?: string | null
+          id?: string
+          next_payment_attempt?: string | null
+          period_end?: string | null
+          status: string
+          stripe_customer_id?: string | null
+          stripe_invoice_id: string
+          updated_at?: string | null
+        }
+        Update: {
+          amount_due?: number
+          created_at?: string | null
+          currency?: string | null
+          customer_email?: string | null
+          hosted_invoice_url?: string | null
+          id?: string
+          next_payment_attempt?: string | null
+          period_end?: string | null
+          status?: string
+          stripe_customer_id?: string | null
+          stripe_invoice_id?: string
+          updated_at?: string | null
+        }
+        Relationships: []
+      }
       transactions: {
         Row: {
           amount: number
