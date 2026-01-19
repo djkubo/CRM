@@ -29,23 +29,53 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
   const [isProcessing, setIsProcessing] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const detectFileType = (fileName: string): 'web' | 'stripe' | 'paypal' | 'subscriptions' => {
-    const lowerName = fileName.toLowerCase();
+  const detectFileType = async (file: File): Promise<'web' | 'stripe' | 'paypal' | 'subscriptions'> => {
+    const lowerName = file.name.toLowerCase();
+    
+    // First check file name patterns
     if (lowerName.includes('download') || lowerName.includes('paypal')) return 'paypal';
-    if (lowerName.includes('stripe')) return 'stripe';
     if (lowerName.includes('subscription') || lowerName.includes('suscripcion')) return 'subscriptions';
-    if (lowerName.includes('user') || lowerName.includes('usuario')) return 'web';
+    
+    // Read first line to detect by columns
+    try {
+      const text = await file.text();
+      const firstLine = text.split('\n')[0].toLowerCase();
+      
+      // Stripe detection: has Amount, Created date columns
+      if (firstLine.includes('amount') && firstLine.includes('created date')) return 'stripe';
+      if (firstLine.includes('created (utc)') || firstLine.includes('payment_intent')) return 'stripe';
+      
+      // PayPal detection: has "correo electrónico del remitente" column
+      if (firstLine.includes('correo electrónico del remitente') || firstLine.includes('bruto')) return 'paypal';
+      
+      // Web users detection: has Role, Subscription Plan columns
+      if (firstLine.includes('role') || firstLine.includes('subscription plan')) return 'web';
+      
+      // Subscriptions detection
+      if (firstLine.includes('plan name') || firstLine.includes('status')) return 'subscriptions';
+      
+      // Default fallback based on filename
+      if (lowerName.includes('stripe') || lowerName.includes('payment') || lowerName.includes('unified')) return 'stripe';
+      if (lowerName.includes('user') || lowerName.includes('usuario')) return 'web';
+    } catch (e) {
+      console.error('Error reading file for detection:', e);
+    }
+    
     return 'web';
   };
 
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFiles = Array.from(e.target.files || []);
-    const newFiles: CSVFile[] = selectedFiles.map(file => ({
-      name: file.name,
-      type: detectFileType(file.name),
-      file,
-      status: 'pending'
-    }));
+    
+    const newFiles: CSVFile[] = await Promise.all(
+      selectedFiles.map(async (file) => ({
+        name: file.name,
+        type: await detectFileType(file),
+        file,
+        status: 'pending' as const
+      }))
+    );
+    
     setFiles(prev => [...prev, ...newFiles]);
     
     if (fileInputRef.current) {

@@ -24,6 +24,9 @@ interface ClientsTableProps {
   isLoading?: boolean;
   onEdit?: (client: Client) => void;
   onDelete?: (email: string) => void;
+  page?: number;
+  totalPages?: number;
+  onPageChange?: (page: number) => void;
 }
 
 const getStatusBadge = (status: string | null) => {
@@ -44,7 +47,7 @@ const getStatusBadge = (status: string | null) => {
   );
 };
 
-export function ClientsTable({ clients, isLoading, onEdit, onDelete }: ClientsTableProps) {
+export function ClientsTable({ clients, isLoading, onEdit, onDelete, page = 0, totalPages = 1, onPageChange }: ClientsTableProps) {
   if (isLoading) {
     return (
       <div className="rounded-xl border border-border bg-card">
@@ -157,6 +160,33 @@ export function ClientsTable({ clients, isLoading, onEdit, onDelete }: ClientsTa
           </tbody>
         </table>
       </div>
+      
+      {/* Pagination */}
+      {totalPages > 1 && onPageChange && (
+        <div className="flex items-center justify-between px-6 py-4 border-t border-border">
+          <p className="text-sm text-muted-foreground">
+            Página {page + 1} de {totalPages}
+          </p>
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => onPageChange(page - 1)}
+              disabled={page === 0}
+            >
+              Anterior
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => onPageChange(page + 1)}
+              disabled={page >= totalPages - 1}
+            >
+              Siguiente
+            </Button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

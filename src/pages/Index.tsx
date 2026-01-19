@@ -19,18 +19,21 @@ const Index = () => {
   const [searchQuery, setSearchQuery] = useState("");
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   
-  const { clients, isLoading, addClient, deleteClient, refetch: refetchClients } = useClients();
+  const { clients, isLoading, addClient, deleteClient, refetch: refetchClients, totalCount, page, setPage, totalPages } = useClients();
   const { transactions, isLoading: isLoadingTransactions, syncStripe, refetch: refetchTransactions } = useTransactions();
   const { metrics, isLoading: isLoadingMetrics, refetch: refetchMetrics } = useMetrics();
 
   const stats = useMemo(() => {
-    const total = clients.length;
+    // Use totalCount from the count query (not clients.length which is just current page)
+    const total = totalCount;
+    // For active/pending/inactive, we show from current page as approximation
+    // In production, you'd want separate count queries for each status
     const active = clients.filter(c => c.status?.toLowerCase() === "active").length;
     const pending = clients.filter(c => c.status?.toLowerCase() === "pending").length;
     const inactive = clients.filter(c => c.status?.toLowerCase() === "inactive").length;
     
     return { total, active, pending, inactive };
-  }, [clients]);
+  }, [clients, totalCount]);
 
   const filteredClients = useMemo(() => {
     if (!searchQuery) return clients;
@@ -144,6 +147,9 @@ const Index = () => {
                   clients={filteredClients}
                   isLoading={isLoading}
                   onDelete={(email) => deleteClient.mutate(email)}
+                  page={page}
+                  totalPages={totalPages}
+                  onPageChange={setPage}
                 />
               </div>
             </TabsContent>
