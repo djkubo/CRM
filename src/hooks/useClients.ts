@@ -1,4 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
 
@@ -11,22 +12,50 @@ export interface Client {
   created_at: string | null;
 }
 
+const PAGE_SIZE = 50;
+
 export function useClients() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
+  const [page, setPage] = useState(0);
 
-  const { data: clients = [], isLoading, error, refetch } = useQuery({
-    queryKey: ["clients"],
+  // Query for total count (exact count without downloading data)
+  const { data: totalCount = 0, refetch: refetchCount } = useQuery({
+    queryKey: ["clients-count"],
     queryFn: async () => {
+      const { count, error } = await supabase
+        .from("clients")
+        .select("*", { count: "exact", head: true });
+
+      if (error) throw error;
+      return count || 0;
+    },
+  });
+
+  // Query for paginated clients
+  const { data: clients = [], isLoading, error, refetch: refetchClients } = useQuery({
+    queryKey: ["clients", page],
+    queryFn: async () => {
+      const from = page * PAGE_SIZE;
+      const to = from + PAGE_SIZE - 1;
+      
       const { data, error } = await supabase
         .from("clients")
         .select("*")
-        .order("created_at", { ascending: false });
+        .order("created_at", { ascending: false })
+        .range(from, to);
 
       if (error) throw error;
       return data as Client[];
     },
   });
+
+  const refetch = () => {
+    refetchCount();
+    refetchClients();
+  };
+
+  const totalPages = Math.ceil(totalCount / PAGE_SIZE);
 
   const addClient = useMutation({
     mutationFn: async (client: Omit<Client, "last_sync" | "created_at">) => {
@@ -87,5 +116,10 @@ export function useClients() {
     addClient,
     deleteClient,
     refetch,
+    totalCount,
+    page,
+    setPage,
+    totalPages,
+    pageSize: PAGE_SIZE,
   };
 }
