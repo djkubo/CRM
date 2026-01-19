@@ -14,3 +14,6 @@ verify_jwt = false
 
 [functions.ses-webhook]
 verify_jwt = false
+
+[functions.analyze-business]
+verify_jwt = false
