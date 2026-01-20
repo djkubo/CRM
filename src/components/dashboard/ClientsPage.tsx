@@ -18,7 +18,7 @@ import { AddClientDialog } from './AddClientDialog';
 import { useClients, Client } from '@/hooks/useClients';
 import { useMetrics } from '@/hooks/useMetrics';
 
-type ClientFilter = 'all' | 'active' | 'trial' | 'past_due' | 'canceled' | 'vip' | 'no_phone';
+type ClientFilter = 'all' | 'customer' | 'lead' | 'trial' | 'past_due' | 'churn' | 'vip' | 'no_phone';
 
 export function ClientsPage() {
   const { 
@@ -73,8 +73,11 @@ export function ClientsPage() {
 
     // Status filter
     switch (statusFilter) {
-      case 'active':
-        result = result.filter((c: Client) => c.status?.toLowerCase() === 'active');
+      case 'customer':
+        result = result.filter((c: Client) => c.lifecycle_stage === 'CUSTOMER');
+        break;
+      case 'lead':
+        result = result.filter((c: Client) => c.lifecycle_stage === 'LEAD');
         break;
       case 'trial':
         result = result.filter((c: Client) => c.lifecycle_stage === 'TRIAL');
@@ -82,7 +85,7 @@ export function ClientsPage() {
       case 'past_due':
         result = result.filter((c: Client) => c.is_delinquent);
         break;
-      case 'canceled':
+      case 'churn':
         result = result.filter((c: Client) => c.lifecycle_stage === 'CHURN');
         break;
       case 'vip':
@@ -109,10 +112,11 @@ export function ClientsPage() {
 
   const filterCounts = useMemo(() => ({
     all: clients.length,
-    active: clients.filter((c: Client) => c.status?.toLowerCase() === 'active').length,
+    customer: clients.filter((c: Client) => c.lifecycle_stage === 'CUSTOMER').length,
+    lead: clients.filter((c: Client) => c.lifecycle_stage === 'LEAD').length,
     trial: clients.filter((c: Client) => c.lifecycle_stage === 'TRIAL').length,
     past_due: clients.filter((c: Client) => c.is_delinquent).length,
-    canceled: clients.filter((c: Client) => c.lifecycle_stage === 'CHURN').length,
+    churn: clients.filter((c: Client) => c.lifecycle_stage === 'CHURN').length,
     vip: clients.filter((c: Client) => (c.total_spend || 0) >= VIP_THRESHOLD).length,
     no_phone: clients.filter((c: Client) => !c.phone).length,
   }), [clients]);
@@ -157,10 +161,21 @@ export function ClientsPage() {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">Todos ({filterCounts.all})</SelectItem>
-              <SelectItem value="active">Activos ({filterCounts.active})</SelectItem>
-              <SelectItem value="trial">Trial ({filterCounts.trial})</SelectItem>
-              <SelectItem value="past_due">Past Due ({filterCounts.past_due})</SelectItem>
-              <SelectItem value="canceled">Cancelados ({filterCounts.canceled})</SelectItem>
+              <SelectItem value="customer">
+                <span className="text-emerald-400">● Clientes ({filterCounts.customer})</span>
+              </SelectItem>
+              <SelectItem value="lead">
+                <span className="text-gray-400">● Leads ({filterCounts.lead})</span>
+              </SelectItem>
+              <SelectItem value="trial">
+                <span className="text-purple-400">● Trial ({filterCounts.trial})</span>
+              </SelectItem>
+              <SelectItem value="past_due">
+                <span className="text-orange-400">● Morosos ({filterCounts.past_due})</span>
+              </SelectItem>
+              <SelectItem value="churn">
+                <span className="text-red-400">● Cancelados ({filterCounts.churn})</span>
+              </SelectItem>
               <SelectItem value="vip">
                 <div className="flex items-center gap-2">
                   <Crown className="h-3 w-3 text-yellow-500" />

@@ -44,16 +44,48 @@ interface ClientsTableProps {
 
 const VIP_THRESHOLD = 100000; // $1,000 USD in cents
 
-const getStatusBadge = (status: string | null) => {
-  const statusLower = status?.toLowerCase() || "unknown";
+// Lifecycle stage badge (más informativo que status)
+const getLifecycleBadge = (stage: string | null, isDelinquent?: boolean) => {
+  if (isDelinquent) {
+    return (
+      <Badge variant="outline" className="text-xs font-medium border bg-red-500/10 text-red-400 border-red-500/30">
+        <AlertTriangle className="h-3 w-3 mr-1" />
+        Moroso
+      </Badge>
+    );
+  }
+
+  const stageLower = stage?.toUpperCase() || "UNKNOWN";
   
-  const statusConfig: Record<string, { label: string; className: string }> = {
-    active: { label: "Activo", className: "status-active" },
-    pending: { label: "Pendiente", className: "status-pending" },
-    inactive: { label: "Inactivo", className: "status-inactive" },
+  const stageConfig: Record<string, { label: string; className: string; icon?: string }> = {
+    LEAD: { label: "Lead", className: "bg-gray-500/10 text-gray-400 border-gray-500/30" },
+    TRIAL: { label: "Trial", className: "bg-purple-500/10 text-purple-400 border-purple-500/30" },
+    CUSTOMER: { label: "Cliente", className: "bg-emerald-500/10 text-emerald-400 border-emerald-500/30" },
+    CHURN: { label: "Cancelado", className: "bg-red-500/10 text-red-400 border-red-500/30" },
   };
 
-  const config = statusConfig[statusLower] || { label: status || "Desconocido", className: "bg-muted text-muted-foreground" };
+  const config = stageConfig[stageLower] || { label: stage || "Desconocido", className: "bg-muted text-muted-foreground" };
+
+  return (
+    <Badge variant="outline" className={cn("text-xs font-medium border", config.className)}>
+      {config.label}
+    </Badge>
+  );
+};
+
+// Payment status badge
+const getPaymentStatusBadge = (paymentStatus: string | null, isDelinquent?: boolean) => {
+  if (!paymentStatus || paymentStatus === 'none') return null;
+  
+  const statusConfig: Record<string, { label: string; className: string }> = {
+    active: { label: "Pagando", className: "bg-emerald-500/10 text-emerald-400 border-emerald-500/30" },
+    past_due: { label: "Atrasado", className: "bg-orange-500/10 text-orange-400 border-orange-500/30" },
+    failed: { label: "Fallido", className: "bg-red-500/10 text-red-400 border-red-500/30" },
+    canceled: { label: "Cancelado", className: "bg-gray-500/10 text-gray-400 border-gray-500/30" },
+  };
+
+  const config = statusConfig[paymentStatus] || null;
+  if (!config) return null;
 
   return (
     <Badge variant="outline" className={cn("text-xs font-medium border", config.className)}>
@@ -317,7 +349,10 @@ export function ClientsTable({
                       </div>
                     </td>
                     <td className="px-6 py-4">
-                      {getStatusBadge(client.status)}
+                      <div className="flex flex-col gap-1">
+                        {getLifecycleBadge(client.lifecycle_stage, client.is_delinquent)}
+                        {getPaymentStatusBadge(client.payment_status, client.is_delinquent)}
+                      </div>
                     </td>
                     <td className="px-6 py-4 text-sm text-muted-foreground">
                       {client.last_sync
