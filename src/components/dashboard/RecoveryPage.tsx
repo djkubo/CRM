@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react';
-import { MessageCircle, Phone, AlertTriangle, CheckCircle, XCircle, Clock, Send, Filter, Smartphone } from 'lucide-react';
+import { MessageCircle, Phone, AlertTriangle, CheckCircle, XCircle, Clock, Send, Filter, Smartphone, Facebook } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
@@ -118,6 +118,45 @@ export function RecoveryPage() {
     }
 
     toast.success('SMS enviado correctamente', { id: 'sms-sending' });
+    
+    if (getStage(client.email) === 'pending') {
+      setStage(client.email, 'contacted');
+    }
+  };
+
+  const handleManyChat = async (client: RecoveryClient, template: 'friendly' | 'urgent' | 'final') => {
+    // Get client ID
+    const { data: clientData } = await supabase
+      .from('clients')
+      .select('id')
+      .eq('email', client.email)
+      .single();
+
+    toast.loading('Enviando mensaje por ManyChat...', { id: 'manychat-sending' });
+
+    const { data, error } = await supabase.functions.invoke('send-manychat', {
+      body: {
+        email: client.email,
+        phone: client.phone,
+        template,
+        client_name: client.full_name || 'Cliente',
+        amount: Math.round(client.amount * 100), // Convert to cents
+        client_id: clientData?.id,
+        tag: 'payment_failed',
+      }
+    });
+
+    if (error) {
+      toast.error('Error enviando mensaje: ' + error.message, { id: 'manychat-sending' });
+      return;
+    }
+
+    if (data?.error) {
+      toast.error(data.error + (data.details ? ': ' + data.details : ''), { id: 'manychat-sending' });
+      return;
+    }
+
+    toast.success('Mensaje ManyChat enviado', { id: 'manychat-sending' });
     
     if (getStage(client.email) === 'pending') {
       setStage(client.email, 'contacted');
@@ -281,63 +320,85 @@ export function RecoveryPage() {
                       )}
                     </TableCell>
                     <TableCell className="text-right">
-                      {client.phone ? (
-                        <div className="flex items-center justify-end gap-2">
-                          {/* SMS Button */}
-                          <DropdownMenu>
-                            <DropdownMenuTrigger asChild>
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                className="gap-2 border-blue-500/30 text-blue-400 hover:bg-blue-500/10"
-                              >
-                                <Smartphone className="h-4 w-4" />
-                                SMS
-                              </Button>
-                            </DropdownMenuTrigger>
-                            <DropdownMenuContent align="end">
-                              <DropdownMenuItem onClick={() => handleSMS(client, 'friendly')}>
-                                😊 Mensaje Amigable
-                              </DropdownMenuItem>
-                              <DropdownMenuItem onClick={() => handleSMS(client, 'urgent')}>
-                                ⚠️ Mensaje Urgente
-                              </DropdownMenuItem>
-                              <DropdownMenuItem onClick={() => handleSMS(client, 'final')}>
-                                🚨 Último Aviso
-                              </DropdownMenuItem>
-                            </DropdownMenuContent>
-                          </DropdownMenu>
+                      <div className="flex items-center justify-end gap-2 flex-wrap">
+                        {/* ManyChat Button */}
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="gap-2 border-[#0084FF]/30 text-[#0084FF] hover:bg-[#0084FF]/10"
+                            >
+                              <Facebook className="h-4 w-4" />
+                              Messenger
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end">
+                            <DropdownMenuItem onClick={() => handleManyChat(client, 'friendly')}>
+                              😊 Mensaje Amigable
+                            </DropdownMenuItem>
+                            <DropdownMenuItem onClick={() => handleManyChat(client, 'urgent')}>
+                              ⚠️ Mensaje Urgente
+                            </DropdownMenuItem>
+                            <DropdownMenuItem onClick={() => handleManyChat(client, 'final')}>
+                              🚨 Último Aviso
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
 
-                          {/* WhatsApp Button */}
-                          <DropdownMenu>
-                            <DropdownMenuTrigger asChild>
-                              <Button
-                                size="sm"
-                                className="gap-2 bg-[#25D366] hover:bg-[#1da851] text-white"
-                              >
-                                <MessageCircle className="h-4 w-4" />
-                                WhatsApp
-                              </Button>
-                            </DropdownMenuTrigger>
-                            <DropdownMenuContent align="end">
-                              <DropdownMenuItem onClick={() => handleWhatsApp(client, 'friendly')}>
-                                😊 Mensaje Amigable
-                              </DropdownMenuItem>
-                              <DropdownMenuItem onClick={() => handleWhatsApp(client, 'urgent')}>
-                                ⚠️ Mensaje Urgente
-                              </DropdownMenuItem>
-                              <DropdownMenuItem onClick={() => handleWhatsApp(client, 'final')}>
-                                🚨 Último Aviso
-                              </DropdownMenuItem>
-                            </DropdownMenuContent>
-                          </DropdownMenu>
-                        </div>
-                      ) : (
-                        <Button size="sm" variant="outline" disabled>
-                          <Phone className="h-4 w-4 mr-2" />
-                          Sin teléfono
-                        </Button>
-                      )}
+                        {client.phone && (
+                          <>
+                            {/* SMS Button */}
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="gap-2 border-blue-500/30 text-blue-400 hover:bg-blue-500/10"
+                                >
+                                  <Smartphone className="h-4 w-4" />
+                                  SMS
+                                </Button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="end">
+                                <DropdownMenuItem onClick={() => handleSMS(client, 'friendly')}>
+                                  😊 Mensaje Amigable
+                                </DropdownMenuItem>
+                                <DropdownMenuItem onClick={() => handleSMS(client, 'urgent')}>
+                                  ⚠️ Mensaje Urgente
+                                </DropdownMenuItem>
+                                <DropdownMenuItem onClick={() => handleSMS(client, 'final')}>
+                                  🚨 Último Aviso
+                                </DropdownMenuItem>
+                              </DropdownMenuContent>
+                            </DropdownMenu>
+
+                            {/* WhatsApp Button */}
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <Button
+                                  size="sm"
+                                  className="gap-2 bg-[#25D366] hover:bg-[#1da851] text-white"
+                                >
+                                  <MessageCircle className="h-4 w-4" />
+                                  WhatsApp
+                                </Button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="end">
+                                <DropdownMenuItem onClick={() => handleWhatsApp(client, 'friendly')}>
+                                  😊 Mensaje Amigable
+                                </DropdownMenuItem>
+                                <DropdownMenuItem onClick={() => handleWhatsApp(client, 'urgent')}>
+                                  ⚠️ Mensaje Urgente
+                                </DropdownMenuItem>
+                                <DropdownMenuItem onClick={() => handleWhatsApp(client, 'final')}>
+                                  🚨 Último Aviso
+                                </DropdownMenuItem>
+                              </DropdownMenuContent>
+                            </DropdownMenu>
+                          </>
+                        )}
+                      </div>
                     </TableCell>
                   </TableRow>
                 );
