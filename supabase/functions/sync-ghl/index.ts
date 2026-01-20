@@ -168,11 +168,21 @@ async function runGHLSync(
         }
       }
 
-      // Update progress
+      // Update progress - ALWAYS update cursor from the API response, not from local contacts
+      // The GHL API uses 'meta.nextPageUrl' or returns fewer contacts when no more data
+      const newCursor = (contacts[contacts.length - 1] as { id: string })?.id;
+      
+      // Only continue if we got a full batch AND cursor actually changed
       if (contacts.length < batchSize) {
         hasMore = false;
+        console.log(`[sync-ghl] Last page reached (got ${contacts.length} < ${batchSize})`);
+      } else if (newCursor && newCursor !== cursor) {
+        cursor = newCursor;
+        console.log(`[sync-ghl] Cursor advanced to: ${cursor}`);
       } else {
-        cursor = (contacts[contacts.length - 1] as { id: string })?.id;
+        // Cursor didn't change or is invalid - we're stuck, stop to prevent infinite loop
+        hasMore = false;
+        console.warn(`[sync-ghl] Cursor stuck at ${cursor}, stopping to prevent infinite loop`);
       }
 
       // Save checkpoint every page
