@@ -238,17 +238,38 @@ export function APISyncPanel() {
     setGhlResult(null);
     
     try {
-      const data = await invokeWithAdminKey('sync-ghl', { dry_run: false });
-      
-      setGhlResult({
-        success: true,
-        total_fetched: data.stats?.total_fetched || 0,
-        total_inserted: data.stats?.total_inserted || 0,
-        total_updated: data.stats?.total_updated || 0,
-        total_conflicts: data.stats?.total_conflicts || 0
+      // GHL runs in background mode - increase batch_size for 150k+ contacts
+      const data = await invokeWithAdminKey('sync-ghl', { 
+        dry_run: false,
+        batch_size: 100, // Bigger batches for 150k contacts
+        background: true 
       });
       
-      toast.success(`GoHighLevel: ${data.stats?.total_fetched || 0} contactos sincronizados (${data.stats?.total_inserted || 0} nuevos, ${data.stats?.total_updated || 0} actualizados)`);
+      // Background mode returns sync_run_id, not immediate results
+      if (data.mode === 'background' && data.sync_run_id) {
+        setGhlResult({
+          success: true,
+          message: `Sincronización iniciada en segundo plano. Revisa el banner de progreso.`
+        });
+        toast.success(`GoHighLevel: Sincronización iniciada. Con 150k+ contactos puede tomar 30-60 minutos.`);
+      } else if (data.stats) {
+        // Foreground mode (shouldn't happen but handle it)
+        setGhlResult({
+          success: true,
+          total_fetched: data.stats?.total_fetched || 0,
+          total_inserted: data.stats?.total_inserted || 0,
+          total_updated: data.stats?.total_updated || 0,
+          total_conflicts: data.stats?.total_conflicts || 0
+        });
+        toast.success(`GoHighLevel: ${data.stats?.total_fetched || 0} contactos sincronizados`);
+      } else {
+        // Generic success
+        setGhlResult({
+          success: true,
+          message: data.message || 'Sincronización iniciada'
+        });
+        toast.success(data.message || 'GoHighLevel: Sincronización iniciada en segundo plano');
+      }
       
       // Refresh clients data
       queryClient.invalidateQueries({ queryKey: ['clients'] });
@@ -525,8 +546,10 @@ export function APISyncPanel() {
                 <h4 className="font-medium text-white">GoHighLevel</h4>
                 <p className="text-xs text-gray-400">
                   {ghlResult?.success 
-                    ? `${ghlResult.total_fetched} contactos (${ghlResult.total_inserted} nuevos, ${ghlResult.total_updated} actualizados)`
-                    : 'Sincroniza todos tus contactos de GHL'
+                    ? (ghlResult.message || `${ghlResult.total_fetched?.toLocaleString() || 0} contactos (${ghlResult.total_inserted?.toLocaleString() || 0} nuevos, ${ghlResult.total_updated?.toLocaleString() || 0} actualizados)`)
+                    : ghlResult?.error
+                      ? ghlResult.error
+                      : 'Sincroniza todos tus contactos de GHL (150k+ soportado)'
                   }
                 </p>
               </div>
