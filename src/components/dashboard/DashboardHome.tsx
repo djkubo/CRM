@@ -17,17 +17,68 @@ import {
   FileText,
   ChevronRight,
   CheckCircle,
-  CreditCard
+  CreditCard,
+  ChevronDown
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import { useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import { formatDistanceToNow, addDays, addHours } from 'date-fns';
+import { formatDistanceToNow, addDays, addHours, subDays, subMonths, subYears } from 'date-fns';
 import { es } from 'date-fns/locale';
 import { openWhatsApp, getRecoveryMessage } from './RecoveryTable';
 import type { RecoveryClient } from '@/lib/csvProcessor';
 import { invokeWithAdminKey } from '@/lib/adminApi';
+
+type SyncRange = 'today' | '7d' | 'month' | 'full';
+
+const syncRangeLabels: Record<SyncRange, string> = {
+  today: 'Hoy',
+  '7d': '7 días',
+  month: 'Mes',
+  full: 'Todo el historial',
+};
+
+function getSyncDateRange(range: SyncRange): { startDate: Date; endDate: Date; fetchAll: boolean; maxPages: number } {
+  const now = new Date();
+  
+  switch (range) {
+    case 'today':
+      return { 
+        startDate: subDays(now, 1), 
+        endDate: now, 
+        fetchAll: true,
+        maxPages: 5 
+      };
+    case '7d':
+      return { 
+        startDate: subDays(now, 7), 
+        endDate: now, 
+        fetchAll: true,
+        maxPages: 20 
+      };
+    case 'month':
+      return { 
+        startDate: subMonths(now, 1), 
+        endDate: now, 
+        fetchAll: true,
+        maxPages: 50 
+      };
+    case 'full':
+      return { 
+        startDate: subYears(now, 3), 
+        endDate: now, 
+        fetchAll: true,
+        maxPages: 100 
+      };
+  }
+}
 
 interface DashboardHomeProps {
   lastSync?: Date | null;
@@ -51,23 +102,25 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
     month: 'Mes',
   };
 
-  const handleSyncAll = async () => {
+  const handleSyncAll = async (range: SyncRange = 'today') => {
     setIsSyncing(true);
     setSyncStatus(null);
     setSyncProgress('');
     
-    const now = new Date();
-    const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    const { startDate, endDate, fetchAll, maxPages } = getSyncDateRange(range);
     const results = { stripe: 0, paypal: 0, subs: 0, invoices: 0, errors: 0 };
+
+    toast.info(`Sincronizando ${syncRangeLabels[range]}...`);
 
     try {
       // 1. Stripe
       setSyncProgress('Stripe...');
       try {
         const stripeData = await invokeWithAdminKey('fetch-stripe', { 
-          fetchAll: true, 
-          startDate: yesterday.toISOString(), 
-          endDate: now.toISOString() 
+          fetchAll, 
+          startDate: startDate.toISOString(), 
+          endDate: endDate.toISOString(),
+          maxPages
         });
         results.stripe = stripeData?.synced_transactions || 0;
       } catch (e) {
@@ -79,9 +132,9 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
       setSyncProgress('PayPal...');
       try {
         const paypalData = await invokeWithAdminKey('fetch-paypal', { 
-          fetchAll: true, 
-          startDate: yesterday.toISOString(), 
-          endDate: now.toISOString() 
+          fetchAll, 
+          startDate: startDate.toISOString(), 
+          endDate: endDate.toISOString() 
         });
         results.paypal = paypalData?.synced_transactions || 0;
       } catch (e) {
@@ -113,7 +166,7 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
       setSyncProgress('');
 
       const totalTx = results.stripe + results.paypal;
-      toast.success(`Sync completo: ${totalTx} tx, ${results.subs} subs, ${results.invoices} facturas${results.errors > 0 ? ` (${results.errors} errores)` : ''}`);
+      toast.success(`✅ ${syncRangeLabels[range]}: ${totalTx} tx, ${results.subs} subs, ${results.invoices} facturas${results.errors > 0 ? ` (${results.errors} errores)` : ''}`);
       
       // Invalidate all queries
       queryClient.invalidateQueries({ queryKey: ['transactions'] });
@@ -267,24 +320,46 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
             )}
           </div>
 
-          {/* Sync All button */}
-          <Button
-            onClick={handleSyncAll}
-            disabled={isSyncing}
-            className="gap-2 bg-gradient-to-r from-purple-600 to-yellow-600 hover:from-purple-700 hover:to-yellow-700 min-w-[120px]"
-          >
-            {isSyncing ? (
-              <>
-                <Loader2 className="h-4 w-4 animate-spin" />
-                {syncProgress || 'Syncing...'}
-              </>
-            ) : (
-              <>
-                <RefreshCw className="h-4 w-4" />
-                Sync All
-              </>
-            )}
-          </Button>
+          {/* Sync All Dropdown */}
+          {isSyncing ? (
+            <Button
+              disabled
+              className="gap-2 bg-gradient-to-r from-purple-600 to-yellow-600 min-w-[140px]"
+            >
+              <Loader2 className="h-4 w-4 animate-spin" />
+              {syncProgress || 'Syncing...'}
+            </Button>
+          ) : (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  className="gap-2 bg-gradient-to-r from-purple-600 to-yellow-600 hover:from-purple-700 hover:to-yellow-700 min-w-[140px]"
+                >
+                  <RefreshCw className="h-4 w-4" />
+                  Sync All
+                  <ChevronDown className="h-3 w-3 ml-1" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-48">
+                <DropdownMenuItem onClick={() => handleSyncAll('today')}>
+                  <Clock className="h-4 w-4 mr-2" />
+                  Hoy (24h)
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => handleSyncAll('7d')}>
+                  <Clock className="h-4 w-4 mr-2" />
+                  Últimos 7 días
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => handleSyncAll('month')}>
+                  <Clock className="h-4 w-4 mr-2" />
+                  Último mes
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => handleSyncAll('full')} className="text-amber-400">
+                  <Zap className="h-4 w-4 mr-2" />
+                  Todo el historial (3 años)
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
         </div>
       </div>
 
