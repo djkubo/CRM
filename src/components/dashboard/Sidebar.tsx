@@ -10,7 +10,8 @@ import {
   Settings,
   LogOut,
   Send,
-  RefreshCw
+  RefreshCw,
+  Shield
 } from "lucide-react";
 
 interface SidebarProps {
@@ -23,6 +24,7 @@ const menuItems = [
   { id: "recovery", label: "Revenue Ops", icon: AlertTriangle },
   { id: "campaigns", label: "Campañas", icon: Send },
   { id: "sync-center", label: "Sync Center", icon: RefreshCw },
+  { id: "diagnostics", label: "Diagnostics", icon: Shield },
   { id: "invoices", label: "Facturas", icon: FileText },
   { id: "clients", label: "Clientes", icon: Users },
   { id: "subscriptions", label: "Suscripciones", icon: CreditCard },
