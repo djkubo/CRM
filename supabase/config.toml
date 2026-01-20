@@ -38,3 +38,6 @@ verify_jwt = false
 
 [functions.notify-ghl]
 verify_jwt = false
+
+[functions.send-sms]
+verify_jwt = false

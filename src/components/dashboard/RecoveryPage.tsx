@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react';
-import { MessageCircle, Phone, AlertTriangle, CheckCircle, XCircle, Clock, Send, Filter } from 'lucide-react';
+import { MessageCircle, Phone, AlertTriangle, CheckCircle, XCircle, Clock, Send, Filter, Smartphone } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
@@ -20,7 +20,6 @@ import {
 } from '@/components/ui/dropdown-menu';
 import {
   Tabs,
-  TabsContent,
   TabsList,
   TabsTrigger,
 } from '@/components/ui/tabs';
@@ -85,6 +84,40 @@ export function RecoveryPage() {
     
     const message = messageTemplates[template](client.full_name || '', client.amount);
     openWhatsApp(client.phone, client.full_name || '', message);
+    
+    if (getStage(client.email) === 'pending') {
+      setStage(client.email, 'contacted');
+    }
+  };
+
+  const handleSMS = async (client: RecoveryClient, template: 'friendly' | 'urgent' | 'final') => {
+    if (!client.phone) return;
+    
+    // Get client ID
+    const { data: clientData } = await supabase
+      .from('clients')
+      .select('id')
+      .eq('email', client.email)
+      .single();
+
+    toast.loading('Enviando SMS...', { id: 'sms-sending' });
+
+    const { data, error } = await supabase.functions.invoke('send-sms', {
+      body: {
+        to: client.phone,
+        template,
+        client_name: client.full_name || 'Cliente',
+        amount: Math.round(client.amount * 100), // Convert to cents
+        client_id: clientData?.id,
+      }
+    });
+
+    if (error) {
+      toast.error('Error enviando SMS: ' + error.message, { id: 'sms-sending' });
+      return;
+    }
+
+    toast.success('SMS enviado correctamente', { id: 'sms-sending' });
     
     if (getStage(client.email) === 'pending') {
       setStage(client.email, 'contacted');
@@ -249,28 +282,56 @@ export function RecoveryPage() {
                     </TableCell>
                     <TableCell className="text-right">
                       {client.phone ? (
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <Button
-                              size="sm"
-                              className="gap-2 bg-[#25D366] hover:bg-[#1da851] text-white"
-                            >
-                              <MessageCircle className="h-4 w-4" />
-                              WhatsApp
-                            </Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end">
-                            <DropdownMenuItem onClick={() => handleWhatsApp(client, 'friendly')}>
-                              😊 Mensaje Amigable
-                            </DropdownMenuItem>
-                            <DropdownMenuItem onClick={() => handleWhatsApp(client, 'urgent')}>
-                              ⚠️ Mensaje Urgente
-                            </DropdownMenuItem>
-                            <DropdownMenuItem onClick={() => handleWhatsApp(client, 'final')}>
-                              🚨 Último Aviso
-                            </DropdownMenuItem>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
+                        <div className="flex items-center justify-end gap-2">
+                          {/* SMS Button */}
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="gap-2 border-blue-500/30 text-blue-400 hover:bg-blue-500/10"
+                              >
+                                <Smartphone className="h-4 w-4" />
+                                SMS
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end">
+                              <DropdownMenuItem onClick={() => handleSMS(client, 'friendly')}>
+                                😊 Mensaje Amigable
+                              </DropdownMenuItem>
+                              <DropdownMenuItem onClick={() => handleSMS(client, 'urgent')}>
+                                ⚠️ Mensaje Urgente
+                              </DropdownMenuItem>
+                              <DropdownMenuItem onClick={() => handleSMS(client, 'final')}>
+                                🚨 Último Aviso
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+
+                          {/* WhatsApp Button */}
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button
+                                size="sm"
+                                className="gap-2 bg-[#25D366] hover:bg-[#1da851] text-white"
+                              >
+                                <MessageCircle className="h-4 w-4" />
+                                WhatsApp
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end">
+                              <DropdownMenuItem onClick={() => handleWhatsApp(client, 'friendly')}>
+                                😊 Mensaje Amigable
+                              </DropdownMenuItem>
+                              <DropdownMenuItem onClick={() => handleWhatsApp(client, 'urgent')}>
+                                ⚠️ Mensaje Urgente
+                              </DropdownMenuItem>
+                              <DropdownMenuItem onClick={() => handleWhatsApp(client, 'final')}>
+                                🚨 Último Aviso
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        </div>
                       ) : (
                         <Button size="sm" variant="outline" disabled>
                           <Phone className="h-4 w-4 mr-2" />
