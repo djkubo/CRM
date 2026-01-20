@@ -20,10 +20,11 @@ function getCorsHeaders(origin: string | null) {
   };
 }
 
-// Skip invoices linked to problematic subscription statuses
-const SKIP_SUBSCRIPTION_STATUSES = ["canceled", "unpaid", "incomplete_expired", "past_due"];
+// Skip invoices linked to subscription statuses that are truly uncollectable
+// NOTE: We DO NOT skip 'unpaid' or 'past_due' - these are exactly the delinquent accounts we want to recover!
+const SKIP_SUBSCRIPTION_STATUSES = ["canceled", "incomplete_expired"];
 // Skip invoices that are already resolved or uncollectible  
-const SKIP_INVOICE_STATUSES = ["paid", "void", "uncollectible", "draft"];
+const SKIP_INVOICE_STATUSES = ["paid", "void", "uncollectible"];
 const API_DELAY_MS = 150;
 const BATCH_SIZE = 15;
 const MAX_EXECUTION_MS = 45000;
