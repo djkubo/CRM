@@ -368,7 +368,7 @@ serve(async (req) => {
   }
 
   try {
-    // SECURITY: Verify JWT authentication
+    // Quick check for Authorization header presence
     const authHeader = req.headers.get("Authorization");
     if (!authHeader?.startsWith("Bearer ")) {
       return new Response(
@@ -377,23 +377,9 @@ serve(async (req) => {
       );
     }
 
-    const supabase = createClient(
-      Deno.env.get("SUPABASE_URL")!,
-      Deno.env.get("SUPABASE_ANON_KEY")!,
-      { global: { headers: { Authorization: authHeader } } }
-    );
-
-    const { data: { user }, error: userError } = await supabase.auth.getUser();
-    if (userError || !user) {
-      return new Response(
-        JSON.stringify({ error: "Unauthorized" }),
-        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
-    console.log("✅ User authenticated:", user.email);
-
-    const { hours_lookback = 24, starting_after, background = false } = await req.json();
+    // Parse body FIRST before any async operations
+    const body = await req.json();
+    const { hours_lookback = 24, starting_after, background = false } = body;
     
     const validHours = [24, 168, 360, 720, 1440];
     if (!validHours.includes(hours_lookback)) {
@@ -405,31 +391,42 @@ serve(async (req) => {
 
     const stripeSecretKey = Deno.env.get("STRIPE_SECRET_KEY");
     if (!stripeSecretKey) {
-      throw new Error("STRIPE_SECRET_KEY not configured");
+      return new Response(
+        JSON.stringify({ error: "STRIPE_SECRET_KEY not configured" }),
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
     }
 
-    const stripe = new Stripe(stripeSecretKey, {
-      apiVersion: "2023-10-16",
-    });
-
-    // Create service client for background operations
-    const supabaseServiceClient = createClient(
-      Deno.env.get("SUPABASE_URL")!,
-      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
-    );
-
-    // BACKGROUND MODE: Return IMMEDIATELY and process in background
+    // BACKGROUND MODE: Return IMMEDIATELY, do ALL work in background
     if (background) {
-      console.log(`🚀 Starting BACKGROUND Smart Recovery - ${hours_lookback} hours`);
-      
-      // Generate a temporary ID for immediate response
       const tempId = crypto.randomUUID();
-      
-      // Start background processing - sync_run will be created inside
+      console.log(`🚀 BACKGROUND mode - returning immediately with ID: ${tempId}`);
+
       // @ts-ignore - EdgeRuntime is available in Supabase Edge Functions
       EdgeRuntime.waitUntil((async () => {
         try {
-          // Create sync run record IN BACKGROUND
+          // All slow operations happen HERE in background
+          const supabase = createClient(
+            Deno.env.get("SUPABASE_URL")!,
+            Deno.env.get("SUPABASE_ANON_KEY")!,
+            { global: { headers: { Authorization: authHeader } } }
+          );
+
+          const { data: { user }, error: userError } = await supabase.auth.getUser();
+          if (userError || !user) {
+            console.error("❌ Background auth failed:", userError?.message);
+            return;
+          }
+
+          console.log("✅ Background auth OK:", user.email);
+
+          const stripe = new Stripe(stripeSecretKey, { apiVersion: "2023-10-16" });
+          const supabaseServiceClient = createClient(
+            Deno.env.get("SUPABASE_URL")!,
+            Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
+          );
+
+          // Create sync run record
           const { data: syncRun, error: syncError } = await supabaseServiceClient
             .from("sync_runs")
             .insert({
@@ -447,18 +444,18 @@ serve(async (req) => {
             .single();
 
           if (syncError || !syncRun) {
-            console.error("Failed to create sync run:", syncError?.message);
+            console.error("❌ Failed to create sync run:", syncError?.message);
             return;
           }
 
           console.log(`📝 Created sync run: ${syncRun.id}`);
           await runRecoveryInBackground(stripe, supabaseServiceClient, syncRun.id, hours_lookback, starting_after);
         } catch (err) {
-          console.error("Background processing error:", err);
+          console.error("❌ Background processing error:", err);
         }
       })());
 
-      // Return IMMEDIATELY with the temp ID
+      // Return IMMEDIATELY - no await, no DB calls before this
       return new Response(
         JSON.stringify({ 
           message: "Smart Recovery started in background",
@@ -469,6 +466,29 @@ serve(async (req) => {
         { headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
+
+    // FOREGROUND MODE: Full authentication required
+    const supabase = createClient(
+      Deno.env.get("SUPABASE_URL")!,
+      Deno.env.get("SUPABASE_ANON_KEY")!,
+      { global: { headers: { Authorization: authHeader } } }
+    );
+
+    const { data: { user }, error: userError } = await supabase.auth.getUser();
+    if (userError || !user) {
+      return new Response(
+        JSON.stringify({ error: "Unauthorized" }),
+        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    console.log("✅ User authenticated:", user.email);
+
+    const stripe = new Stripe(stripeSecretKey, { apiVersion: "2023-10-16" });
+    const supabaseServiceClient = createClient(
+      Deno.env.get("SUPABASE_URL")!,
+      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
+    );
 
     // FOREGROUND MODE: Original synchronous processing
     console.log(`🔍 Smart Recovery starting - Looking back ${hours_lookback} hours`);
