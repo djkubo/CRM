@@ -5,15 +5,16 @@ const ALLOWED_ORIGINS = [
   "https://lovable.dev",
   "http://localhost:5173",
   "http://localhost:3000",
+  "*", // Allow external scripts
 ];
 
 function getCorsHeaders(origin: string | null) {
-  const allowedOrigin = origin && ALLOWED_ORIGINS.some(o => origin.startsWith(o.replace(/\/$/, ''))) 
+  const allowedOrigin = origin && ALLOWED_ORIGINS.some(o => o === "*" || origin.startsWith(o.replace(/\/$/, ''))) 
     ? origin 
-    : ALLOWED_ORIGINS[0];
+    : "*";
   return {
     "Access-Control-Allow-Origin": allowedOrigin,
-    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-sync-secret",
+    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-sync-secret, x-admin-key",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
   };
 }
@@ -27,33 +28,62 @@ Deno.serve(async (req) => {
   }
 
   try {
-    // SECURITY: Verify JWT authentication
-    const authHeader = req.headers.get("Authorization");
-    if (!authHeader?.startsWith("Bearer ")) {
-      return new Response(
-        JSON.stringify({ error: "Unauthorized" }),
-        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
-    const supabaseAuth = createClient(supabaseUrl, supabaseAnonKey, {
-      global: { headers: { Authorization: authHeader } }
+    const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
+    
+    // Create admin client for DB operations
+    const supabaseAdmin = createClient(supabaseUrl, serviceRoleKey, {
+      auth: { persistSession: false }
     });
 
-    const token = authHeader.replace("Bearer ", "");
-    const { data: claimsData, error: claimsError } = await supabaseAuth.auth.getUser(token);
+    // Check for x-admin-key authentication (for external scripts)
+    const adminKeyHeader = req.headers.get("x-admin-key");
+    const authHeader = req.headers.get("Authorization");
     
-    if (claimsError || !claimsData?.user) {
-      console.error("Auth error:", claimsError);
+    let isAuthenticated = false;
+    let authMethod = "";
+
+    if (adminKeyHeader) {
+      // Validate against stored admin key
+      const { data: settingsData } = await supabaseAdmin
+        .from('system_settings')
+        .select('value')
+        .eq('key', 'admin_api_key')
+        .single();
+      
+      if (settingsData?.value && adminKeyHeader === settingsData.value) {
+        isAuthenticated = true;
+        authMethod = "x-admin-key";
+        console.log("✅ Authenticated via x-admin-key (external script)");
+      }
+    }
+    
+    // Fallback to JWT authentication
+    if (!isAuthenticated && authHeader?.startsWith("Bearer ")) {
+      const supabaseAuth = createClient(supabaseUrl, supabaseAnonKey, {
+        global: { headers: { Authorization: authHeader } }
+      });
+
+      const token = authHeader.replace("Bearer ", "");
+      const { data: claimsData, error: claimsError } = await supabaseAuth.auth.getUser(token);
+      
+      if (!claimsError && claimsData?.user) {
+        isAuthenticated = true;
+        authMethod = "JWT";
+        console.log("✅ Authenticated via JWT:", claimsData.user.email);
+      }
+    }
+
+    if (!isAuthenticated) {
+      console.error("❌ Authentication failed - no valid x-admin-key or JWT provided");
       return new Response(
         JSON.stringify({ error: "Unauthorized" }),
         { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
-    console.log("✅ User authenticated:", claimsData.user.email);
+    console.log(`🔐 Auth method: ${authMethod}`);
 
     const { clients } = await req.json();
 
@@ -66,11 +96,7 @@ Deno.serve(async (req) => {
 
     console.log(`📥 Received ${clients.length} clients to sync`);
 
-    const supabaseAdmin = createClient(
-      supabaseUrl,
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
-      { auth: { persistSession: false } }
-    );
+    // supabaseAdmin already created above
 
     const validClients = clients
       .filter((c: any) => c.email && c.email.includes('@'))
