@@ -203,7 +203,7 @@ export function InvoicesPage() {
         </div>
         <div className="flex items-center gap-4">
           <div className="text-right">
-            <p className="text-2xl font-bold text-foreground">${(totalPending / 100).toLocaleString('en-US', { minimumFractionDigits: 2 })}</p>
+            <p className="text-2xl font-bold text-foreground">${totalPending.toLocaleString('en-US', { minimumFractionDigits: 2 })}</p>
             <p className="text-sm text-muted-foreground">Total pendiente</p>
           </div>
           <Button
