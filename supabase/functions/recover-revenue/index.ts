@@ -418,42 +418,51 @@ serve(async (req) => {
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
     );
 
-    // BACKGROUND MODE: Start processing and return immediately
+    // BACKGROUND MODE: Return IMMEDIATELY and process in background
     if (background) {
       console.log(`🚀 Starting BACKGROUND Smart Recovery - ${hours_lookback} hours`);
       
-      // Create sync run record
-      const { data: syncRun, error: syncError } = await supabaseServiceClient
-        .from("sync_runs")
-        .insert({
-          source: "smart_recovery",
-          status: "running",
-          started_at: new Date().toISOString(),
-          metadata: {
-            hours_lookback,
-            starting_after: starting_after || null,
-            initiated_by: user.email,
-          },
-        })
-        .select()
-        .single();
-
-      if (syncError || !syncRun) {
-        throw new Error("Failed to create sync run: " + (syncError?.message || "Unknown"));
-      }
-
-      console.log(`📝 Created sync run: ${syncRun.id}`);
-
-      // Start background processing using EdgeRuntime.waitUntil
+      // Generate a temporary ID for immediate response
+      const tempId = crypto.randomUUID();
+      
+      // Start background processing - sync_run will be created inside
       // @ts-ignore - EdgeRuntime is available in Supabase Edge Functions
-      EdgeRuntime.waitUntil(
-        runRecoveryInBackground(stripe, supabaseServiceClient, syncRun.id, hours_lookback, starting_after)
-      );
+      EdgeRuntime.waitUntil((async () => {
+        try {
+          // Create sync run record IN BACKGROUND
+          const { data: syncRun, error: syncError } = await supabaseServiceClient
+            .from("sync_runs")
+            .insert({
+              id: tempId,
+              source: "smart_recovery",
+              status: "running",
+              started_at: new Date().toISOString(),
+              metadata: {
+                hours_lookback,
+                starting_after: starting_after || null,
+                initiated_by: user.email,
+              },
+            })
+            .select()
+            .single();
 
+          if (syncError || !syncRun) {
+            console.error("Failed to create sync run:", syncError?.message);
+            return;
+          }
+
+          console.log(`📝 Created sync run: ${syncRun.id}`);
+          await runRecoveryInBackground(stripe, supabaseServiceClient, syncRun.id, hours_lookback, starting_after);
+        } catch (err) {
+          console.error("Background processing error:", err);
+        }
+      })());
+
+      // Return IMMEDIATELY with the temp ID
       return new Response(
         JSON.stringify({ 
           message: "Smart Recovery started in background",
-          sync_run_id: syncRun.id,
+          sync_run_id: tempId,
           status: "running",
           hours_lookback,
         }),
