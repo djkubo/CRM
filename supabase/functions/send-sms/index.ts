@@ -1,0 +1,145 @@
+import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+};
+
+interface SMSRequest {
+  to: string;
+  message: string;
+  client_id?: string;
+  template?: 'friendly' | 'urgent' | 'final' | 'custom';
+  client_name?: string;
+  amount?: number;
+}
+
+serve(async (req) => {
+  // Handle CORS preflight
+  if (req.method === 'OPTIONS') {
+    return new Response(null, { headers: corsHeaders });
+  }
+
+  try {
+    const TWILIO_ACCOUNT_SID = Deno.env.get('TWILIO_ACCOUNT_SID');
+    const TWILIO_AUTH_TOKEN = Deno.env.get('TWILIO_AUTH_TOKEN');
+    const TWILIO_PHONE_NUMBER = Deno.env.get('TWILIO_PHONE_NUMBER');
+    const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
+    const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+
+    if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN || !TWILIO_PHONE_NUMBER) {
+      console.error('Missing Twilio credentials');
+      return new Response(
+        JSON.stringify({ error: 'Twilio credentials not configured' }),
+        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    const payload: SMSRequest = await req.json();
+    console.log('SMS Request received:', { to: payload.to, template: payload.template });
+
+    // Clean phone number - remove non-numeric except +
+    let phoneNumber = payload.to.replace(/[^\d+]/g, '');
+    
+    // Ensure it starts with + for international format
+    if (!phoneNumber.startsWith('+')) {
+      // Assume US number if no country code
+      if (phoneNumber.length === 10) {
+        phoneNumber = '+1' + phoneNumber;
+      } else if (phoneNumber.length === 11 && phoneNumber.startsWith('1')) {
+        phoneNumber = '+' + phoneNumber;
+      } else {
+        phoneNumber = '+' + phoneNumber;
+      }
+    }
+
+    // Build message based on template
+    let message = payload.message;
+    if (payload.template && payload.template !== 'custom') {
+      const name = payload.client_name || 'Cliente';
+      const amount = payload.amount ? `$${(payload.amount / 100).toFixed(2)}` : '';
+      
+      switch (payload.template) {
+        case 'friendly':
+          message = `Hola ${name} 👋 Notamos que tu pago de ${amount} no se procesó correctamente. ¿Podemos ayudarte a resolverlo? Responde a este mensaje.`;
+          break;
+        case 'urgent':
+          message = `⚠️ ${name}, tu cuenta tiene un pago pendiente de ${amount}. Para evitar la suspensión del servicio, actualiza tu método de pago hoy.`;
+          break;
+        case 'final':
+          message = `🚨 ÚLTIMO AVISO: ${name}, tu servicio será suspendido en 24h por falta de pago (${amount}). Contáctanos urgentemente para evitarlo.`;
+          break;
+      }
+    }
+
+    console.log('Sending SMS to:', phoneNumber);
+
+    // Send SMS via Twilio REST API
+    const twilioUrl = `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages.json`;
+    
+    const formData = new URLSearchParams();
+    formData.append('To', phoneNumber);
+    formData.append('From', TWILIO_PHONE_NUMBER);
+    formData.append('Body', message);
+
+    const twilioResponse = await fetch(twilioUrl, {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Basic ' + btoa(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`),
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: formData.toString(),
+    });
+
+    const twilioResult = await twilioResponse.json();
+    console.log('Twilio response:', twilioResult);
+
+    if (!twilioResponse.ok) {
+      console.error('Twilio error:', twilioResult);
+      return new Response(
+        JSON.stringify({ 
+          error: 'Failed to send SMS', 
+          details: twilioResult.message || twilioResult 
+        }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // Log event to client_events if client_id provided
+    if (payload.client_id) {
+      const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+      
+      await supabase.from('client_events').insert({
+        client_id: payload.client_id,
+        event_type: 'email_sent', // Using email_sent as closest match for SMS
+        metadata: {
+          channel: 'sms',
+          template: payload.template || 'custom',
+          phone: phoneNumber,
+          message_sid: twilioResult.sid,
+          status: twilioResult.status,
+        }
+      });
+      
+      console.log('Event logged for client:', payload.client_id);
+    }
+
+    return new Response(
+      JSON.stringify({ 
+        success: true, 
+        message_sid: twilioResult.sid,
+        status: twilioResult.status 
+      }),
+      { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+    );
+
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    console.error('Error in send-sms:', errorMessage);
+    return new Response(
+      JSON.stringify({ error: errorMessage }),
+      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+    );
+  }
+});
