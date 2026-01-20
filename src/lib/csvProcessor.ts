@@ -1,5 +1,6 @@
 import Papa from 'papaparse';
 import { supabase } from "@/integrations/supabase/client";
+import { invokeWithAdminKey } from "@/lib/adminApi";
 
 // ============= Constants =============
 const BATCH_SIZE = 500;
@@ -405,18 +406,16 @@ export async function processPayPalCSV(csvText: string): Promise<ProcessingResul
     for (const payment of failedPayments.slice(0, 20)) { // Limit to 20 per batch
       try {
         const client = clientMap.get(payment.email);
-        await supabase.functions.invoke('notify-ghl', {
-          body: {
-            email: payment.email,
-            phone: client?.phone || null,
-            name: client?.full_name || null,
-            tag: 'payment_failed',
-            message_data: {
-              amount_cents: payment.amount,
-              currency: payment.currency,
-              transaction_id: payment.transactionId,
-              source: 'paypal_csv'
-            }
+        await invokeWithAdminKey('notify-ghl', {
+          email: payment.email,
+          phone: client?.phone || null,
+          name: client?.full_name || null,
+          tag: 'payment_failed',
+          message_data: {
+            amount_cents: payment.amount,
+            currency: payment.currency,
+            transaction_id: payment.transactionId,
+            source: 'paypal_csv'
           }
         });
       } catch (ghlError) {

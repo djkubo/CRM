@@ -37,6 +37,7 @@ import {
   CardTitle,
 } from '@/components/ui/card';
 import { supabase } from '@/integrations/supabase/client';
+import { invokeWithAdminKey } from '@/lib/adminApi';
 import { toast } from 'sonner';
 import { openWhatsApp } from './RecoveryTable';
 
@@ -289,27 +290,25 @@ export function RevenueOpsPipeline() {
   const handleSMS = async (client: PipelineClient, template: 'friendly' | 'urgent' | 'final') => {
     if (!client.phone) return;
     toast.loading('Enviando SMS...', { id: 'sms' });
-    const { error } = await supabase.functions.invoke('send-sms', {
-      body: {
+    try {
+      await invokeWithAdminKey('send-sms', {
         to: client.phone,
         template,
         client_name: client.full_name,
         amount: Math.round(client.revenue_at_risk * 100),
         client_id: client.id,
-      }
-    });
-    if (error) {
-      toast.error('Error: ' + error.message, { id: 'sms' });
-    } else {
+      });
       toast.success('SMS enviado', { id: 'sms' });
       loadData();
+    } catch (error: any) {
+      toast.error('Error: ' + error.message, { id: 'sms' });
     }
   };
 
   const handleManyChat = async (client: PipelineClient, template: 'friendly' | 'urgent' | 'final') => {
     toast.loading('Enviando por ManyChat...', { id: 'manychat' });
-    const { data, error } = await supabase.functions.invoke('send-manychat', {
-      body: {
+    try {
+      const data = await invokeWithAdminKey('send-manychat', {
         email: client.email,
         phone: client.phone,
         template,
@@ -317,46 +316,48 @@ export function RevenueOpsPipeline() {
         amount: Math.round(client.revenue_at_risk * 100),
         client_id: client.id,
         tag: activeTab === 'recovery' ? 'payment_failed' : activeTab === 'trial_expiring' ? 'trial_expiring' : 'winback',
+      });
+      if (data?.error) {
+        toast.error(data.error, { id: 'manychat' });
+      } else {
+        toast.success('Mensaje ManyChat enviado', { id: 'manychat' });
+        loadData();
       }
-    });
-    if (error || data?.error) {
-      toast.error((data?.error || error?.message), { id: 'manychat' });
-    } else {
-      toast.success('Mensaje ManyChat enviado', { id: 'manychat' });
-      loadData();
+    } catch (error: any) {
+      toast.error(error.message, { id: 'manychat' });
     }
   };
 
   const handleGHL = async (client: PipelineClient) => {
     toast.loading('Creando oportunidad en GHL...', { id: 'ghl' });
-    const { error } = await supabase.functions.invoke('notify-ghl', {
-      body: {
+    try {
+      await invokeWithAdminKey('notify-ghl', {
         email: client.email,
         phone: client.phone,
         name: client.full_name,
         tag: activeTab === 'recovery' ? 'payment_failed' : activeTab === 'trial_expiring' ? 'trial_expiring' : 'winback',
         message_data: { revenue_at_risk: client.revenue_at_risk * 100 }
-      }
-    });
-    if (error) {
-      toast.error('Error: ' + error.message, { id: 'ghl' });
-    } else {
+      });
       toast.success('Oportunidad creada en GHL', { id: 'ghl' });
       loadData();
+    } catch (error: any) {
+      toast.error('Error: ' + error.message, { id: 'ghl' });
     }
   };
 
   const handleStripePortal = async (client: PipelineClient) => {
     if (!client.email) return;
     toast.loading('Creando link del portal...', { id: 'portal' });
-    const { data, error } = await supabase.functions.invoke('create-portal-session', {
-      body: { email: client.email }
-    });
-    if (error || !data?.url) {
+    try {
+      const data = await invokeWithAdminKey('create-portal-session', { email: client.email });
+      if (data?.url) {
+        window.open(data.url, '_blank');
+        toast.success('Portal abierto', { id: 'portal' });
+      } else {
+        toast.error('Error creando portal', { id: 'portal' });
+      }
+    } catch (error: any) {
       toast.error('Error creando portal', { id: 'portal' });
-    } else {
-      window.open(data.url, '_blank');
-      toast.success('Portal abierto', { id: 'portal' });
     }
   };
 

@@ -192,13 +192,11 @@ export default function SyncCenter() {
     mutationFn: async () => {
       setSyncingSource('all');
       
-      // Run syncs in parallel
-      const results = await Promise.allSettled([
-        supabase.functions.invoke('sync-ghl', { body: { dry_run: dryRun } }),
-        supabase.functions.invoke('sync-manychat', { body: { dry_run: dryRun } })
-      ]);
+      // Run syncs sequentially to avoid conflicts
+      const ghlResult = await invokeWithAdminKey('sync-ghl', { dry_run: dryRun });
+      const manychatResult = await invokeWithAdminKey('sync-manychat', { dry_run: dryRun });
       
-      return results;
+      return [ghlResult, manychatResult];
     },
     onSuccess: () => {
       setSyncingSource(null);

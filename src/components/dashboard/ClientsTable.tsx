@@ -23,6 +23,7 @@ import {
 import { openWhatsApp, getGreetingMessage, getRecoveryMessage } from "./RecoveryTable";
 import { ClientEventsTimeline } from "./ClientEventsTimeline";
 import { supabase } from "@/integrations/supabase/client";
+import { invokeWithAdminKey } from "@/lib/adminApi";
 import { useToast } from "@/hooks/use-toast";
 import type { Client } from "@/hooks/useClients";
 
@@ -106,14 +107,10 @@ export function ClientsTable({
 
     setLoadingPortal(client.id);
     try {
-      const { data, error } = await supabase.functions.invoke("create-portal-session", {
-        body: { 
-          stripe_customer_id: client.stripe_customer_id,
-          return_url: window.location.origin
-        },
+      const data = await invokeWithAdminKey("create-portal-session", { 
+        stripe_customer_id: client.stripe_customer_id,
+        return_url: window.location.origin
       });
-
-      if (error) throw error;
 
       if (data?.url) {
         await navigator.clipboard.writeText(data.url);
@@ -139,21 +136,17 @@ export function ClientsTable({
   const handleSendToCRM = async (client: Client) => {
     setSendingToCRM(client.id);
     try {
-      const { data, error } = await supabase.functions.invoke("notify-ghl", {
-        body: {
-          email: client.email,
-          phone: client.phone,
-          name: client.full_name,
-          tag: 'manual_push',
-          message_data: {
-            total_spend_cents: client.total_spend,
-            lifecycle_stage: client.lifecycle_stage,
-            is_vip: (client.total_spend || 0) >= VIP_THRESHOLD
-          }
-        },
+      await invokeWithAdminKey("notify-ghl", {
+        email: client.email,
+        phone: client.phone,
+        name: client.full_name,
+        tag: 'manual_push',
+        message_data: {
+          total_spend_cents: client.total_spend,
+          lifecycle_stage: client.lifecycle_stage,
+          is_vip: (client.total_spend || 0) >= VIP_THRESHOLD
+        }
       });
-
-      if (error) throw error;
 
       toast({
         title: "Enviado a CRM",

@@ -26,6 +26,7 @@ import {
 import { openWhatsApp } from './RecoveryTable';
 import { useMetrics } from '@/hooks/useMetrics';
 import { supabase } from '@/integrations/supabase/client';
+import { invokeWithAdminKey } from '@/lib/adminApi';
 import { toast } from 'sonner';
 import type { RecoveryClient } from '@/lib/csvProcessor';
 
@@ -102,25 +103,22 @@ export function RecoveryPage() {
 
     toast.loading('Enviando SMS...', { id: 'sms-sending' });
 
-    const { data, error } = await supabase.functions.invoke('send-sms', {
-      body: {
+    try {
+      await invokeWithAdminKey('send-sms', {
         to: client.phone,
         template,
         client_name: client.full_name || 'Cliente',
-        amount: Math.round(client.amount * 100), // Convert to cents
+        amount: Math.round(client.amount * 100),
         client_id: clientData?.id,
+      });
+
+      toast.success('SMS enviado correctamente', { id: 'sms-sending' });
+      
+      if (getStage(client.email) === 'pending') {
+        setStage(client.email, 'contacted');
       }
-    });
-
-    if (error) {
+    } catch (error: any) {
       toast.error('Error enviando SMS: ' + error.message, { id: 'sms-sending' });
-      return;
-    }
-
-    toast.success('SMS enviado correctamente', { id: 'sms-sending' });
-    
-    if (getStage(client.email) === 'pending') {
-      setStage(client.email, 'contacted');
     }
   };
 
@@ -134,32 +132,29 @@ export function RecoveryPage() {
 
     toast.loading('Enviando mensaje por ManyChat...', { id: 'manychat-sending' });
 
-    const { data, error } = await supabase.functions.invoke('send-manychat', {
-      body: {
+    try {
+      const data = await invokeWithAdminKey('send-manychat', {
         email: client.email,
         phone: client.phone,
         template,
         client_name: client.full_name || 'Cliente',
-        amount: Math.round(client.amount * 100), // Convert to cents
+        amount: Math.round(client.amount * 100),
         client_id: clientData?.id,
         tag: 'payment_failed',
+      });
+
+      if (data?.error) {
+        toast.error(data.error + (data.details ? ': ' + data.details : ''), { id: 'manychat-sending' });
+        return;
       }
-    });
 
-    if (error) {
+      toast.success('Mensaje ManyChat enviado', { id: 'manychat-sending' });
+      
+      if (getStage(client.email) === 'pending') {
+        setStage(client.email, 'contacted');
+      }
+    } catch (error: any) {
       toast.error('Error enviando mensaje: ' + error.message, { id: 'manychat-sending' });
-      return;
-    }
-
-    if (data?.error) {
-      toast.error(data.error + (data.details ? ': ' + data.details : ''), { id: 'manychat-sending' });
-      return;
-    }
-
-    toast.success('Mensaje ManyChat enviado', { id: 'manychat-sending' });
-    
-    if (getStage(client.email) === 'pending') {
-      setStage(client.email, 'contacted');
     }
   };
 
