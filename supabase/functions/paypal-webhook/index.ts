@@ -5,8 +5,11 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, paypal-transmission-id, paypal-transmission-time, paypal-transmission-sig, paypal-cert-url, paypal-auth-algo',
 };
 
-async function getPayPalAccessToken(clientId: string, secret: string): Promise<string> {
-  const response = await fetch('https://api-m.paypal.com/v1/oauth2/token', {
+async function getPayPalAccessToken(clientId: string, secret: string, isSandbox: boolean): Promise<string> {
+  const baseUrl = isSandbox ? 'https://api-m.sandbox.paypal.com' : 'https://api-m.paypal.com';
+  console.log(`🔑 Getting PayPal token from ${isSandbox ? 'SANDBOX' : 'LIVE'}`);
+  
+  const response = await fetch(`${baseUrl}/v1/oauth2/token`, {
     method: 'POST',
     headers: {
       'Authorization': `Basic ${btoa(`${clientId}:${secret}`)}`,
@@ -16,6 +19,8 @@ async function getPayPalAccessToken(clientId: string, secret: string): Promise<s
   });
   
   if (!response.ok) {
+    const errorText = await response.text();
+    console.error(`PayPal auth failed: ${response.status} - ${errorText}`);
     throw new Error(`PayPal auth failed: ${response.status}`);
   }
   
@@ -27,7 +32,8 @@ async function verifyWebhookSignature(
   accessToken: string,
   webhookId: string,
   headers: Headers,
-  body: string
+  body: string,
+  isSandbox: boolean
 ): Promise<boolean> {
   const transmissionId = headers.get('paypal-transmission-id');
   const transmissionTime = headers.get('paypal-transmission-time');
@@ -37,6 +43,7 @@ async function verifyWebhookSignature(
 
   console.log(`🔍 PayPal headers: id=${transmissionId ? 'present' : 'MISSING'}, time=${transmissionTime ? 'present' : 'MISSING'}, sig=${transmissionSig ? 'present' : 'MISSING'}, cert=${certUrl ? 'present' : 'MISSING'}, algo=${authAlgo ? 'present' : 'MISSING'}`);
   console.log(`🔍 Webhook ID being used: ${webhookId}`);
+  console.log(`🔍 Environment: ${isSandbox ? 'SANDBOX' : 'LIVE'}`);
 
   if (!transmissionId || !transmissionTime || !transmissionSig || !certUrl || !authAlgo) {
     console.error('❌ Missing PayPal signature headers');
@@ -53,9 +60,10 @@ async function verifyWebhookSignature(
     webhook_event: JSON.parse(body),
   };
 
-  console.log(`📤 Calling PayPal verify-webhook-signature API...`);
+  const baseUrl = isSandbox ? 'https://api-m.sandbox.paypal.com' : 'https://api-m.paypal.com';
+  console.log(`📤 Calling PayPal verify-webhook-signature API at ${baseUrl}...`);
 
-  const response = await fetch('https://api-m.paypal.com/v1/notifications/verify-webhook-signature', {
+  const response = await fetch(`${baseUrl}/v1/notifications/verify-webhook-signature`, {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${accessToken}`,
@@ -77,6 +85,12 @@ async function verifyWebhookSignature(
   return result.verification_status === 'SUCCESS';
 }
 
+// Detect if event is from sandbox based on cert_url
+function isSandboxEvent(headers: Headers): boolean {
+  const certUrl = headers.get('paypal-cert-url') || '';
+  return certUrl.includes('sandbox');
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
@@ -96,10 +110,13 @@ Deno.serve(async (req) => {
 
   const body = await req.text();
   
+  // Auto-detect sandbox vs live based on cert_url
+  const isSandbox = isSandboxEvent(req.headers);
+  
   try {
     // Get access token and verify signature
-    const accessToken = await getPayPalAccessToken(clientId, secret);
-    const isValid = await verifyWebhookSignature(accessToken, webhookId, req.headers, body);
+    const accessToken = await getPayPalAccessToken(clientId, secret, isSandbox);
+    const isValid = await verifyWebhookSignature(accessToken, webhookId, req.headers, body, isSandbox);
 
     if (!isValid) {
       console.error('❌ paypal-webhook: Signature verification failed');
