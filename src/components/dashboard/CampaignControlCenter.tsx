@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { invokeWithAdminKey } from '@/lib/adminApi';
 import { 
   FileText, Users, Send, Plus, Edit2, Trash2, Eye, Play, Pause,
   MessageCircle, Smartphone, Mail, Facebook, Copy, Check, X,
@@ -402,16 +403,12 @@ export function CampaignControlCenter() {
   const handleDryRun = async (campaign: Campaign) => {
     toast.loading('Ejecutando dry run...', { id: 'dry-run' });
     
-    const { data, error } = await supabase.functions.invoke('send-campaign', {
-      body: { campaign_id: campaign.id, dry_run: true }
-    });
-
-    if (error) {
+    try {
+      const data = await invokeWithAdminKey('send-campaign', { campaign_id: campaign.id, dry_run: true });
+      toast.success(`Dry run completado: ${data.stats.total} destinatarios, ${data.stats.excluded} excluidos`, { id: 'dry-run' });
+    } catch (error: any) {
       toast.error('Error: ' + error.message, { id: 'dry-run' });
-      return;
     }
-
-    toast.success(`Dry run completado: ${data.stats.total} destinatarios, ${data.stats.excluded} excluidos`, { id: 'dry-run' });
   };
 
   const handleSendCampaign = async (campaign: Campaign) => {
@@ -422,17 +419,13 @@ export function CampaignControlCenter() {
 
     toast.loading('Enviando campaña...', { id: 'send-campaign' });
     
-    const { data, error } = await supabase.functions.invoke('send-campaign', {
-      body: { campaign_id: campaign.id }
-    });
-
-    if (error) {
+    try {
+      const data = await invokeWithAdminKey('send-campaign', { campaign_id: campaign.id });
+      toast.success(`Campaña enviada: ${data.stats.sent} enviados, ${data.stats.failed} fallidos`, { id: 'send-campaign' });
+      loadData();
+    } catch (error: any) {
       toast.error('Error: ' + error.message, { id: 'send-campaign' });
-      return;
     }
-
-    toast.success(`Campaña enviada: ${data.stats.sent} enviados, ${data.stats.failed} fallidos`, { id: 'send-campaign' });
-    loadData();
   };
 
   const handleDeleteCampaign = async (id: string) => {

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
+import { invokeWithAdminKey } from '@/lib/adminApi';
 import { format, formatDistanceToNow } from 'date-fns';
 import { es } from 'date-fns/locale';
 import {
@@ -145,10 +146,10 @@ export function CustomerDrawer({ client, open, onOpenChange, debtAmount = 0 }: C
     }
     setLoadingPortal(true);
     try {
-      const { data, error } = await supabase.functions.invoke('create-portal-session', {
-        body: { stripe_customer_id: client.stripe_customer_id, return_url: window.location.origin },
+      const data = await invokeWithAdminKey('create-portal-session', {
+        stripe_customer_id: client.stripe_customer_id, 
+        return_url: window.location.origin 
       });
-      if (error) throw error;
       if (data?.url) {
         await navigator.clipboard.writeText(data.url);
         setCopiedLink(true);

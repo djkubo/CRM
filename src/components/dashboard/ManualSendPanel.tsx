@@ -27,6 +27,7 @@ import {
   DialogFooter,
 } from '@/components/ui/dialog';
 import { supabase } from '@/integrations/supabase/client';
+import { invokeWithAdminKey } from '@/lib/adminApi';
 import { toast } from 'sonner';
 
 interface Segment {
@@ -151,11 +152,7 @@ export function ManualSendPanel() {
       if (error) throw error;
 
       // Call send-campaign with dry_run
-      const { data: result, error: sendError } = await supabase.functions.invoke('send-campaign', {
-        body: { campaign_id: campaign.id, dry_run: true }
-      });
-
-      if (sendError) throw sendError;
+      const result = await invokeWithAdminKey('send-campaign', { campaign_id: campaign.id, dry_run: true });
 
       setDryRunResult({
         total: result.stats?.total || 0,
@@ -200,11 +197,7 @@ export function ManualSendPanel() {
       if (error) throw error;
 
       // Send campaign
-      const { data: result, error: sendError } = await supabase.functions.invoke('send-campaign', {
-        body: { campaign_id: campaign.id }
-      });
-
-      if (sendError) throw sendError;
+      const result = await invokeWithAdminKey('send-campaign', { campaign_id: campaign.id });
 
       toast.success(`Enviado: ${result.stats?.sent || 0} mensajes`);
       setSelectedSegment('');
