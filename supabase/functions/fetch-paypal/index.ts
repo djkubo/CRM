@@ -136,21 +136,29 @@ Deno.serve(async (req) => {
     let endDate: string;
     let fetchAll = false;
 
+    // PayPal API limit: max 3 years of history
+    const now = new Date();
+    const threeYearsAgo = new Date(now.getTime() - (3 * 365 - 7) * 24 * 60 * 60 * 1000); // 3 years minus 1 week for safety
+
     try {
       const body = await req.json();
       fetchAll = body.fetchAll === true;
       
       if (body.startDate && body.endDate) {
-        startDate = body.startDate;
+        let requestedStart = new Date(body.startDate);
+        // Enforce PayPal's 3-year limit
+        if (requestedStart < threeYearsAgo) {
+          console.log(`⚠️ Requested start ${body.startDate} exceeds PayPal 3-year limit, clamping to ${threeYearsAgo.toISOString()}`);
+          requestedStart = threeYearsAgo;
+        }
+        startDate = requestedStart.toISOString();
         endDate = body.endDate;
       } else {
-        const now = new Date();
         const thirtyOneDaysAgo = new Date(now.getTime() - 31 * 24 * 60 * 60 * 1000);
         startDate = thirtyOneDaysAgo.toISOString();
         endDate = now.toISOString();
       }
     } catch {
-      const now = new Date();
       const thirtyOneDaysAgo = new Date(now.getTime() - 31 * 24 * 60 * 60 * 1000);
       startDate = thirtyOneDaysAgo.toISOString();
       endDate = now.toISOString();
