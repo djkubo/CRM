@@ -11,6 +11,7 @@ import { SettingsPage } from "@/components/dashboard/SettingsPage";
 import { RevenueOpsPipeline } from "@/components/dashboard/RevenueOpsPipeline";
 import { CampaignControlCenter } from "@/components/dashboard/CampaignControlCenter";
 import SyncCenter from "@/components/dashboard/SyncCenter";
+import DiagnosticsPanel from "@/components/dashboard/DiagnosticsPanel";
 import { useClients } from "@/hooks/useClients";
 import { useTransactions } from "@/hooks/useTransactions";
 import { useAuth } from "@/hooks/useAuth";
@@ -56,6 +57,8 @@ const Index = () => {
         return <CampaignControlCenter />;
       case "sync-center":
         return <SyncCenter />;
+      case "diagnostics":
+        return <DiagnosticsPanel />;
       case "analytics":
         return (
           <div className="space-y-6">

@@ -681,6 +681,36 @@ export type Database = {
         }
         Relationships: []
       }
+      metrics_snapshots: {
+        Row: {
+          created_at: string
+          id: string
+          kpis: Json
+          promoted_at: string | null
+          promoted_by: string | null
+          snapshot_date: string
+          snapshot_type: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          kpis: Json
+          promoted_at?: string | null
+          promoted_by?: string | null
+          snapshot_date?: string
+          snapshot_type: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          kpis?: Json
+          promoted_at?: string | null
+          promoted_by?: string | null
+          snapshot_date?: string
+          snapshot_type?: string
+        }
+        Relationships: []
+      }
       opt_outs: {
         Row: {
           channel: string
@@ -712,6 +742,90 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      rebuild_logs: {
+        Row: {
+          completed_at: string | null
+          created_by: string | null
+          diff: Json | null
+          errors: Json | null
+          id: string
+          promoted: boolean | null
+          rows_processed: number | null
+          started_at: string
+          status: string
+        }
+        Insert: {
+          completed_at?: string | null
+          created_by?: string | null
+          diff?: Json | null
+          errors?: Json | null
+          id?: string
+          promoted?: boolean | null
+          rows_processed?: number | null
+          started_at?: string
+          status?: string
+        }
+        Update: {
+          completed_at?: string | null
+          created_by?: string | null
+          diff?: Json | null
+          errors?: Json | null
+          id?: string
+          promoted?: boolean | null
+          rows_processed?: number | null
+          started_at?: string
+          status?: string
+        }
+        Relationships: []
+      }
+      reconciliation_runs: {
+        Row: {
+          created_at: string
+          difference: number
+          difference_pct: number
+          duplicates: Json | null
+          external_total: number
+          id: string
+          internal_total: number
+          missing_external: Json | null
+          missing_internal: Json | null
+          period_end: string
+          period_start: string
+          source: string
+          status: string
+        }
+        Insert: {
+          created_at?: string
+          difference: number
+          difference_pct: number
+          duplicates?: Json | null
+          external_total: number
+          id?: string
+          internal_total: number
+          missing_external?: Json | null
+          missing_internal?: Json | null
+          period_end: string
+          period_start: string
+          source: string
+          status: string
+        }
+        Update: {
+          created_at?: string
+          difference?: number
+          difference_pct?: number
+          duplicates?: Json | null
+          external_total?: number
+          id?: string
+          internal_total?: number
+          missing_external?: Json | null
+          missing_internal?: Json | null
+          period_end?: string
+          period_start?: string
+          source?: string
+          status?: string
+        }
+        Relationships: []
       }
       segments: {
         Row: {
@@ -996,7 +1110,91 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      data_quality_checks: {
+        Args: never
+        Returns: {
+          check_name: string
+          count: number
+          details: Json
+          percentage: number
+          status: string
+        }[]
+      }
+      get_system_timezone: { Args: never; Returns: string }
       is_admin: { Args: never; Returns: boolean }
+      kpi_cancellations: {
+        Args: { p_range?: string }
+        Returns: {
+          cancellation_count: number
+          currency: string
+          lost_mrr: number
+        }[]
+      }
+      kpi_churn_30d: {
+        Args: never
+        Returns: {
+          active_count: number
+          churn_rate: number
+          churned_count: number
+        }[]
+      }
+      kpi_failed_payments: {
+        Args: { p_range?: string }
+        Returns: {
+          at_risk_amount: number
+          currency: string
+          failed_count: number
+        }[]
+      }
+      kpi_mrr: {
+        Args: never
+        Returns: {
+          active_subscriptions: number
+          currency: string
+          mrr: number
+        }[]
+      }
+      kpi_new_customers: {
+        Args: { p_end_date?: string; p_range?: string; p_start_date?: string }
+        Returns: {
+          currency: string
+          new_customer_count: number
+          total_revenue: number
+        }[]
+      }
+      kpi_refunds: {
+        Args: { p_range?: string }
+        Returns: {
+          currency: string
+          refund_amount: number
+          refund_count: number
+        }[]
+      }
+      kpi_renewals: {
+        Args: { p_end_date?: string; p_range?: string; p_start_date?: string }
+        Returns: {
+          currency: string
+          renewal_count: number
+          total_revenue: number
+        }[]
+      }
+      kpi_sales: {
+        Args: { p_end_date?: string; p_range?: string; p_start_date?: string }
+        Returns: {
+          avg_amount: number
+          currency: string
+          total_amount: number
+          transaction_count: number
+        }[]
+      }
+      kpi_trial_to_paid: {
+        Args: { p_range?: string }
+        Returns: {
+          conversion_count: number
+          conversion_rate: number
+          total_revenue: number
+        }[]
+      }
       merge_contact: {
         Args: {
           p_dry_run?: boolean
@@ -1016,6 +1214,8 @@ export type Database = {
       }
       normalize_email: { Args: { email: string }; Returns: string }
       normalize_phone_e164: { Args: { phone: string }; Returns: string }
+      promote_metrics_staging: { Args: never; Returns: boolean }
+      rebuild_metrics_staging: { Args: never; Returns: Json }
     }
     Enums: {
       app_role: "admin" | "user"
