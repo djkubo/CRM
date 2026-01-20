@@ -64,6 +64,33 @@ function normalizePhone(phone?: string): string | null {
   return null;
 }
 
+// ============ SANITIZE STRING ============
+function sanitizeString(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== 'string') return String(value).trim() || null;
+  const trimmed = value.trim();
+  // Handle ManyChat template placeholders like {{email}} that weren't replaced
+  if (trimmed === '' || trimmed.startsWith('{{') || trimmed === 'null' || trimmed === 'undefined') {
+    return null;
+  }
+  return trimmed;
+}
+
+// ============ VALIDATE EMAIL ============
+function isValidEmail(email: string | null): boolean {
+  if (!email) return false;
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  return emailRegex.test(email) && email.length <= 255;
+}
+
+// ============ SANITIZE TAGS ============
+function sanitizeTags(tags: unknown): string[] {
+  if (!Array.isArray(tags)) return [];
+  return tags
+    .map(t => sanitizeString(t))
+    .filter((t): t is string => t !== null && t.length > 0);
+}
+
 // ============ PROCESS SINGLE LEAD ============
 async function processLead(
   supabase: SupabaseClient,
@@ -72,36 +99,58 @@ async function processLead(
   requestId: string
 ): Promise<{ success: boolean; action: string; client_id?: string; error?: string; event_id?: string }> {
   
-  const source = body.source || sourceHeader;
-  
-  if (!body.email && !body.phone) {
-    return { success: false, action: 'error', error: 'Either email or phone is required' };
-  }
-
-  const emailNormalized = body.email ? body.email.toLowerCase().trim() : null;
-  const phoneNormalized = normalizePhone(body.phone);
-  const fullName = body.full_name || 
-    (body.first_name && body.last_name ? `${body.first_name} ${body.last_name}` : 
-     body.first_name || body.last_name || null);
-
-  const eventId = body.event_id || 
-    body.external_manychat_id || 
-    body.manychat_subscriber_id ||
-    body.subscriber_id ||
-    body.external_ghl_id ||
-    body.ghl_contact_id ||
-    `${source}_${emailNormalized || phoneNormalized}_${Date.now()}`;
-
-  const manychatId = body.external_manychat_id || body.manychat_subscriber_id || body.subscriber_id || null;
-  const ghlId = body.external_ghl_id || body.ghl_contact_id || null;
-
-  const utmSource = body.utm_source || null;
-  const utmMedium = body.utm_medium || null;
-  const utmCampaign = body.utm_campaign || body.campaign || null;
-  const utmContent = body.utm_content || null;
-  const utmTerm = body.utm_term || null;
-
   try {
+    const source = sanitizeString(body.source) || sourceHeader;
+    
+    // Sanitize all inputs
+    const rawEmail = sanitizeString(body.email);
+    const rawPhone = sanitizeString(body.phone);
+    const rawName = sanitizeString(body.full_name);
+    const firstName = sanitizeString(body.first_name);
+    const lastName = sanitizeString(body.last_name);
+    
+    // Normalize and validate
+    const emailNormalized = rawEmail && isValidEmail(rawEmail) ? rawEmail.toLowerCase() : null;
+    const phoneNormalized = normalizePhone(rawPhone || undefined);
+    
+    // Must have at least one valid contact method
+    if (!emailNormalized && !phoneNormalized) {
+      return { 
+        success: false, 
+        action: 'skipped', 
+        error: 'No valid email or phone',
+        event_id: `invalid_${Date.now()}`
+      };
+    }
+
+    // Build full name
+    const fullName = rawName || 
+      (firstName && lastName ? `${firstName} ${lastName}` : 
+       firstName || lastName || null);
+
+    // Sanitize external IDs
+    const manychatId = sanitizeString(body.external_manychat_id) || 
+                       sanitizeString(body.manychat_subscriber_id) || 
+                       sanitizeString(body.subscriber_id) || null;
+    const ghlId = sanitizeString(body.external_ghl_id) || 
+                  sanitizeString(body.ghl_contact_id) || null;
+
+    // Generate event_id for idempotency
+    const eventId = sanitizeString(body.event_id) || 
+      manychatId ||
+      ghlId ||
+      `${source}_${emailNormalized || phoneNormalized}_${Date.now()}`;
+
+    // Sanitize UTM fields
+    const utmSource = sanitizeString(body.utm_source);
+    const utmMedium = sanitizeString(body.utm_medium);
+    const utmCampaign = sanitizeString(body.utm_campaign) || sanitizeString(body.campaign);
+    const utmContent = sanitizeString(body.utm_content);
+    const utmTerm = sanitizeString(body.utm_term);
+    
+    // Sanitize tags
+    const tags = sanitizeTags(body.tags);
+
     // Idempotency check
     const { data: existingEvent } = await supabase
       .from('lead_events')
@@ -117,7 +166,6 @@ async function processLead(
     // Find existing client
     let existingClient: ClientRecord | null = null;
     
-    // Priority search: email first, then phone, then external IDs
     if (emailNormalized) {
       const { data } = await supabase
         .from('clients')
@@ -172,9 +220,9 @@ async function processLead(
       if (!existingClient.utm_content && utmContent) updates.utm_content = utmContent;
       if (!existingClient.utm_term && utmTerm) updates.utm_term = utmTerm;
       
-      if (body.tags && body.tags.length > 0) {
+      if (tags.length > 0) {
         const existingTags = existingClient.tags || [];
-        updates.tags = [...new Set([...existingTags, ...body.tags])];
+        updates.tags = [...new Set([...existingTags, ...tags])];
       }
 
       updates.last_lead_at = new Date().toISOString();
@@ -207,7 +255,7 @@ async function processLead(
           last_lead_at: new Date().toISOString(),
           manychat_subscriber_id: manychatId,
           ghl_contact_id: ghlId,
-          tags: body.tags || [],
+          tags: tags,
           customer_metadata: body.metadata || {},
         })
         .select('id')
@@ -234,8 +282,8 @@ async function processLead(
     
   } catch (error) {
     const msg = error instanceof Error ? error.message : 'Unknown error';
-    console.error(`[${requestId}] Lead error:`, msg);
-    return { success: false, action: 'error', error: msg, event_id: eventId };
+    console.error(`[${requestId}] Lead processing error:`, msg);
+    return { success: false, action: 'error', error: msg };
   }
 }
 
@@ -245,12 +293,13 @@ async function processBatch(
   leads: LeadPayload[],
   sourceHeader: string,
   requestId: string
-): Promise<{ processed: number; created: number; updated: number; skipped: number; errors: number }> {
+): Promise<{ processed: number; created: number; updated: number; skipped: number; errors: number; errorDetails: string[] }> {
   let processed = 0;
   let created = 0;
   let updated = 0;
   let skipped = 0;
   let errors = 0;
+  const errorDetails: string[] = [];
 
   // Process in parallel batches of 10
   const BATCH_SIZE = 10;
@@ -262,19 +311,23 @@ async function processBatch(
     
     for (const result of results) {
       processed++;
-      if (!result.success) errors++;
-      else if (result.action === 'created') created++;
+      if (!result.success && result.action === 'error') {
+        errors++;
+        if (errorDetails.length < 10) {
+          errorDetails.push(result.error || 'Unknown error');
+        }
+      } else if (result.action === 'created') created++;
       else if (result.action === 'updated') updated++;
       else if (result.action === 'skipped') skipped++;
     }
     
     if (processed % 100 === 0) {
-      console.log(`[${requestId}] Progress: ${processed}/${leads.length}`);
+      console.log(`[${requestId}] Progress: ${processed}/${leads.length} (${created} created, ${updated} updated, ${skipped} skipped, ${errors} errors)`);
     }
   }
 
   console.log(`[${requestId}] BATCH COMPLETE: ${processed} processed, ${created} created, ${updated} updated, ${skipped} skipped, ${errors} errors`);
-  return { processed, created, updated, skipped, errors };
+  return { processed, created, updated, skipped, errors, errorDetails };
 }
 
 // ============ MAIN HANDLER ============
@@ -309,7 +362,16 @@ Deno.serve(async (req) => {
     }
 
     const sourceHeader = req.headers.get('x-source') || 'api';
-    const body = await req.json();
+    
+    let body: LeadPayload | { leads: LeadPayload[] };
+    try {
+      body = await req.json();
+    } catch {
+      return new Response(
+        JSON.stringify({ error: 'Invalid JSON body' }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
 
     const supabase = createClient(
       Deno.env.get('SUPABASE_URL')!,
@@ -317,9 +379,16 @@ Deno.serve(async (req) => {
     );
 
     // ============ BATCH MODE ============
-    if (body.leads && Array.isArray(body.leads)) {
+    if ('leads' in body && Array.isArray(body.leads)) {
       const leads: LeadPayload[] = body.leads;
       const totalLeads = leads.length;
+      
+      if (totalLeads === 0) {
+        return new Response(
+          JSON.stringify({ success: true, message: 'No leads to process' }),
+          { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
       
       console.log(`[${requestId}] BATCH MODE: Processing ${totalLeads} leads`);
 
@@ -332,7 +401,7 @@ Deno.serve(async (req) => {
           JSON.stringify({ 
             success: true, 
             mode: 'async',
-            message: `Processing ${totalLeads} leads in background`,
+            message: `Processing ${totalLeads} leads in background. Check logs for progress.`,
             total: totalLeads
           }),
           { status: 202, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
@@ -345,7 +414,7 @@ Deno.serve(async (req) => {
       console.log(`[${requestId}] Completed in ${duration}ms`);
 
       return new Response(
-        JSON.stringify({ success: true, mode: 'sync', ...result }),
+        JSON.stringify({ success: true, mode: 'sync', duration_ms: duration, ...result }),
         { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
@@ -361,9 +430,10 @@ Deno.serve(async (req) => {
         success: result.success, 
         action: result.action, 
         client_id: result.client_id,
-        source: body.source || sourceHeader,
+        source: (body as LeadPayload).source || sourceHeader,
         event_id: result.event_id,
-        error: result.error
+        error: result.error,
+        duration_ms: duration
       }),
       { status: result.success ? 200 : 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
