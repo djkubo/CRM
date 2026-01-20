@@ -100,6 +100,81 @@ function mapPayPalStatus(status: string, eventCode: string): string {
   return 'pending';
 }
 
+// Generate 31-day chunks for PayPal API (which has 31-day max range limit)
+function generateDateChunks(startDate: Date, endDate: Date): Array<{start: Date, end: Date}> {
+  const chunks: Array<{start: Date, end: Date}> = [];
+  const CHUNK_DAYS = 30; // Use 30 to be safe (PayPal limit is 31)
+  
+  let currentStart = new Date(startDate);
+  
+  while (currentStart < endDate) {
+    const chunkEnd = new Date(currentStart.getTime() + CHUNK_DAYS * 24 * 60 * 60 * 1000);
+    const actualEnd = chunkEnd > endDate ? endDate : chunkEnd;
+    
+    chunks.push({
+      start: new Date(currentStart),
+      end: new Date(actualEnd)
+    });
+    
+    currentStart = new Date(actualEnd.getTime() + 1); // Move to next chunk
+  }
+  
+  return chunks;
+}
+
+async function fetchPayPalChunk(
+  accessToken: string,
+  startDate: string,
+  endDate: string,
+  fetchAll: boolean
+): Promise<PayPalTransaction[]> {
+  let allTransactions: PayPalTransaction[] = [];
+  let currentPage = 1;
+  let totalPages = 1;
+  const maxPages = fetchAll ? 100 : 1;
+
+  while (currentPage <= totalPages && currentPage <= maxPages) {
+    const url = new URL("https://api-m.paypal.com/v1/reporting/transactions");
+    url.searchParams.set("start_date", startDate);
+    url.searchParams.set("end_date", endDate);
+    url.searchParams.set("page_size", "100");
+    url.searchParams.set("page", String(currentPage));
+    url.searchParams.set("fields", "transaction_info,payer_info");
+
+    const response = await fetch(url.toString(), {
+      headers: {
+        "Authorization": `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (!response.ok) {
+      const error = await response.text();
+      
+      if (response.status === 404 || error.includes("NO_DATA")) {
+        console.log(`No transactions found in chunk ${startDate} - ${endDate}`);
+        break;
+      }
+      
+      console.error(`PayPal API error for chunk ${startDate} - ${endDate}:`, error);
+      throw new Error(`PayPal API error: ${error}`);
+    }
+
+    const data: PayPalSearchResponse = await response.json();
+    
+    if (data.transaction_details) {
+      allTransactions = allTransactions.concat(data.transaction_details);
+    }
+    
+    totalPages = data.total_pages || 1;
+    console.log(`  📄 Page ${currentPage}/${totalPages}: ${data.transaction_details?.length || 0} transactions`);
+    
+    currentPage++;
+  }
+
+  return allTransactions;
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
@@ -132,13 +207,13 @@ Deno.serve(async (req) => {
     const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    let startDate: string;
-    let endDate: string;
+    let startDate: Date;
+    let endDate: Date;
     let fetchAll = false;
 
     // PayPal API limit: max 3 years of history
     const now = new Date();
-    const threeYearsAgo = new Date(now.getTime() - (3 * 365 - 7) * 24 * 60 * 60 * 1000); // 3 years minus 1 week for safety
+    const threeYearsAgo = new Date(now.getTime() - (3 * 365 - 7) * 24 * 60 * 60 * 1000);
 
     try {
       const body = await req.json();
@@ -151,20 +226,19 @@ Deno.serve(async (req) => {
           console.log(`⚠️ Requested start ${body.startDate} exceeds PayPal 3-year limit, clamping to ${threeYearsAgo.toISOString()}`);
           requestedStart = threeYearsAgo;
         }
-        startDate = requestedStart.toISOString();
-        endDate = body.endDate;
+        startDate = requestedStart;
+        endDate = new Date(body.endDate);
       } else {
-        const thirtyOneDaysAgo = new Date(now.getTime() - 31 * 24 * 60 * 60 * 1000);
-        startDate = thirtyOneDaysAgo.toISOString();
-        endDate = now.toISOString();
+        // Default: last 31 days
+        startDate = new Date(now.getTime() - 31 * 24 * 60 * 60 * 1000);
+        endDate = now;
       }
     } catch {
-      const thirtyOneDaysAgo = new Date(now.getTime() - 31 * 24 * 60 * 60 * 1000);
-      startDate = thirtyOneDaysAgo.toISOString();
-      endDate = now.toISOString();
+      startDate = new Date(now.getTime() - 31 * 24 * 60 * 60 * 1000);
+      endDate = now;
     }
 
-    console.log(`🔄 PayPal Sync - from ${startDate} to ${endDate}, fetchAll: ${fetchAll}`);
+    console.log(`🔄 PayPal Sync - from ${startDate.toISOString()} to ${endDate.toISOString()}, fetchAll: ${fetchAll}`);
 
     // Create sync_run record
     const { data: syncRun } = await supabase
@@ -172,7 +246,7 @@ Deno.serve(async (req) => {
       .insert({
         source: 'paypal',
         status: 'running',
-        metadata: { fetchAll, startDate, endDate }
+        metadata: { fetchAll, startDate: startDate.toISOString(), endDate: endDate.toISOString() }
       })
       .select('id')
       .single();
@@ -182,51 +256,29 @@ Deno.serve(async (req) => {
     const accessToken = await getPayPalAccessToken(paypalClientId, paypalSecret);
     console.log("✅ Got PayPal access token");
 
+    // Generate 30-day chunks to respect PayPal's 31-day limit
+    const dateChunks = generateDateChunks(startDate, endDate);
+    console.log(`📅 Split into ${dateChunks.length} chunks of max 30 days each`);
+
     let allTransactions: PayPalTransaction[] = [];
-    let currentPage = 1;
-    let totalPages = 1;
-    const maxPages = fetchAll ? 100 : 1;
 
-    while (currentPage <= totalPages && currentPage <= maxPages) {
-      const url = new URL("https://api-m.paypal.com/v1/reporting/transactions");
-      url.searchParams.set("start_date", startDate);
-      url.searchParams.set("end_date", endDate);
-      url.searchParams.set("page_size", "100");
-      url.searchParams.set("page", String(currentPage));
-      url.searchParams.set("fields", "transaction_info,payer_info");
-
-      const response = await fetch(url.toString(), {
-        headers: {
-          "Authorization": `Bearer ${accessToken}`,
-          "Content-Type": "application/json",
-        },
-      });
-
-      if (!response.ok) {
-        const error = await response.text();
-        console.error("PayPal API error:", error);
-        
-        if (response.status === 404 || error.includes("NO_DATA")) {
-          console.log("No transactions found in date range");
-          break;
-        }
-        
-        return new Response(
-          JSON.stringify({ error: "PayPal API error", details: error }),
-          { status: response.status, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    for (let i = 0; i < dateChunks.length; i++) {
+      const chunk = dateChunks[i];
+      console.log(`🔄 Chunk ${i + 1}/${dateChunks.length}: ${chunk.start.toISOString().split('T')[0]} → ${chunk.end.toISOString().split('T')[0]}`);
+      
+      try {
+        const chunkTransactions = await fetchPayPalChunk(
+          accessToken,
+          chunk.start.toISOString(),
+          chunk.end.toISOString(),
+          fetchAll
         );
+        allTransactions = allTransactions.concat(chunkTransactions);
+        console.log(`  ✅ Chunk ${i + 1}: ${chunkTransactions.length} transactions (total: ${allTransactions.length})`);
+      } catch (error) {
+        console.error(`  ❌ Chunk ${i + 1} failed:`, error);
+        // Continue with next chunk instead of failing completely
       }
-
-      const data: PayPalSearchResponse = await response.json();
-      
-      if (data.transaction_details) {
-        allTransactions = allTransactions.concat(data.transaction_details);
-      }
-      
-      totalPages = data.total_pages || 1;
-      console.log(`📄 Page ${currentPage}/${totalPages}: ${data.transaction_details?.length || 0} transactions (total: ${allTransactions.length})`);
-      
-      currentPage++;
     }
 
     console.log(`✅ Fetched ${allTransactions.length} total transactions from PayPal`);
@@ -384,7 +436,14 @@ Deno.serve(async (req) => {
           total_fetched: allTransactions.length,
           total_inserted: syncedCount,
           total_skipped: skippedNoEmail + skippedDuplicate,
-          metadata: { fetchAll, startDate, endDate, paidCount, failedCount }
+          metadata: { 
+            fetchAll, 
+            startDate: startDate.toISOString(), 
+            endDate: endDate.toISOString(), 
+            paidCount, 
+            failedCount,
+            chunks: dateChunks.length 
+          }
         })
         .eq('id', syncRunId);
     }
@@ -399,7 +458,8 @@ Deno.serve(async (req) => {
         failed_count: failedCount,
         skipped_no_email: skippedNoEmail,
         total_fetched: allTransactions.length,
-        date_range: { start: startDate, end: endDate },
+        date_range: { start: startDate.toISOString(), end: endDate.toISOString() },
+        chunks_processed: dateChunks.length,
         sync_run_id: syncRunId,
       }),
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
