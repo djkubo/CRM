@@ -67,6 +67,96 @@ serve(async (req) => {
     }
 
     const authHeader = 'Basic ' + btoa(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`);
+
+    // Check if this is a verify request
+    const url = new URL(req.url);
+    const action = url.searchParams.get('action');
+    
+    if (action === 'send-verify') {
+      const body = await req.json();
+      const { to, channel = 'whatsapp' } = body;
+      
+      if (!to) {
+        return new Response(
+          JSON.stringify({ error: 'Phone number (to) is required' }),
+          { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+
+      // First get Verify Services to find the SID
+      const verifyServicesResponse = await fetch(
+        'https://verify.twilio.com/v2/Services?PageSize=10',
+        { headers: { 'Authorization': authHeader, 'Content-Type': 'application/json' } }
+      );
+      
+      if (!verifyServicesResponse.ok) {
+        return new Response(
+          JSON.stringify({ error: 'Failed to fetch Verify Services' }),
+          { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+
+      const verifyServicesResult = await verifyServicesResponse.json();
+      const verifyServices = verifyServicesResult.services || [];
+      
+      if (verifyServices.length === 0) {
+        return new Response(
+          JSON.stringify({ error: 'No Verify Services found in your Twilio account' }),
+          { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+
+      // Use the first Verify Service
+      const verifyServiceSid = verifyServices[0].sid;
+      console.log(`Using Verify Service: ${verifyServiceSid} (${verifyServices[0].friendly_name})`);
+
+      // Send verification
+      const verifyUrl = `https://verify.twilio.com/v2/Services/${verifyServiceSid}/Verifications`;
+      const formData = new URLSearchParams();
+      formData.append('To', to);
+      formData.append('Channel', channel); // sms, whatsapp, call, email
+
+      console.log(`Sending ${channel} verification to ${to}...`);
+
+      const verifyResponse = await fetch(verifyUrl, {
+        method: 'POST',
+        headers: {
+          'Authorization': authHeader,
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: formData.toString(),
+      });
+
+      const verifyResult = await verifyResponse.json();
+      
+      if (!verifyResponse.ok) {
+        console.error('Verify error:', verifyResult);
+        return new Response(
+          JSON.stringify({ 
+            error: 'Failed to send verification',
+            details: verifyResult.message || verifyResult,
+            code: verifyResult.code
+          }),
+          { status: verifyResponse.status, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+
+      console.log('Verify sent successfully:', verifyResult);
+      return new Response(
+        JSON.stringify({
+          success: true,
+          to: verifyResult.to,
+          channel: verifyResult.channel,
+          status: verifyResult.status,
+          sid: verifyResult.sid,
+          service_sid: verifyServiceSid,
+          service_name: verifyServices[0].friendly_name,
+        }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // Default: List all templates
     const results: any = {};
 
     // 1. Content Templates (WhatsApp templates)
