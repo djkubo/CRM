@@ -67,6 +67,20 @@ interface RecoveryResult {
   };
 }
 
+interface SyncRunRecord {
+  id: string;
+  source: string;
+  status: string;
+  started_at: string;
+  completed_at?: string;
+  metadata?: Record<string, unknown>;
+  error_message?: string;
+  total_fetched?: number;
+  total_inserted?: number;
+  total_updated?: number;
+  total_skipped?: number;
+}
+
 async function processInvoice(
   stripe: Stripe,
   invoice: Stripe.Invoice,
@@ -147,9 +161,9 @@ async function processInvoice(
       result.summary.total_recovered += paidInvoice.amount_paid;
       charged = true;
     }
-  } catch (error: any) {
+  } catch (error: unknown) {
     cardsTried++;
-    lastError = error.message || "Unknown error";
+    lastError = error instanceof Error ? error.message : "Unknown error";
     console.log(`❌ Default payment failed: ${lastError}`);
   }
 
@@ -182,9 +196,9 @@ async function processInvoice(
           result.summary.total_recovered += paidInvoice.amount_paid;
           charged = true;
         }
-      } catch (error: any) {
+      } catch (error: unknown) {
         cardsTried++;
-        lastError = error.message || "Unknown error";
+        lastError = error instanceof Error ? error.message : "Unknown error";
         console.log(`❌ Card ${pm.card?.last4} failed: ${lastError}`);
       }
     }
@@ -206,6 +220,144 @@ async function processInvoice(
   return true;
 }
 
+// Background task to process all invoices and save results
+async function runRecoveryInBackground(
+  stripe: Stripe,
+  supabaseServiceClient: any,
+  syncRunId: string,
+  hours_lookback: number,
+  starting_after?: string
+): Promise<void> {
+  const startTime = Date.now();
+  
+  try {
+    const cutoffTimestamp = Math.floor(Date.now() / 1000) - (hours_lookback * 60 * 60);
+    console.log(`🔄 Background processing started for sync run ${syncRunId}`);
+    console.log(`📅 Cutoff date: ${new Date(cutoffTimestamp * 1000).toISOString()}`);
+
+    const result: RecoveryResult = {
+      succeeded: [],
+      failed: [],
+      skipped: [],
+      summary: {
+        total_invoices: 0,
+        processed_invoices: 0,
+        total_recovered: 0,
+        total_failed_amount: 0,
+        total_skipped_amount: 0,
+        currency: "usd",
+        is_partial: false,
+        remaining_invoices: 0,
+      },
+    };
+
+    let currentStartingAfter = starting_after;
+    let hasMore = true;
+    let totalFetched = 0;
+
+    while (hasMore) {
+      const elapsed = Date.now() - startTime;
+      if (elapsed > MAX_EXECUTION_MS * 2) { // Give background more time
+        console.log(`⏰ Background time limit reached (${elapsed}ms)`);
+        result.summary.is_partial = true;
+        break;
+      }
+
+      const params: Stripe.InvoiceListParams = {
+        status: "open",
+        limit: BATCH_SIZE,
+        created: { gte: cutoffTimestamp },
+        expand: ["data.subscription", "data.customer"],
+      };
+      if (currentStartingAfter) params.starting_after = currentStartingAfter;
+
+      await sleep(API_DELAY_MS);
+      const response = await stripe.invoices.list(params);
+      const invoices = response.data;
+      hasMore = response.has_more;
+      totalFetched += invoices.length;
+
+      console.log(`📄 Batch: ${invoices.length} invoices (total: ${totalFetched}, hasMore: ${hasMore})`);
+
+      for (const invoice of invoices) {
+        await processInvoice(stripe, invoice, result);
+        result.summary.processed_invoices++;
+        currentStartingAfter = invoice.id;
+      }
+
+      result.summary.total_invoices = totalFetched;
+
+      // Update sync run progress
+      await supabaseServiceClient
+        .from("sync_runs")
+        .update({
+          metadata: {
+            recovered: result.summary.total_recovered / 100,
+            failed: result.summary.total_failed_amount / 100,
+            skipped: result.summary.total_skipped_amount / 100,
+            processed: result.summary.processed_invoices,
+            last_invoice: currentStartingAfter,
+          },
+          total_fetched: totalFetched,
+          total_inserted: result.succeeded.length,
+          total_skipped: result.skipped.length,
+        })
+        .eq("id", syncRunId);
+    }
+
+    // Complete the sync run
+    const elapsed = Date.now() - startTime;
+    console.log(`\n🏁 Background Recovery Complete in ${elapsed}ms!`);
+    console.log(`📊 Processed: ${result.summary.processed_invoices}/${totalFetched}`);
+    console.log(`✅ Recovered: $${(result.summary.total_recovered / 100).toFixed(2)}`);
+    console.log(`❌ Failed: $${(result.summary.total_failed_amount / 100).toFixed(2)}`);
+    console.log(`🚫 Skipped: $${(result.summary.total_skipped_amount / 100).toFixed(2)}`);
+
+    await supabaseServiceClient
+      .from("sync_runs")
+      .update({
+        status: result.summary.is_partial ? "partial" : "completed",
+        completed_at: new Date().toISOString(),
+        metadata: {
+          recovered_amount: result.summary.total_recovered / 100,
+          failed_amount: result.summary.total_failed_amount / 100,
+          skipped_amount: result.summary.total_skipped_amount / 100,
+          succeeded_count: result.succeeded.length,
+          failed_count: result.failed.length,
+          skipped_count: result.skipped.length,
+          execution_time_ms: elapsed,
+          succeeded: result.succeeded,
+          failed: result.failed,
+          skipped: result.skipped,
+        },
+        total_fetched: totalFetched,
+        total_inserted: result.succeeded.length,
+        total_updated: 0,
+        total_skipped: result.skipped.length,
+      })
+      .eq("id", syncRunId);
+
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : "Unknown error";
+    console.error(`❌ Background recovery failed:`, errorMessage);
+    
+    await supabaseServiceClient
+      .from("sync_runs")
+      .update({
+        status: "failed",
+        completed_at: new Date().toISOString(),
+        error_message: errorMessage,
+      })
+      .eq("id", syncRunId);
+  }
+}
+
+// Handle shutdown gracefully
+addEventListener('beforeunload', (ev: Event) => {
+  const detail = (ev as CustomEvent).detail;
+  console.log('🛑 Function shutdown due to:', detail?.reason || 'unknown');
+});
+
 serve(async (req) => {
   const origin = req.headers.get("origin");
   const corsHeaders = getCorsHeaders(origin);
@@ -213,8 +365,6 @@ serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
   }
-
-  const startTime = Date.now();
 
   try {
     // SECURITY: Verify JWT authentication
@@ -242,7 +392,7 @@ serve(async (req) => {
 
     console.log("✅ User authenticated:", user.email);
 
-    const { hours_lookback = 24, starting_after } = await req.json();
+    const { hours_lookback = 24, starting_after, background = false } = await req.json();
     
     const validHours = [24, 168, 360, 720, 1440];
     if (!validHours.includes(hours_lookback)) {
@@ -250,11 +400,6 @@ serve(async (req) => {
         JSON.stringify({ error: `Invalid hours_lookback. Valid values: ${validHours.join(", ")}` }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
-    }
-
-    console.log(`🔍 Smart Recovery starting - Looking back ${hours_lookback} hours`);
-    if (starting_after) {
-      console.log(`📍 Resuming from invoice: ${starting_after}`);
     }
 
     const stripeSecretKey = Deno.env.get("STRIPE_SECRET_KEY");
@@ -266,6 +411,62 @@ serve(async (req) => {
       apiVersion: "2023-10-16",
     });
 
+    // Create service client for background operations
+    const supabaseServiceClient = createClient(
+      Deno.env.get("SUPABASE_URL")!,
+      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
+    );
+
+    // BACKGROUND MODE: Start processing and return immediately
+    if (background) {
+      console.log(`🚀 Starting BACKGROUND Smart Recovery - ${hours_lookback} hours`);
+      
+      // Create sync run record
+      const { data: syncRun, error: syncError } = await supabaseServiceClient
+        .from("sync_runs")
+        .insert({
+          source: "smart_recovery",
+          status: "running",
+          started_at: new Date().toISOString(),
+          metadata: {
+            hours_lookback,
+            starting_after: starting_after || null,
+            initiated_by: user.email,
+          },
+        })
+        .select()
+        .single();
+
+      if (syncError || !syncRun) {
+        throw new Error("Failed to create sync run: " + (syncError?.message || "Unknown"));
+      }
+
+      console.log(`📝 Created sync run: ${syncRun.id}`);
+
+      // Start background processing using EdgeRuntime.waitUntil
+      // @ts-ignore - EdgeRuntime is available in Supabase Edge Functions
+      EdgeRuntime.waitUntil(
+        runRecoveryInBackground(stripe, supabaseServiceClient, syncRun.id, hours_lookback, starting_after)
+      );
+
+      return new Response(
+        JSON.stringify({ 
+          message: "Smart Recovery started in background",
+          sync_run_id: syncRun.id,
+          status: "running",
+          hours_lookback,
+        }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    // FOREGROUND MODE: Original synchronous processing
+    console.log(`🔍 Smart Recovery starting - Looking back ${hours_lookback} hours`);
+    if (starting_after) {
+      console.log(`📍 Resuming from invoice: ${starting_after}`);
+    }
+
+    const startTime = Date.now();
     const cutoffTimestamp = Math.floor(Date.now() / 1000) - (hours_lookback * 60 * 60);
     console.log(`📅 Cutoff date: ${new Date(cutoffTimestamp * 1000).toISOString()}`);
 

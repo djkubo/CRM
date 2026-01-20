@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/integrations/supabase/client";
+
 export interface RecoverySuccessItem {
   invoice_id: string;
   customer_email: string | null;
@@ -73,12 +74,19 @@ export const RECOVERY_RANGES: { hours: HoursLookback; label: string }[] = [
 // Storage keys for persistence
 const STORAGE_KEY_RESULT = "smart_recovery_result";
 const STORAGE_KEY_STATE = "smart_recovery_state";
+const STORAGE_KEY_BACKGROUND = "smart_recovery_background";
 
 interface PersistedState {
   hours_lookback: HoursLookback;
   starting_after?: string;
   aggregated: AggregatedResult;
   timestamp: number;
+}
+
+interface BackgroundState {
+  sync_run_id: string;
+  hours_lookback: HoursLookback;
+  started_at: string;
 }
 
 function saveState(state: PersistedState) {
@@ -94,7 +102,6 @@ function loadState(): PersistedState | null {
     const raw = localStorage.getItem(STORAGE_KEY_STATE);
     if (!raw) return null;
     const state = JSON.parse(raw) as PersistedState;
-    // Expire after 1 hour
     if (Date.now() - state.timestamp > 60 * 60 * 1000) {
       localStorage.removeItem(STORAGE_KEY_STATE);
       return null;
@@ -122,7 +129,6 @@ function loadResult(): AggregatedResult | null {
     const raw = localStorage.getItem(STORAGE_KEY_RESULT);
     if (!raw) return null;
     const { result, timestamp } = JSON.parse(raw);
-    // Expire after 24 hours
     if (Date.now() - timestamp > 24 * 60 * 60 * 1000) {
       localStorage.removeItem(STORAGE_KEY_RESULT);
       return null;
@@ -137,16 +143,128 @@ function clearResult() {
   localStorage.removeItem(STORAGE_KEY_RESULT);
 }
 
+function saveBackgroundState(state: BackgroundState) {
+  try {
+    localStorage.setItem(STORAGE_KEY_BACKGROUND, JSON.stringify(state));
+  } catch (e) {
+    console.warn("Failed to save background state:", e);
+  }
+}
+
+function loadBackgroundState(): BackgroundState | null {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_BACKGROUND);
+    if (!raw) return null;
+    const state = JSON.parse(raw) as BackgroundState;
+    const startedAt = new Date(state.started_at).getTime();
+    if (Date.now() - startedAt > 2 * 60 * 60 * 1000) {
+      localStorage.removeItem(STORAGE_KEY_BACKGROUND);
+      return null;
+    }
+    return state;
+  } catch {
+    return null;
+  }
+}
+
+function clearBackgroundState() {
+  localStorage.removeItem(STORAGE_KEY_BACKGROUND);
+}
+
 export function useSmartRecovery() {
   const [isRunning, setIsRunning] = useState(false);
+  const [isBackgroundRunning, setIsBackgroundRunning] = useState(false);
   const [result, setResult] = useState<AggregatedResult | null>(null);
   const [selectedRange, setSelectedRange] = useState<HoursLookback | null>(null);
   const [progress, setProgress] = useState<{ batch: number; message: string } | null>(null);
   const [hasPendingResume, setHasPendingResume] = useState(false);
+  const [backgroundSyncId, setBackgroundSyncId] = useState<string | null>(null);
   const abortRef = useRef(false);
+  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const { toast } = useToast();
 
-  // Load persisted result on mount
+  const startPolling = useCallback((syncRunId: string) => {
+    if (pollingRef.current) {
+      clearInterval(pollingRef.current);
+    }
+    
+    const poll = async () => {
+      try {
+        const { data: syncRun, error } = await supabase
+          .from("sync_runs")
+          .select("*")
+          .eq("id", syncRunId)
+          .single();
+        
+        if (error || !syncRun) {
+          console.error("Error polling sync run:", error);
+          return;
+        }
+        
+        const metadata = syncRun.metadata as Record<string, unknown> | null;
+        
+        if (metadata) {
+          setProgress({
+            batch: (metadata.processed as number) || 0,
+            message: `Procesando en segundo plano... ($${((metadata.recovered as number) || 0).toFixed(2)} recuperados)`,
+          });
+        }
+        
+        if (syncRun.status === "completed" || syncRun.status === "partial" || syncRun.status === "failed") {
+          if (pollingRef.current) {
+            clearInterval(pollingRef.current);
+            pollingRef.current = null;
+          }
+          setIsBackgroundRunning(false);
+          setIsRunning(false);
+          clearBackgroundState();
+          
+          if (syncRun.status === "failed") {
+            toast({
+              title: "Error en Smart Recovery",
+              description: syncRun.error_message || "Error desconocido en proceso de fondo",
+              variant: "destructive",
+            });
+            setProgress(null);
+            return;
+          }
+          
+          if (metadata) {
+            const aggregated: AggregatedResult = {
+              succeeded: (metadata.succeeded as RecoverySuccessItem[]) || [],
+              failed: (metadata.failed as RecoveryFailedItem[]) || [],
+              skipped: (metadata.skipped as RecoverySkippedItem[]) || [],
+              summary: {
+                total_invoices: syncRun.total_fetched || 0,
+                total_recovered: ((metadata.recovered_amount as number) || 0) * 100,
+                total_failed_amount: ((metadata.failed_amount as number) || 0) * 100,
+                total_skipped_amount: ((metadata.skipped_amount as number) || 0) * 100,
+                currency: "usd",
+                batches_processed: 1,
+              },
+            };
+            
+            setResult(aggregated);
+            saveResult(aggregated);
+            
+            toast({
+              title: syncRun.status === "partial" ? "Smart Recovery Parcial" : "Smart Recovery Completado",
+              description: `Recuperados: $${((metadata.recovered_amount as number) || 0).toFixed(2)}`,
+            });
+          }
+          
+          setProgress(null);
+        }
+      } catch (err) {
+        console.error("Polling error:", err);
+      }
+    };
+    
+    poll();
+    pollingRef.current = setInterval(poll, 3000);
+  }, [toast]);
+
+  // Load persisted result and check for background process on mount
   useEffect(() => {
     const savedResult = loadResult();
     if (savedResult) {
@@ -156,12 +274,25 @@ export function useSmartRecovery() {
     if (pendingState) {
       setHasPendingResume(true);
       setSelectedRange(pendingState.hours_lookback);
-      // Also restore partial results if available
       if (pendingState.aggregated.summary.batches_processed > 0) {
         setResult(pendingState.aggregated);
       }
     }
-  }, []);
+    
+    const bgState = loadBackgroundState();
+    if (bgState) {
+      setBackgroundSyncId(bgState.sync_run_id);
+      setSelectedRange(bgState.hours_lookback);
+      setIsBackgroundRunning(true);
+      startPolling(bgState.sync_run_id);
+    }
+    
+    return () => {
+      if (pollingRef.current) {
+        clearInterval(pollingRef.current);
+      }
+    };
+  }, [startPolling]);
 
   const createEmptyAggregated = (): AggregatedResult => ({
     succeeded: [],
@@ -177,13 +308,59 @@ export function useSmartRecovery() {
     },
   });
 
+  const runRecoveryBackground = useCallback(async (hours_lookback: HoursLookback) => {
+    setIsRunning(true);
+    setIsBackgroundRunning(true);
+    setSelectedRange(hours_lookback);
+    setProgress({ batch: 0, message: "Iniciando Smart Recovery en segundo plano..." });
+
+    try {
+      const { data, error } = await supabase.functions.invoke("recover-revenue", {
+        body: { hours_lookback, background: true },
+      });
+      
+      if (error) {
+        throw new Error(error.message || "Error calling recover-revenue");
+      }
+
+      const syncRunId = data?.sync_run_id;
+      if (!syncRunId) {
+        throw new Error("No sync_run_id received from background process");
+      }
+
+      setBackgroundSyncId(syncRunId);
+      saveBackgroundState({
+        sync_run_id: syncRunId,
+        hours_lookback,
+        started_at: new Date().toISOString(),
+      });
+
+      toast({
+        title: "Smart Recovery Iniciado",
+        description: "El proceso continúa en segundo plano. Puedes cerrar o recargar la página.",
+      });
+
+      startPolling(syncRunId);
+    } catch (error) {
+      console.error("Background recovery error:", error);
+      setIsRunning(false);
+      setIsBackgroundRunning(false);
+      setProgress(null);
+      
+      toast({
+        title: "Error al iniciar Smart Recovery",
+        description: error instanceof Error ? error.message : "Error desconocido",
+        variant: "destructive",
+      });
+    }
+  }, [toast, startPolling]);
+
   const runRecovery = useCallback(async (hours_lookback: HoursLookback, resume = false) => {
     setIsRunning(true);
     setSelectedRange(hours_lookback);
     setHasPendingResume(false);
     abortRef.current = false;
 
-    // Check for pending state to resume
     let aggregated: AggregatedResult;
     let starting_after: string | undefined;
     let batchNum = 0;
@@ -231,7 +408,6 @@ export function useSmartRecovery() {
         }
         const batchResult = data as RecoveryResult;
 
-        // Aggregate results
         aggregated.succeeded.push(...batchResult.succeeded);
         aggregated.failed.push(...batchResult.failed);
         aggregated.skipped.push(...batchResult.skipped);
@@ -241,15 +417,12 @@ export function useSmartRecovery() {
         aggregated.summary.total_skipped_amount += batchResult.summary.total_skipped_amount;
         aggregated.summary.batches_processed = batchNum;
 
-        // Update result in real-time
         setResult({ ...aggregated });
 
-        // Check if there's more to process
         if (batchResult.summary.is_partial && batchResult.summary.next_starting_after) {
           starting_after = batchResult.summary.next_starting_after;
           hasMore = true;
           
-          // Save state for resume capability
           saveState({
             hours_lookback,
             starting_after,
@@ -257,7 +430,6 @@ export function useSmartRecovery() {
             timestamp: Date.now(),
           });
           
-          // Small delay between batches
           await new Promise(r => setTimeout(r, 1000));
         } else {
           hasMore = false;
@@ -266,13 +438,10 @@ export function useSmartRecovery() {
 
       const { summary } = aggregated;
       
-      // Clear pending state on completion
       clearState();
-      // Save final result
       saveResult(aggregated);
       
       if (abortRef.current) {
-        // Keep state for resume if cancelled
         if (hasMore) {
           saveState({
             hours_lookback,
@@ -298,7 +467,6 @@ export function useSmartRecovery() {
       console.error("Smart Recovery error:", error);
       const errMsg = error instanceof Error ? error.message : "Error desconocido";
       
-      // Save state for resume on error
       if (aggregated.summary.batches_processed > 0) {
         saveState({
           hours_lookback,
@@ -338,6 +506,11 @@ export function useSmartRecovery() {
 
   const cancelRecovery = useCallback(() => {
     abortRef.current = true;
+    if (pollingRef.current) {
+      clearInterval(pollingRef.current);
+      pollingRef.current = null;
+    }
+    setIsBackgroundRunning(false);
   }, []);
 
   const dismissPendingResume = useCallback(() => {
@@ -350,20 +523,16 @@ export function useSmartRecovery() {
 
     const rows: string[] = [];
     
-    // Header
     rows.push("Tipo,Invoice ID,Email,Monto,Moneda,Detalle");
 
-    // Succeeded
     result.succeeded.forEach((item) => {
       rows.push(`Recuperado,${item.invoice_id},${item.customer_email || "N/A"},${(item.amount_recovered / 100).toFixed(2)},${item.currency.toUpperCase()},${item.payment_method_used}`);
     });
 
-    // Failed
     result.failed.forEach((item) => {
       rows.push(`Fallido,${item.invoice_id},${item.customer_email || "N/A"},${(item.amount_due / 100).toFixed(2)},${item.currency.toUpperCase()},"${item.error} (${item.cards_tried} tarjetas probadas)"`);
     });
 
-    // Skipped
     result.skipped.forEach((item) => {
       rows.push(`Omitido,${item.invoice_id},${item.customer_email || "N/A"},${(item.amount_due / 100).toFixed(2)},${item.currency.toUpperCase()},${item.reason}`);
     });
@@ -390,16 +559,21 @@ export function useSmartRecovery() {
     setSelectedRange(null);
     clearState();
     clearResult();
+    clearBackgroundState();
     setHasPendingResume(false);
+    setBackgroundSyncId(null);
   }, []);
 
   return {
     isRunning,
+    isBackgroundRunning,
     result,
     selectedRange,
     progress,
     hasPendingResume,
+    backgroundSyncId,
     runRecovery,
+    runRecoveryBackground,
     resumeRecovery,
     cancelRecovery,
     dismissPendingResume,
