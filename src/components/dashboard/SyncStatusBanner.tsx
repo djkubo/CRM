@@ -21,19 +21,19 @@ export function SyncStatusBanner() {
   const [recentCompleted, setRecentCompleted] = useState<SyncRun[]>([]);
 
   const fetchSyncStatus = async () => {
-    // Get running syncs
+    // Get running syncs (including "continuing" status for auto-pagination)
     const { data: running } = await supabase
       .from("sync_runs")
       .select("*")
-      .eq("status", "running")
+      .in("status", ["running", "continuing"])
       .order("started_at", { ascending: false });
 
-    // Get recently completed (last 5 minutes)
+    // Get recently completed (last 5 minutes) or failed
     const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
     const { data: completed } = await supabase
       .from("sync_runs")
       .select("*")
-      .in("status", ["completed", "error"])
+      .in("status", ["completed", "error", "failed"])
       .gte("completed_at", fiveMinutesAgo)
       .order("completed_at", { ascending: false })
       .limit(5);
@@ -77,21 +77,20 @@ export function SyncStatusBanner() {
     return labels[source] || source;
   };
 
-  // Estimate progress based on time (GHL syncs take ~10-15 min for large datasets)
+  // Estimate progress based on fetched contacts for large GHL datasets (150k+)
   const getEstimatedProgress = (sync: SyncRun) => {
-    const startTime = new Date(sync.started_at).getTime();
-    const elapsed = Date.now() - startTime;
-    const estimatedTotal = 15 * 60 * 1000; // 15 minutes estimate
-    const progress = Math.min((elapsed / estimatedTotal) * 100, 95);
-    
-    // If we have fetched data, use that as a better indicator
+    // If we have fetched data, use that as the primary indicator
     if (sync.total_fetched && sync.total_fetched > 0) {
-      // Estimate based on typical GHL contact counts (assume ~5000 contacts max)
-      const estimatedTotal = 5000;
-      return Math.min((sync.total_fetched / estimatedTotal) * 100, 95);
+      // For GHL with 150k+ contacts, estimate based on actual size
+      const estimatedTotal = sync.source === 'ghl' ? 150000 : 5000;
+      return Math.min((sync.total_fetched / estimatedTotal) * 100, 99);
     }
     
-    return progress;
+    // Fallback: time-based estimate (longer for GHL with large datasets)
+    const startTime = new Date(sync.started_at).getTime();
+    const elapsed = Date.now() - startTime;
+    const estimatedTotal = sync.source === 'ghl' ? 60 * 60 * 1000 : 15 * 60 * 1000; // 60 min for GHL
+    return Math.min((elapsed / estimatedTotal) * 100, 95);
   };
 
   return (
@@ -109,15 +108,18 @@ export function SyncStatusBanner() {
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-medium text-foreground">
                   Sincronizando {getSourceLabel(sync.source)}...
+                  {sync.status === 'continuing' && 
+                    <span className="ml-1 text-xs text-primary">(auto-paginando)</span>
+                  }
                 </p>
                 <p className="text-xs text-muted-foreground">
                   Iniciado {formatDistanceToNow(new Date(sync.started_at), { 
                     addSuffix: true, 
                     locale: es 
                   })}
-                  {sync.total_fetched ? ` • ${sync.total_fetched} descargados` : ""}
-                  {sync.total_inserted ? ` • ${sync.total_inserted} nuevos` : ""}
-                  {sync.total_updated ? ` • ${sync.total_updated} actualizados` : ""}
+                  {sync.total_fetched ? ` • ${sync.total_fetched.toLocaleString()} descargados` : ""}
+                  {sync.total_inserted ? ` • ${sync.total_inserted.toLocaleString()} nuevos` : ""}
+                  {sync.total_updated ? ` • ${sync.total_updated.toLocaleString()} actualizados` : ""}
                 </p>
                 {/* Progress bar */}
                 <div className="mt-2 h-1.5 w-full bg-primary/20 rounded-full overflow-hidden">

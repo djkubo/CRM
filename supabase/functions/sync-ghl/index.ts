@@ -47,7 +47,8 @@ async function runGHLSync(
   let totalConflicts = 0;
   let hasMore = true;
   let pageCount = 0;
-  const maxPages = 15; // Reduced to avoid CPU timeout - will auto-continue
+  const maxPages = 20; // Process 20 pages per invocation (100 contacts/page = 2000 per batch)
+  // With auto-continuation, 150k contacts = ~75 continuation cycles (~1-2 hours total)
 
   try {
     while (hasMore && pageCount < maxPages) {
@@ -335,7 +336,7 @@ Deno.serve(async (req) => {
     }
     
     const dryRun = body.dry_run ?? false;
-    const batchSize = body.batch_size ?? 50; // Reduced to avoid CPU timeout
+    const batchSize = Math.min(body.batch_size ?? 100, 100); // Default 100, max 100 (GHL API limit)
     const background = body.background ?? true;
     const cursor = body.checkpoint?.cursor;
     const continueRunId = (body as { continue_run_id?: string }).continue_run_id;
