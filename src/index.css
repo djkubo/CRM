@@ -100,9 +100,29 @@
     @apply border-border;
   }
 
+  html {
+    /* iOS safe area support */
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  }
+
   body {
     @apply bg-background text-foreground font-sans antialiased;
     font-family: 'Inter', sans-serif;
+    /* Prevent overscroll bounce on iOS */
+    overscroll-behavior: none;
+    /* Smooth scrolling */
+    -webkit-overflow-scrolling: touch;
+    /* Prevent text selection on long press */
+    -webkit-user-select: none;
+    user-select: none;
+    /* Prevent callout on long press */
+    -webkit-touch-callout: none;
+  }
+
+  /* Allow text selection in inputs */
+  input, textarea {
+    -webkit-user-select: text;
+    user-select: text;
   }
 }
 
@@ -129,5 +149,24 @@
 
   .gradient-text {
     @apply bg-clip-text text-transparent bg-gradient-to-r from-primary to-emerald-400;
+  }
+
+  /* iOS-style safe area utilities */
+  .safe-area-top {
+    padding-top: env(safe-area-inset-top);
+  }
+
+  .safe-area-bottom {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  /* Native-like touch feedback */
+  .touch-feedback {
+    @apply active:scale-[0.97] active:opacity-80 transition-transform duration-100;
+  }
+
+  /* iOS-style blur header */
+  .glass-header {
+    @apply backdrop-blur-xl bg-background/80 border-b border-border/50;
   }
 }

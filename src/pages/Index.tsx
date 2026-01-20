@@ -99,8 +99,9 @@ const Index = () => {
       
       <Sidebar activeItem={activeMenuItem} onItemClick={setActiveMenuItem} />
       
-      <main className="pl-64">
-        <div className="p-8">
+      {/* Main content with responsive padding */}
+      <main className="md:pl-64 pt-14 md:pt-0">
+        <div className="p-4 md:p-8 safe-area-bottom">
           {renderContent()}
         </div>
       </main>
