@@ -65,6 +65,45 @@ export type Database = {
         }
         Relationships: []
       }
+      balance_snapshots: {
+        Row: {
+          available_amount: number | null
+          connect_reserved: number | null
+          created_at: string | null
+          currency: string | null
+          details: Json | null
+          id: string
+          instant_available: number | null
+          pending_amount: number | null
+          snapshot_at: string | null
+          source: string
+        }
+        Insert: {
+          available_amount?: number | null
+          connect_reserved?: number | null
+          created_at?: string | null
+          currency?: string | null
+          details?: Json | null
+          id?: string
+          instant_available?: number | null
+          pending_amount?: number | null
+          snapshot_at?: string | null
+          source: string
+        }
+        Update: {
+          available_amount?: number | null
+          connect_reserved?: number | null
+          created_at?: string | null
+          currency?: string | null
+          details?: Json | null
+          id?: string
+          instant_available?: number | null
+          pending_amount?: number | null
+          snapshot_at?: string | null
+          source?: string
+        }
+        Relationships: []
+      }
       campaign_executions: {
         Row: {
           attempt_number: number | null
@@ -513,6 +552,72 @@ export type Database = {
           },
         ]
       }
+      disputes: {
+        Row: {
+          amount: number
+          charge_id: string | null
+          created_at: string | null
+          created_at_external: string | null
+          currency: string | null
+          customer_email: string | null
+          customer_id: string | null
+          evidence_due_by: string | null
+          external_dispute_id: string
+          has_evidence: boolean | null
+          id: string
+          is_charge_refundable: boolean | null
+          metadata: Json | null
+          payment_intent_id: string | null
+          reason: string | null
+          source: string
+          status: string
+          synced_at: string | null
+          updated_at_external: string | null
+        }
+        Insert: {
+          amount: number
+          charge_id?: string | null
+          created_at?: string | null
+          created_at_external?: string | null
+          currency?: string | null
+          customer_email?: string | null
+          customer_id?: string | null
+          evidence_due_by?: string | null
+          external_dispute_id: string
+          has_evidence?: boolean | null
+          id?: string
+          is_charge_refundable?: boolean | null
+          metadata?: Json | null
+          payment_intent_id?: string | null
+          reason?: string | null
+          source: string
+          status: string
+          synced_at?: string | null
+          updated_at_external?: string | null
+        }
+        Update: {
+          amount?: number
+          charge_id?: string | null
+          created_at?: string | null
+          created_at_external?: string | null
+          currency?: string | null
+          customer_email?: string | null
+          customer_id?: string | null
+          evidence_due_by?: string | null
+          external_dispute_id?: string
+          has_evidence?: boolean | null
+          id?: string
+          is_charge_refundable?: boolean | null
+          metadata?: Json | null
+          payment_intent_id?: string | null
+          reason?: string | null
+          source?: string
+          status?: string
+          synced_at?: string | null
+          updated_at_external?: string | null
+        }
+        Relationships: []
+      }
       ghl_contacts_raw: {
         Row: {
           external_id: string
@@ -882,6 +987,189 @@ export type Database = {
           },
         ]
       }
+      payment_links: {
+        Row: {
+          active: boolean | null
+          allow_promotion_codes: boolean | null
+          application_fee_amount: number | null
+          application_fee_percent: number | null
+          billing_address_collection: string | null
+          created_at: string | null
+          created_at_external: string | null
+          customer_creation: string | null
+          external_link_id: string
+          id: string
+          line_items: Json | null
+          metadata: Json | null
+          source: string
+          synced_at: string | null
+          url: string
+        }
+        Insert: {
+          active?: boolean | null
+          allow_promotion_codes?: boolean | null
+          application_fee_amount?: number | null
+          application_fee_percent?: number | null
+          billing_address_collection?: string | null
+          created_at?: string | null
+          created_at_external?: string | null
+          customer_creation?: string | null
+          external_link_id: string
+          id?: string
+          line_items?: Json | null
+          metadata?: Json | null
+          source: string
+          synced_at?: string | null
+          url: string
+        }
+        Update: {
+          active?: boolean | null
+          allow_promotion_codes?: boolean | null
+          application_fee_amount?: number | null
+          application_fee_percent?: number | null
+          billing_address_collection?: string | null
+          created_at?: string | null
+          created_at_external?: string | null
+          customer_creation?: string | null
+          external_link_id?: string
+          id?: string
+          line_items?: Json | null
+          metadata?: Json | null
+          source?: string
+          synced_at?: string | null
+          url?: string
+        }
+        Relationships: []
+      }
+      payouts: {
+        Row: {
+          amount: number
+          arrival_date: string | null
+          created_at: string | null
+          created_at_external: string | null
+          currency: string | null
+          description: string | null
+          destination: string | null
+          external_payout_id: string
+          failure_code: string | null
+          failure_message: string | null
+          id: string
+          metadata: Json | null
+          method: string | null
+          source: string
+          status: string
+          synced_at: string | null
+          type: string | null
+        }
+        Insert: {
+          amount: number
+          arrival_date?: string | null
+          created_at?: string | null
+          created_at_external?: string | null
+          currency?: string | null
+          description?: string | null
+          destination?: string | null
+          external_payout_id: string
+          failure_code?: string | null
+          failure_message?: string | null
+          id?: string
+          metadata?: Json | null
+          method?: string | null
+          source: string
+          status: string
+          synced_at?: string | null
+          type?: string | null
+        }
+        Update: {
+          amount?: number
+          arrival_date?: string | null
+          created_at?: string | null
+          created_at_external?: string | null
+          currency?: string | null
+          description?: string | null
+          destination?: string | null
+          external_payout_id?: string
+          failure_code?: string | null
+          failure_message?: string | null
+          id?: string
+          metadata?: Json | null
+          method?: string | null
+          source?: string
+          status?: string
+          synced_at?: string | null
+          type?: string | null
+        }
+        Relationships: []
+      }
+      paypal_subscriptions: {
+        Row: {
+          auto_renewal: boolean | null
+          billing_info: Json | null
+          create_time: string | null
+          created_at: string | null
+          id: string
+          metadata: Json | null
+          payer_email: string | null
+          payer_id: string | null
+          payer_name: string | null
+          paypal_subscription_id: string
+          plan_id: string | null
+          plan_name: string | null
+          quantity: number | null
+          shipping_amount: number | null
+          start_time: string | null
+          status: string
+          subscriber: Json | null
+          synced_at: string | null
+          tax_amount: number | null
+          update_time: string | null
+        }
+        Insert: {
+          auto_renewal?: boolean | null
+          billing_info?: Json | null
+          create_time?: string | null
+          created_at?: string | null
+          id?: string
+          metadata?: Json | null
+          payer_email?: string | null
+          payer_id?: string | null
+          payer_name?: string | null
+          paypal_subscription_id: string
+          plan_id?: string | null
+          plan_name?: string | null
+          quantity?: number | null
+          shipping_amount?: number | null
+          start_time?: string | null
+          status: string
+          subscriber?: Json | null
+          synced_at?: string | null
+          tax_amount?: number | null
+          update_time?: string | null
+        }
+        Update: {
+          auto_renewal?: boolean | null
+          billing_info?: Json | null
+          create_time?: string | null
+          created_at?: string | null
+          id?: string
+          metadata?: Json | null
+          payer_email?: string | null
+          payer_id?: string | null
+          payer_name?: string | null
+          paypal_subscription_id?: string
+          plan_id?: string | null
+          plan_name?: string | null
+          quantity?: number | null
+          shipping_amount?: number | null
+          start_time?: string | null
+          status?: string
+          subscriber?: Json | null
+          synced_at?: string | null
+          tax_amount?: number | null
+          update_time?: string | null
+        }
+        Relationships: []
+      }
       rebuild_logs: {
         Row: {
           completed_at: string | null
@@ -1002,6 +1290,203 @@ export type Database = {
           is_active?: boolean | null
           name?: string
           updated_at?: string | null
+        }
+        Relationships: []
+      }
+      stripe_customers: {
+        Row: {
+          address: Json | null
+          balance: number | null
+          created_at: string | null
+          created_at_stripe: string | null
+          currency: string | null
+          default_source: string | null
+          delinquent: boolean | null
+          description: string | null
+          discount: Json | null
+          email: string | null
+          id: string
+          invoice_prefix: string | null
+          metadata: Json | null
+          name: string | null
+          phone: string | null
+          shipping: Json | null
+          stripe_customer_id: string
+          synced_at: string | null
+          tax_exempt: string | null
+        }
+        Insert: {
+          address?: Json | null
+          balance?: number | null
+          created_at?: string | null
+          created_at_stripe?: string | null
+          currency?: string | null
+          default_source?: string | null
+          delinquent?: boolean | null
+          description?: string | null
+          discount?: Json | null
+          email?: string | null
+          id?: string
+          invoice_prefix?: string | null
+          metadata?: Json | null
+          name?: string | null
+          phone?: string | null
+          shipping?: Json | null
+          stripe_customer_id: string
+          synced_at?: string | null
+          tax_exempt?: string | null
+        }
+        Update: {
+          address?: Json | null
+          balance?: number | null
+          created_at?: string | null
+          created_at_stripe?: string | null
+          currency?: string | null
+          default_source?: string | null
+          delinquent?: boolean | null
+          description?: string | null
+          discount?: Json | null
+          email?: string | null
+          id?: string
+          invoice_prefix?: string | null
+          metadata?: Json | null
+          name?: string | null
+          phone?: string | null
+          shipping?: Json | null
+          stripe_customer_id?: string
+          synced_at?: string | null
+          tax_exempt?: string | null
+        }
+        Relationships: []
+      }
+      stripe_prices: {
+        Row: {
+          active: boolean | null
+          billing_scheme: string | null
+          created_at: string | null
+          created_at_stripe: string | null
+          currency: string | null
+          id: string
+          lookup_key: string | null
+          metadata: Json | null
+          nickname: string | null
+          recurring_interval: string | null
+          recurring_interval_count: number | null
+          recurring_usage_type: string | null
+          stripe_price_id: string
+          stripe_product_id: string | null
+          synced_at: string | null
+          tiers: Json | null
+          transform_quantity: Json | null
+          trial_period_days: number | null
+          type: string | null
+          unit_amount: number | null
+        }
+        Insert: {
+          active?: boolean | null
+          billing_scheme?: string | null
+          created_at?: string | null
+          created_at_stripe?: string | null
+          currency?: string | null
+          id?: string
+          lookup_key?: string | null
+          metadata?: Json | null
+          nickname?: string | null
+          recurring_interval?: string | null
+          recurring_interval_count?: number | null
+          recurring_usage_type?: string | null
+          stripe_price_id: string
+          stripe_product_id?: string | null
+          synced_at?: string | null
+          tiers?: Json | null
+          transform_quantity?: Json | null
+          trial_period_days?: number | null
+          type?: string | null
+          unit_amount?: number | null
+        }
+        Update: {
+          active?: boolean | null
+          billing_scheme?: string | null
+          created_at?: string | null
+          created_at_stripe?: string | null
+          currency?: string | null
+          id?: string
+          lookup_key?: string | null
+          metadata?: Json | null
+          nickname?: string | null
+          recurring_interval?: string | null
+          recurring_interval_count?: number | null
+          recurring_usage_type?: string | null
+          stripe_price_id?: string
+          stripe_product_id?: string | null
+          synced_at?: string | null
+          tiers?: Json | null
+          transform_quantity?: Json | null
+          trial_period_days?: number | null
+          type?: string | null
+          unit_amount?: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "stripe_prices_stripe_product_id_fkey"
+            columns: ["stripe_product_id"]
+            isOneToOne: false
+            referencedRelation: "stripe_products"
+            referencedColumns: ["stripe_product_id"]
+          },
+        ]
+      }
+      stripe_products: {
+        Row: {
+          active: boolean | null
+          created_at: string | null
+          created_at_stripe: string | null
+          description: string | null
+          id: string
+          images: Json | null
+          metadata: Json | null
+          name: string
+          statement_descriptor: string | null
+          stripe_product_id: string
+          synced_at: string | null
+          tax_code: string | null
+          type: string | null
+          unit_label: string | null
+          updated_at_stripe: string | null
+        }
+        Insert: {
+          active?: boolean | null
+          created_at?: string | null
+          created_at_stripe?: string | null
+          description?: string | null
+          id?: string
+          images?: Json | null
+          metadata?: Json | null
+          name: string
+          statement_descriptor?: string | null
+          stripe_product_id: string
+          synced_at?: string | null
+          tax_code?: string | null
+          type?: string | null
+          unit_label?: string | null
+          updated_at_stripe?: string | null
+        }
+        Update: {
+          active?: boolean | null
+          created_at?: string | null
+          created_at_stripe?: string | null
+          description?: string | null
+          id?: string
+          images?: Json | null
+          metadata?: Json | null
+          name?: string
+          statement_descriptor?: string | null
+          stripe_product_id?: string
+          synced_at?: string | null
+          tax_code?: string | null
+          type?: string | null
+          unit_label?: string | null
+          updated_at_stripe?: string | null
         }
         Relationships: []
       }
