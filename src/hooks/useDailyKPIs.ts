@@ -75,12 +75,30 @@ export function useDailyKPIs(filter: TimeFilter = 'today') {
       const startISO = start.toISOString();
       const endISO = end.toISOString();
 
+      console.log(`🔍 Fetching KPIs for ${filter}: ${startISO} to ${endISO}`);
+
       // Fetch transactions in date range
-      const { data: transactions } = await supabase
+      const { data: transactions, error: txError } = await supabase
         .from('transactions')
         .select('*')
         .gte('stripe_created_at', startISO)
         .lte('stripe_created_at', endISO);
+
+      if (txError) {
+        console.error('❌ Error fetching transactions:', txError);
+      }
+      
+      console.log(`📊 Found ${transactions?.length || 0} transactions in range`);
+      
+      // Debug: show first few transactions
+      if (transactions && transactions.length > 0) {
+        console.log('📋 Sample transactions:', transactions.slice(0, 3).map(t => ({
+          email: t.customer_email,
+          amount: t.amount,
+          status: t.status,
+          date: t.stripe_created_at
+        })));
+      }
 
       // Fetch ALL historical transactions to determine first payments
       // This is critical for correctly classifying new vs renewal
@@ -229,7 +247,7 @@ export function useDailyKPIs(filter: TimeFilter = 'today') {
         .map(([reason, count]) => ({ reason, count }))
         .sort((a, b) => b.count - a.count);
 
-      setKPIs({
+      const calculatedKPIs = {
         registrationsToday: clients?.length || 0,
         trialsStartedToday,
         trialConversionsToday,
@@ -241,7 +259,20 @@ export function useDailyKPIs(filter: TimeFilter = 'today') {
         newRevenue: newRevenue / 100, // Convert cents to dollars
         conversionRevenue: conversionRevenue / 100,
         renewalRevenue: renewalRevenue / 100,
+      };
+      
+      console.log('✅ Calculated KPIs:', {
+        newPayersToday,
+        renewalsToday,
+        trialConversionsToday,
+        failuresToday,
+        newRevenue: newRevenue / 100,
+        renewalRevenue: renewalRevenue / 100,
+        conversionRevenue: conversionRevenue / 100,
+        total: (newRevenue + renewalRevenue + conversionRevenue) / 100
       });
+      
+      setKPIs(calculatedKPIs);
     } catch (error) {
       console.error('Error fetching daily KPIs:', error);
     } finally {
