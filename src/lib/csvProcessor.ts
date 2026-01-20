@@ -556,33 +556,36 @@ export async function processWebUsersCSV(csvText: string): Promise<ProcessingRes
     result.errors.push(...batchResult.allErrors);
   }
 
-  // 🔔 TRIGGER: Notify GHL for new leads (users without payments)
+  // 🔔 TRIGGER: Notify GHL for new leads (OPTIONAL - silent fail, non-blocking)
   const newLeads = Array.from(emailDataMap.values())
-    .filter(row => !clientMap.has(row.email)); // Only new users
+    .filter(row => !clientMap.has(row.email));
 
   if (newLeads.length > 0) {
-    console.log(`[GHL] Sending ${newLeads.length} new leads to CRM...`);
+    console.log(`[GHL] ${newLeads.length} nuevos leads detectados. Notificación GHL es opcional.`);
     
-    // Send notifications in background (non-blocking)
-    for (const lead of newLeads.slice(0, 50)) { // Limit to 50 per batch
-      try {
-        await supabase.functions.invoke('notify-ghl', {
-          body: {
-            email: lead.email,
-            phone: lead.phone,
-            name: lead.fullName,
-            tag: 'new_lead',
-            message_data: {
-              source: 'csv_import',
-              imported_at: new Date().toISOString()
+    // Run in background - NEVER block CSV import
+    (async () => {
+      for (const lead of newLeads.slice(0, 50)) {
+        try {
+          await supabase.functions.invoke('notify-ghl', {
+            body: {
+              email: lead.email,
+              phone: lead.phone,
+              name: lead.fullName,
+              tag: 'new_lead',
+              message_data: {
+                source: 'csv_import',
+                imported_at: new Date().toISOString()
+              }
             }
-          }
-        });
-      } catch (ghlError) {
-        console.warn(`[GHL] Failed to notify for ${lead.email}:`, ghlError);
+          });
+        } catch {
+          // GHL not configured - silently ignore
+        }
       }
-    }
-    console.log(`[GHL] New lead notifications sent`);
+    })().catch(() => {
+      console.log('[GHL] Notificaciones de leads deshabilitadas');
+    });
   }
 
   return result;
