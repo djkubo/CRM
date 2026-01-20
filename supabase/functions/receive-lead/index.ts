@@ -29,10 +29,11 @@ interface LeadPayload {
   // Legacy attribution field (mapped to utm_campaign)
   campaign?: string;
   
-  // External IDs
+  // External IDs (multiple naming conventions supported)
   external_manychat_id?: string;
   external_ghl_id?: string;
   manychat_subscriber_id?: string;
+  subscriber_id?: string; // Alias for manychat_subscriber_id
   ghl_contact_id?: string;
   
   // Timestamp for recency comparison
@@ -118,8 +119,8 @@ Deno.serve(async (req) => {
       body.ghl_contact_id ||
       `${source}_${emailNormalized || phoneNormalized}_${Date.now()}`;
 
-    // External IDs (support both naming conventions)
-    const manychatId = body.external_manychat_id || body.manychat_subscriber_id || null;
+    // External IDs (support multiple naming conventions)
+    const manychatId = body.external_manychat_id || body.manychat_subscriber_id || body.subscriber_id || null;
     const ghlId = body.external_ghl_id || body.ghl_contact_id || null;
 
     // UTM fields (campaign is legacy alias for utm_campaign)
