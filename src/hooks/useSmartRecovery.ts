@@ -387,10 +387,19 @@ export function useSmartRecovery() {
     let lastError: Error | null = null;
 
     try {
+      // Preflight to warm up the function
+      try {
+        await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/recover-revenue`, {
+          method: 'OPTIONS',
+        });
+      } catch {
+        // Ignore preflight errors
+      }
+
       for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
           const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 15000); // 15s timeout
+          const timeoutId = setTimeout(() => controller.abort(), 20000); // 20s timeout
 
           const response = await fetch(
             `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/recover-revenue`,
