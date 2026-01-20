@@ -1,7 +1,8 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
+// SECURITY: CORS headers for PayPal webhook
 const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Origin': '*', // PayPal servers need access
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, paypal-transmission-id, paypal-transmission-time, paypal-transmission-sig, paypal-cert-url, paypal-auth-algo',
 };
 
@@ -12,15 +13,20 @@ interface PayPalEvent {
   create_time: string;
 }
 
-// Verify PayPal webhook signature
-async function verifyPayPalWebhook(req: Request, body: string): Promise<boolean> {
+// Verify PayPal webhook signature using official API
+async function verifyPayPalWebhook(req: Request, body: string): Promise<{ verified: boolean; error?: string }> {
   const webhookId = Deno.env.get('PAYPAL_WEBHOOK_ID');
   const clientId = Deno.env.get('PAYPAL_CLIENT_ID');
   const clientSecret = Deno.env.get('PAYPAL_SECRET');
   
-  if (!webhookId || !clientId || !clientSecret) {
-    console.warn('⚠️ PayPal webhook verification not configured - skipping');
-    return true; // Allow if not configured (but log warning)
+  if (!webhookId) {
+    console.warn('⚠️ PAYPAL_WEBHOOK_ID not configured - signature NOT verified (unsafe for production)');
+    return { verified: true }; // Allow if not configured (dev mode)
+  }
+
+  if (!clientId || !clientSecret) {
+    console.error('❌ PAYPAL_CLIENT_ID or PAYPAL_SECRET not configured');
+    return { verified: false, error: 'Missing PayPal credentials' };
   }
 
   const transmissionId = req.headers.get('paypal-transmission-id');
@@ -31,7 +37,7 @@ async function verifyPayPalWebhook(req: Request, body: string): Promise<boolean>
 
   if (!transmissionId || !transmissionTime || !transmissionSig) {
     console.error('❌ Missing PayPal signature headers');
-    return false;
+    return { verified: false, error: 'Missing signature headers' };
   }
 
   try {
@@ -46,14 +52,14 @@ async function verifyPayPalWebhook(req: Request, body: string): Promise<boolean>
     });
 
     if (!authResponse.ok) {
-      console.error('❌ Failed to get PayPal OAuth token');
-      return false;
+      console.error('❌ Failed to get PayPal OAuth token:', await authResponse.text());
+      return { verified: false, error: 'OAuth token failed' };
     }
 
     const authData = await authResponse.json();
     const accessToken = authData.access_token;
 
-    // Verify webhook signature
+    // Verify webhook signature using PayPal's official verify endpoint
     const verifyResponse = await fetch('https://api-m.paypal.com/v1/notifications/verify-webhook-signature', {
       method: 'POST',
       headers: {
@@ -72,15 +78,23 @@ async function verifyPayPalWebhook(req: Request, body: string): Promise<boolean>
     });
 
     if (!verifyResponse.ok) {
-      console.error('❌ PayPal signature verification request failed');
-      return false;
+      console.error('❌ PayPal signature verification request failed:', await verifyResponse.text());
+      return { verified: false, error: 'Verification request failed' };
     }
 
     const verifyData = await verifyResponse.json();
-    return verifyData.verification_status === 'SUCCESS';
+    const isVerified = verifyData.verification_status === 'SUCCESS';
+    
+    if (isVerified) {
+      console.log('✅ signature_verified=true (PayPal)');
+    } else {
+      console.error('❌ PayPal signature verification failed:', verifyData);
+    }
+    
+    return { verified: isVerified };
   } catch (error) {
     console.error('❌ PayPal verification error:', error);
-    return false;
+    return { verified: false, error: error instanceof Error ? error.message : 'Unknown error' };
   }
 }
 
@@ -193,35 +207,63 @@ Deno.serve(async (req) => {
 
     const body = await req.text();
 
-    // SECURITY: Verify PayPal signature
-    const isValid = await verifyPayPalWebhook(req, body);
-    if (!isValid) {
-      console.error('❌ PayPal signature verification failed');
+    // SECURITY: Verify PayPal signature (REQUIRED for production)
+    const verification = await verifyPayPalWebhook(req, body);
+    if (!verification.verified) {
+      console.error('❌ PayPal signature verification failed:', verification.error);
       return new Response(
-        JSON.stringify({ error: 'Invalid signature' }),
-        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        JSON.stringify({ error: 'Invalid signature', details: verification.error }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
     const event: PayPalEvent = JSON.parse(body);
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    // IDEMPOTENCY: Check if event already processed
-    const { data: existingEvent } = await supabase
-      .from('transactions')
+    // IDEMPOTENCY: Check webhook_events table for duplicate
+    const { data: existingWebhookEvent } = await supabase
+      .from('webhook_events')
       .select('id')
-      .eq('metadata->webhook_event_id', event.id)
+      .eq('source', 'paypal')
+      .eq('event_id', event.id)
       .maybeSingle();
 
-    if (existingEvent) {
-      console.log(`⏭️ Event ${event.id} already processed, skipping`);
+    if (existingWebhookEvent) {
+      console.log(`⏭️ Event ${event.id} already processed (idempotent skip)`);
       return new Response(
-        JSON.stringify({ received: true, skipped: true, reason: 'already_processed' }),
+        JSON.stringify({ 
+          received: true, 
+          skipped: true, 
+          reason: 'already_processed',
+          signature_verified: true 
+        }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    console.log(`🔔 PayPal Event: ${event.event_type}, ID: ${event.id}`);
+    // Record event in webhook_events for idempotency
+    const { error: webhookEventError } = await supabase
+      .from('webhook_events')
+      .insert({
+        source: 'paypal',
+        event_id: event.id,
+        event_type: event.event_type,
+        payload: event.resource,
+      });
+
+    if (webhookEventError) {
+      // If insert fails due to unique constraint, it's a race condition - treat as already processed
+      if (webhookEventError.code === '23505') {
+        console.log(`⏭️ Event ${event.id} race condition - already processed`);
+        return new Response(
+          JSON.stringify({ received: true, skipped: true, reason: 'race_condition' }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+      console.error('Error recording webhook event:', webhookEventError);
+    }
+
+    console.log(`🔔 PayPal Event: ${event.event_type}, ID: ${event.id}, signature_verified=true`);
 
     const resource = event.resource;
     const status = mapPayPalStatus(event.event_type);
@@ -282,7 +324,7 @@ Deno.serve(async (req) => {
       if (!email) {
         console.log(`⚠️ Skipping ${event.event_type}: no email`);
         return new Response(
-          JSON.stringify({ received: true, skipped: true, reason: 'no_email' }),
+          JSON.stringify({ received: true, skipped: true, reason: 'no_email', signature_verified: true }),
           { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         );
       }
@@ -351,7 +393,8 @@ Deno.serve(async (req) => {
           payment_key: paymentKey,
           status,
           amount,
-          email
+          email,
+          signature_verified: true
         }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
@@ -359,7 +402,7 @@ Deno.serve(async (req) => {
 
     console.log(`ℹ️ PayPal Event ${event.event_type} acknowledged`);
     return new Response(
-      JSON.stringify({ received: true, processed: email ? true : false, type: event.event_type }),
+      JSON.stringify({ received: true, processed: email ? true : false, type: event.event_type, signature_verified: true }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
 

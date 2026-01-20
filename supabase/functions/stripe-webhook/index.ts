@@ -1,11 +1,9 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import Stripe from 'https://esm.sh/stripe@14.21.0';
 
-// SECURITY: Restrict CORS to specific domain
-const ALLOWED_ORIGINS = ['https://lovable.app', 'https://id-preview--9d074359-befd-41d0-9307-39b75ab20410.lovable.app'];
-
+// SECURITY: CORS headers for Stripe webhook
 const corsHeaders = {
-  'Access-Control-Allow-Origin': '*', // Stripe needs to reach this
+  'Access-Control-Allow-Origin': '*', // Stripe servers need access
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, stripe-signature',
 };
 
@@ -71,53 +69,83 @@ Deno.serve(async (req) => {
 
     const body = await req.text();
     let event: StripeEvent;
+    let signatureVerified = false;
 
-    // SECURITY: Verify Stripe signature if webhook secret is configured
+    // SECURITY: Verify Stripe signature (REQUIRED for production)
     if (stripeWebhookSecret) {
       const signature = req.headers.get('stripe-signature');
       if (!signature) {
         console.error('❌ Missing stripe-signature header');
         return new Response(
           JSON.stringify({ error: 'Missing signature' }),
-          { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         );
       }
 
       try {
         const stripe = new Stripe(stripeSecretKey, { apiVersion: '2023-10-16' });
         event = stripe.webhooks.constructEvent(body, signature, stripeWebhookSecret) as unknown as StripeEvent;
-        console.log(`✅ Signature verified for event: ${event.id}`);
+        signatureVerified = true;
+        console.log(`✅ signature_verified=true for event: ${event.id}`);
       } catch (err) {
         console.error('❌ Signature verification failed:', err);
         return new Response(
           JSON.stringify({ error: 'Invalid signature' }),
-          { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         );
       }
     } else {
-      // No webhook secret - parse directly (less secure, log warning)
-      console.warn('⚠️ STRIPE_WEBHOOK_SECRET not configured - signature not verified');
+      // No webhook secret - parse directly (DEV ONLY - log warning)
+      console.warn('⚠️ STRIPE_WEBHOOK_SECRET not configured - signature NOT verified (unsafe for production)');
       event = JSON.parse(body);
     }
 
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    // IDEMPOTENCY: Check if event already processed
-    const { data: existingEvent } = await supabase
-      .from('transactions')
+    // IDEMPOTENCY: Check webhook_events table for duplicate
+    const { data: existingWebhookEvent } = await supabase
+      .from('webhook_events')
       .select('id')
-      .eq('metadata->webhook_event_id', event.id)
+      .eq('source', 'stripe')
+      .eq('event_id', event.id)
       .maybeSingle();
 
-    if (existingEvent) {
-      console.log(`⏭️ Event ${event.id} already processed, skipping`);
+    if (existingWebhookEvent) {
+      console.log(`⏭️ Event ${event.id} already processed (idempotent skip)`);
       return new Response(
-        JSON.stringify({ received: true, skipped: true, reason: 'already_processed' }),
+        JSON.stringify({ 
+          received: true, 
+          skipped: true, 
+          reason: 'already_processed',
+          signature_verified: signatureVerified 
+        }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    console.log(`🔔 Stripe Event: ${event.type}, ID: ${event.id}`);
+    // Record event in webhook_events for idempotency
+    const { error: webhookEventError } = await supabase
+      .from('webhook_events')
+      .insert({
+        source: 'stripe',
+        event_id: event.id,
+        event_type: event.type,
+        payload: event.data.object,
+      });
+
+    if (webhookEventError) {
+      // If insert fails due to unique constraint, it's a race condition - treat as already processed
+      if (webhookEventError.code === '23505') {
+        console.log(`⏭️ Event ${event.id} race condition - already processed`);
+        return new Response(
+          JSON.stringify({ received: true, skipped: true, reason: 'race_condition' }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+      console.error('Error recording webhook event:', webhookEventError);
+    }
+
+    console.log(`🔔 Stripe Event: ${event.type}, ID: ${event.id}, signature_verified=${signatureVerified}`);
 
     const obj = event.data.object as Record<string, unknown>;
     let email: string | null = null;
@@ -163,7 +191,9 @@ Deno.serve(async (req) => {
     
     // INVOICE EVENTS
     else if (event.type.startsWith('invoice.')) {
-      paymentIntentId = (obj.payment_intent as string) || `invoice_${obj.id}`;
+      // Use invoice_id as payment_key for invoices (more reliable for dedupe)
+      const invoiceId = obj.id as string;
+      paymentIntentId = (obj.payment_intent as string) || `invoice_${invoiceId}`;
       amount = (obj.amount_paid as number || obj.total as number);
       status = mapStripeStatus(obj.status as string);
       email = obj.customer_email as string | null;
@@ -216,7 +246,7 @@ Deno.serve(async (req) => {
       }
 
       return new Response(
-        JSON.stringify({ received: true, processed: true, type: event.type }),
+        JSON.stringify({ received: true, processed: true, type: event.type, signature_verified: signatureVerified }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
@@ -248,7 +278,7 @@ Deno.serve(async (req) => {
         }
       }
       return new Response(
-        JSON.stringify({ received: true, processed: true, type: event.type }),
+        JSON.stringify({ received: true, processed: true, type: event.type, signature_verified: signatureVerified }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
@@ -263,7 +293,7 @@ Deno.serve(async (req) => {
       if (!email) {
         console.log(`⚠️ Skipping ${event.type}: no email for ${paymentIntentId}`);
         return new Response(
-          JSON.stringify({ received: true, skipped: true, reason: 'no_email' }),
+          JSON.stringify({ received: true, skipped: true, reason: 'no_email', signature_verified: signatureVerified }),
           { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         );
       }
@@ -395,7 +425,8 @@ Deno.serve(async (req) => {
           payment_id: paymentIntentId,
           status,
           amount,
-          email
+          email,
+          signature_verified: signatureVerified
         }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
@@ -403,7 +434,7 @@ Deno.serve(async (req) => {
 
     console.log(`ℹ️ Event ${event.type} acknowledged but not processed`);
     return new Response(
-      JSON.stringify({ received: true, processed: false, type: event.type }),
+      JSON.stringify({ received: true, processed: false, type: event.type, signature_verified: signatureVerified }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
 
