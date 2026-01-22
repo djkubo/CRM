@@ -454,66 +454,84 @@ serve(async (req) => {
       );
     }
 
-    // BACKGROUND MODE: Return IMMEDIATELY, do ALL work in background
+    // BACKGROUND MODE: Create sync_run FIRST, then start background task
     if (background) {
       const tempId = crypto.randomUUID();
-      console.log(`🚀 BACKGROUND mode - returning immediately with ID: ${tempId}`);
+      console.log(`🚀 BACKGROUND mode - creating sync_run first with ID: ${tempId}`);
 
+      // Authenticate user BEFORE returning (quick check)
+      const supabase = createClient(
+        Deno.env.get("SUPABASE_URL")!,
+        Deno.env.get("SUPABASE_ANON_KEY")!,
+        { global: { headers: { Authorization: authHeader } } }
+      );
+
+      const { data: { user }, error: userError } = await supabase.auth.getUser();
+      if (userError || !user) {
+        console.error("❌ Background auth failed:", userError?.message);
+        return new Response(
+          JSON.stringify({ error: "Authentication failed" }),
+          { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      console.log("✅ Background auth OK:", user.email);
+
+      // Create sync run record BEFORE returning response (fixes race condition)
+      const supabaseServiceClient = createClient(
+        Deno.env.get("SUPABASE_URL")!,
+        Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
+      );
+
+      const { data: syncRun, error: syncError } = await supabaseServiceClient
+        .from("sync_runs")
+        .insert({
+          id: tempId,
+          source: "smart_recovery",
+          status: "running",
+          started_at: new Date().toISOString(),
+          metadata: {
+            hours_lookback,
+            starting_after: starting_after || null,
+            initiated_by: user.email,
+            exclude_recent_hours: exclude_recent_hours || 0,
+          },
+        })
+        .select()
+        .single();
+
+      if (syncError || !syncRun) {
+        console.error("❌ Failed to create sync run:", syncError?.message);
+        return new Response(
+          JSON.stringify({ error: "Failed to create sync run record" }),
+          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      console.log(`📝 Created sync run: ${syncRun.id} - Now starting background task`);
+
+      // Start background processing AFTER sync_run exists
+      const stripe = new Stripe(stripeSecretKey, { apiVersion: "2023-10-16" });
+      
       // @ts-ignore - EdgeRuntime is available in Supabase Edge Functions
       EdgeRuntime.waitUntil((async () => {
         try {
-          // All slow operations happen HERE in background
-          const supabase = createClient(
-            Deno.env.get("SUPABASE_URL")!,
-            Deno.env.get("SUPABASE_ANON_KEY")!,
-            { global: { headers: { Authorization: authHeader } } }
-          );
-
-          const { data: { user }, error: userError } = await supabase.auth.getUser();
-          if (userError || !user) {
-            console.error("❌ Background auth failed:", userError?.message);
-            return;
-          }
-
-          console.log("✅ Background auth OK:", user.email);
-
-          const stripe = new Stripe(stripeSecretKey, { apiVersion: "2023-10-16" });
-          const supabaseServiceClient = createClient(
-            Deno.env.get("SUPABASE_URL")!,
-            Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
-          );
-
-          // Create sync run record
-          const { data: syncRun, error: syncError } = await supabaseServiceClient
-            .from("sync_runs")
-            .insert({
-              id: tempId,
-              source: "smart_recovery",
-              status: "running",
-              started_at: new Date().toISOString(),
-              metadata: {
-                hours_lookback,
-                starting_after: starting_after || null,
-                initiated_by: user.email,
-                exclude_recent_hours: exclude_recent_hours || 0,
-              },
-            })
-            .select()
-            .single();
-
-          if (syncError || !syncRun) {
-            console.error("❌ Failed to create sync run:", syncError?.message);
-            return;
-          }
-
-          console.log(`📝 Created sync run: ${syncRun.id}`);
           await runRecoveryInBackground(stripe, supabaseServiceClient, syncRun.id, hours_lookback, starting_after, exclude_recent_hours);
         } catch (err) {
           console.error("❌ Background processing error:", err);
+          // Mark sync run as failed
+          await supabaseServiceClient
+            .from("sync_runs")
+            .update({
+              status: "failed",
+              completed_at: new Date().toISOString(),
+              error_message: err instanceof Error ? err.message : "Unknown error",
+            })
+            .eq("id", syncRun.id);
         }
       })());
 
-      // Return IMMEDIATELY - no await, no DB calls before this
+      // Return IMMEDIATELY after sync_run exists (frontend can poll now)
       return new Response(
         JSON.stringify({ 
           message: "Smart Recovery started in background",
