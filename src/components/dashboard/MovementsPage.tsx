@@ -343,6 +343,8 @@ export function MovementsPage() {
       web: movements.filter(m => m.source === 'web').length,
     };
 
+    console.log('📊 Movement stats by source:', bySource, 'Total:', movements.length);
+
     return {
       todayCount: todayMovements.length,
       successCount: successToday.length,
@@ -387,7 +389,7 @@ export function MovementsPage() {
       </div>
 
       {/* Stats Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-3 md:gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-6 gap-3 md:gap-4">
         <div className="rounded-xl border border-border bg-card p-4">
           <div className="flex items-center gap-2 text-muted-foreground text-xs mb-2">
             <Activity className="h-4 w-4" />
@@ -424,6 +426,13 @@ export function MovementsPage() {
             PayPal
           </div>
           <p className="text-2xl font-bold text-blue-400">{stats.bySource.paypal}</p>
+        </div>
+        <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4">
+          <div className="flex items-center gap-2 text-emerald-400 text-xs mb-2">
+            <Globe className="h-4 w-4" />
+            Web
+          </div>
+          <p className="text-2xl font-bold text-emerald-400">{stats.bySource.web}</p>
         </div>
       </div>
 
