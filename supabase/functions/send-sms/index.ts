@@ -175,9 +175,57 @@ serve(async (req) => {
       );
     }
 
+    // Always store outbound messages in messages table
+    const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+    
+    // Build message body for storage
+    let messageBody = payload.message || '';
+    if (payload.content_sid) {
+      messageBody = `[Template: ${payload.content_sid}]`;
+      if (payload.content_variables) {
+        messageBody += ` Variables: ${JSON.stringify(payload.content_variables)}`;
+      }
+    } else if (payload.template && payload.template !== 'custom') {
+      const name = payload.client_name || 'Cliente';
+      const amount = payload.amount ? `$${(payload.amount / 100).toFixed(2)}` : '';
+      switch (payload.template) {
+        case 'friendly':
+          messageBody = `Hola ${name} 👋 Notamos que tu pago de ${amount} no se procesó correctamente. ¿Podemos ayudarte a resolverlo? Responde a este mensaje.`;
+          break;
+        case 'urgent':
+          messageBody = `⚠️ ${name}, tu cuenta tiene un pago pendiente de ${amount}. Para evitar la suspensión del servicio, actualiza tu método de pago hoy.`;
+          break;
+        case 'final':
+          messageBody = `🚨 ÚLTIMO AVISO: ${name}, tu servicio será suspendido en 24h por falta de pago (${amount}). Contáctanos urgentemente para evitarlo.`;
+          break;
+      }
+    }
+
+    // Store the outbound message
+    const { error: msgError } = await supabase.from('messages').insert({
+      client_id: payload.client_id || null,
+      direction: 'outbound',
+      channel: channel,
+      from_address: twilioResult.from || fromAddress,
+      to_address: phoneNumber,
+      body: messageBody,
+      external_message_id: twilioResult.sid,
+      status: twilioResult.status || 'queued',
+      metadata: {
+        template: payload.template || null,
+        content_sid: payload.content_sid || null,
+        messaging_service_sid: payload.messaging_service_sid || null,
+      },
+    });
+
+    if (msgError) {
+      console.error('Error storing outbound message:', msgError);
+    } else {
+      console.log('✅ Outbound message stored in messages table');
+    }
+
+    // Log client event if client_id provided
     if (payload.client_id) {
-      const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
-      
       await supabase.from('client_events').insert({
         client_id: payload.client_id,
         event_type: 'email_sent',
