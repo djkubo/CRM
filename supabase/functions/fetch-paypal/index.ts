@@ -25,13 +25,6 @@ interface PayPalTokenResponse {
   expires_in: number;
 }
 
-interface PayPalFeeInfo {
-  paypal_fee?: {
-    currency_code?: string;
-    value?: string;
-  };
-}
-
 interface PayPalTransaction {
   transaction_info: {
     transaction_id: string;
@@ -145,10 +138,10 @@ const PAYPAL_EVENT_DESCRIPTIONS: Record<string, string> = {
   'T1201': 'Chargeback',
 };
 
-// Generate 31-day chunks for PayPal API (which has 31-day max range limit)
+// Generate 30-day chunks for PayPal API (which has 31-day max range limit)
 function generateDateChunks(startDate: Date, endDate: Date): Array<{start: Date, end: Date}> {
   const chunks: Array<{start: Date, end: Date}> = [];
-  const CHUNK_DAYS = 30; // Use 30 to be safe (PayPal limit is 31)
+  const CHUNK_DAYS = 30;
   
   let currentStart = new Date(startDate);
   
@@ -161,7 +154,7 @@ function generateDateChunks(startDate: Date, endDate: Date): Array<{start: Date,
       end: new Date(actualEnd)
     });
     
-    currentStart = new Date(actualEnd.getTime() + 1); // Move to next chunk
+    currentStart = new Date(actualEnd.getTime() + 1);
   }
   
   return chunks;
@@ -220,6 +213,9 @@ async function fetchPayPalChunk(
   return allTransactions;
 }
 
+// Max chunks per invocation to avoid timeout
+const MAX_CHUNKS_PER_INVOCATION = 3;
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
@@ -240,6 +236,7 @@ Deno.serve(async (req) => {
 
     const paypalClientId = Deno.env.get("PAYPAL_CLIENT_ID");
     const paypalSecret = Deno.env.get("PAYPAL_SECRET");
+    const adminKey = Deno.env.get("ADMIN_API_KEY");
     
     if (!paypalClientId || !paypalSecret) {
       return new Response(
@@ -255,6 +252,10 @@ Deno.serve(async (req) => {
     let startDate: Date;
     let endDate: Date;
     let fetchAll = false;
+    let continuationChunkIndex = 0;
+    let continuationSyncRunId: string | null = null;
+    let continuationTotalSynced = 0;
+    let continuationTotalClients = 0;
 
     // PayPal API limit: max 3 years of history
     const now = new Date();
@@ -266,17 +267,24 @@ Deno.serve(async (req) => {
       
       if (body.startDate && body.endDate) {
         let requestedStart = new Date(body.startDate);
-        // Enforce PayPal's 3-year limit
         if (requestedStart < threeYearsAgo) {
-          console.log(`⚠️ Requested start ${body.startDate} exceeds PayPal 3-year limit, clamping to ${threeYearsAgo.toISOString()}`);
+          console.log(`⚠️ Requested start ${body.startDate} exceeds PayPal 3-year limit, clamping`);
           requestedStart = threeYearsAgo;
         }
         startDate = requestedStart;
         endDate = new Date(body.endDate);
       } else {
-        // Default: last 31 days
         startDate = new Date(now.getTime() - 31 * 24 * 60 * 60 * 1000);
         endDate = now;
+      }
+      
+      // Continuation params
+      if (body._continuation) {
+        continuationChunkIndex = body._continuation.chunkIndex || 0;
+        continuationSyncRunId = body._continuation.syncRunId || null;
+        continuationTotalSynced = body._continuation.totalSynced || 0;
+        continuationTotalClients = body._continuation.totalClients || 0;
+        console.log(`🔄 CONTINUATION from chunk ${continuationChunkIndex}`);
       }
     } catch {
       startDate = new Date(now.getTime() - 31 * 24 * 60 * 60 * 1000);
@@ -285,29 +293,33 @@ Deno.serve(async (req) => {
 
     console.log(`🔄 PayPal Sync - from ${startDate.toISOString()} to ${endDate.toISOString()}, fetchAll: ${fetchAll}`);
 
-    // Create sync_run record
-    const { data: syncRun } = await supabase
-      .from('sync_runs')
-      .insert({
-        source: 'paypal',
-        status: 'running',
-        metadata: { fetchAll, startDate: startDate.toISOString(), endDate: endDate.toISOString() }
-      })
-      .select('id')
-      .single();
-    
-    const syncRunId = syncRun?.id;
+    // Create or reuse sync_run record
+    let syncRunId = continuationSyncRunId;
+    if (!syncRunId) {
+      const { data: syncRun } = await supabase
+        .from('sync_runs')
+        .insert({
+          source: 'paypal',
+          status: 'running',
+          metadata: { fetchAll, startDate: startDate.toISOString(), endDate: endDate.toISOString() }
+        })
+        .select('id')
+        .single();
+      syncRunId = syncRun?.id;
+    }
 
     const accessToken = await getPayPalAccessToken(paypalClientId, paypalSecret);
     console.log("✅ Got PayPal access token");
 
-    // Generate 30-day chunks to respect PayPal's 31-day limit
+    // Generate 30-day chunks
     const dateChunks = generateDateChunks(startDate, endDate);
-    console.log(`📅 Split into ${dateChunks.length} chunks of max 30 days each`);
+    console.log(`📅 Total ${dateChunks.length} chunks, starting from chunk ${continuationChunkIndex}`);
 
     let allTransactions: PayPalTransaction[] = [];
+    let chunksProcessed = 0;
+    const maxChunksThisInvocation = Math.min(MAX_CHUNKS_PER_INVOCATION, dateChunks.length - continuationChunkIndex);
 
-    for (let i = 0; i < dateChunks.length; i++) {
+    for (let i = continuationChunkIndex; i < dateChunks.length && chunksProcessed < maxChunksThisInvocation; i++) {
       const chunk = dateChunks[i];
       console.log(`🔄 Chunk ${i + 1}/${dateChunks.length}: ${chunk.start.toISOString().split('T')[0]} → ${chunk.end.toISOString().split('T')[0]}`);
       
@@ -320,41 +332,23 @@ Deno.serve(async (req) => {
         );
         allTransactions = allTransactions.concat(chunkTransactions);
         console.log(`  ✅ Chunk ${i + 1}: ${chunkTransactions.length} transactions (total: ${allTransactions.length})`);
+        chunksProcessed++;
       } catch (error) {
         console.error(`  ❌ Chunk ${i + 1} failed:`, error);
-        // Continue with next chunk instead of failing completely
       }
     }
 
-    console.log(`✅ Fetched ${allTransactions.length} total transactions from PayPal`);
+    const currentChunkIndex = continuationChunkIndex + chunksProcessed;
+    console.log(`✅ Fetched ${allTransactions.length} transactions from ${chunksProcessed} chunks`);
 
+    // Process transactions
     let paidCount = 0;
     let failedCount = 0;
     let skippedNoEmail = 0;
     let skippedDuplicate = 0;
 
-    const transactionsMap = new Map<string, {
-      stripe_payment_intent_id: string;
-      payment_key: string;
-      external_transaction_id: string;
-      customer_email: string;
-      amount: number;
-      currency: string;
-      status: string;
-      failure_code: string | null;
-      failure_message: string | null;
-      stripe_created_at: string;
-      source: string;
-      metadata: Record<string, unknown>;
-    }>();
-
-    const clientsMap = new Map<string, {
-      email: string;
-      full_name: string | null;
-      phone: string | null;
-      payment_status: string;
-      total_paid: number;
-    }>();
+    const transactionsMap = new Map<string, Record<string, unknown>>();
+    const clientsMap = new Map<string, Record<string, unknown>>();
 
     for (const tx of allTransactions) {
       const info = tx.transaction_info;
@@ -374,7 +368,6 @@ Deno.serve(async (req) => {
       }
 
       const paymentIntentId = `paypal_${transactionId}`;
-
       const grossAmount = parseFloat(info.transaction_amount?.value || '0');
       const feeAmount = parseFloat(info.fee_amount?.value || '0');
       const netAmount = grossAmount - Math.abs(feeAmount);
@@ -387,19 +380,16 @@ Deno.serve(async (req) => {
       
       const payerId = payer?.account_id || null;
 
-      // Get product info from cart
       let productName: string | null = null;
       if (tx.cart_info?.item_details?.[0]) {
         productName = tx.cart_info.item_details[0].item_name || 
                       tx.cart_info.item_details[0].item_description || null;
       }
       
-      // Fallback to transaction subject/note
       if (!productName) {
         productName = info.transaction_subject || info.transaction_note || null;
       }
 
-      // Get event description
       const eventDescription = PAYPAL_EVENT_DESCRIPTIONS[info.transaction_event_code] || null;
 
       if (status === 'paid') {
@@ -408,7 +398,6 @@ Deno.serve(async (req) => {
         failedCount++;
       }
 
-      // Build enriched metadata
       const enrichedMetadata: Record<string, unknown> = { 
         event_code: info.transaction_event_code,
         event_description: eventDescription,
@@ -421,7 +410,6 @@ Deno.serve(async (req) => {
         product_name: productName,
       };
 
-      // Remove null values from metadata
       Object.keys(enrichedMetadata).forEach(key => {
         if (enrichedMetadata[key] === null || enrichedMetadata[key] === undefined) {
           delete enrichedMetadata[key];
@@ -443,17 +431,17 @@ Deno.serve(async (req) => {
         metadata: enrichedMetadata,
       });
 
-      const existing = clientsMap.get(email) || { 
+      const existing = clientsMap.get(email) as Record<string, unknown> || { 
         email, 
         full_name: fullName,
-        phone: null as string | null,
+        phone: null,
         payment_status: 'none', 
         total_paid: 0 
       };
       
       if (status === 'paid' && grossAmount > 0) {
         existing.payment_status = 'paid';
-        existing.total_paid += Math.abs(grossAmount);
+        existing.total_paid = (existing.total_paid as number || 0) + Math.abs(grossAmount);
       } else if (status === 'failed' && existing.payment_status !== 'paid') {
         existing.payment_status = 'failed';
       }
@@ -466,10 +454,10 @@ Deno.serve(async (req) => {
     }
 
     const transactions = Array.from(transactionsMap.values());
+    console.log(`📊 Stats: ${paidCount} paid, ${failedCount} failed, ${skippedNoEmail} no email, ${skippedDuplicate} duplicates`);
 
-    console.log(`📊 Stats: ${paidCount} paid, ${failedCount} failed, ${skippedNoEmail} skipped (no email), ${skippedDuplicate} duplicates removed`);
-
-    let syncedCount = 0;
+    // Save to DB
+    let syncedCount = continuationTotalSynced;
     const BATCH_SIZE = 500;
     
     for (let i = 0; i < transactions.length; i += BATCH_SIZE) {
@@ -496,62 +484,113 @@ Deno.serve(async (req) => {
       status: 'active'
     }));
 
-    let clientsSynced = 0;
+    let clientsSynced = continuationTotalClients;
     for (let i = 0; i < clientsToUpsert.length; i += BATCH_SIZE) {
       const batch = clientsToUpsert.slice(i, i + BATCH_SIZE);
-      const { error } = await supabase
+      const { data: clientData, error: clientError } = await supabase
         .from("clients")
-        .upsert(batch, { onConflict: "email", ignoreDuplicates: false });
+        .upsert(batch, { onConflict: "email", ignoreDuplicates: false })
+        .select();
 
-      if (!error) {
-        clientsSynced += batch.length;
+      if (!clientError) {
+        clientsSynced += clientData?.length || 0;
       }
     }
 
-    console.log(`✅ Synced ${syncedCount} transactions, ${clientsSynced} clients`);
+    // Update checkpoint
+    if (syncRunId) {
+      await supabase
+        .from('sync_runs')
+        .update({
+          total_fetched: syncedCount + skippedNoEmail,
+          total_inserted: syncedCount,
+          checkpoint: { chunkIndex: currentChunkIndex, chunksTotal: dateChunks.length }
+        })
+        .eq('id', syncRunId);
+    }
 
-    // Update sync_run record
+    // Check if need to continue
+    const needsContinuation = currentChunkIndex < dateChunks.length;
+
+    if (needsContinuation && syncRunId && adminKey) {
+      console.log(`🔄 Auto-continuing: ${currentChunkIndex}/${dateChunks.length} chunks done...`);
+      
+      const continuationBody = {
+        fetchAll,
+        startDate: startDate.toISOString(),
+        endDate: endDate.toISOString(),
+        _continuation: {
+          chunkIndex: currentChunkIndex,
+          syncRunId,
+          totalSynced: syncedCount,
+          totalClients: clientsSynced
+        }
+      };
+
+      fetch(`${supabaseUrl}/functions/v1/fetch-paypal`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-admin-key': adminKey,
+        },
+        body: JSON.stringify(continuationBody)
+      }).catch(err => console.error('Continuation invoke error:', err));
+
+      return new Response(
+        JSON.stringify({
+          status: 'continuing',
+          message: `Processed ${chunksProcessed} chunks (${syncedCount} total). Continuing in background...`,
+          syncRunId,
+          chunksCompleted: currentChunkIndex,
+          chunksTotal: dateChunks.length,
+          totalSynced: syncedCount,
+        }),
+        { status: 202, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    // Mark completed
     if (syncRunId) {
       await supabase
         .from('sync_runs')
         .update({
           status: 'completed',
           completed_at: new Date().toISOString(),
-          total_fetched: allTransactions.length,
+          total_fetched: syncedCount + skippedNoEmail,
           total_inserted: syncedCount,
-          total_skipped: skippedNoEmail + skippedDuplicate,
+          total_skipped: skippedNoEmail,
           metadata: { 
             fetchAll, 
             startDate: startDate.toISOString(), 
-            endDate: endDate.toISOString(), 
+            endDate: endDate.toISOString(),
             paidCount, 
-            failedCount,
+            failedCount, 
             chunks: dateChunks.length 
           }
         })
         .eq('id', syncRunId);
     }
 
+    console.log(`✅ COMPLETE: ${syncedCount} transactions, ${clientsSynced} clients`);
+
     return new Response(
       JSON.stringify({
         success: true,
-        message: `Synced ${syncedCount} transactions from PayPal`,
         synced_transactions: syncedCount,
         synced_clients: clientsSynced,
-        paid_count: paidCount,
-        failed_count: failedCount,
-        skipped_no_email: skippedNoEmail,
-        total_fetched: allTransactions.length,
-        date_range: { start: startDate.toISOString(), end: endDate.toISOString() },
-        chunks_processed: dateChunks.length,
-        sync_run_id: syncRunId,
+        chunks: dateChunks.length,
+        paidCount,
+        failedCount,
+        skippedNoEmail,
+        skippedDuplicate,
       }),
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
+
   } catch (error) {
-    console.error("Unexpected error:", error);
+    console.error("Error:", error);
     return new Response(
-      JSON.stringify({ error: "Internal server error", details: String(error) }),
+      JSON.stringify({ error: error instanceof Error ? error.message : "Unknown error" }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   }
