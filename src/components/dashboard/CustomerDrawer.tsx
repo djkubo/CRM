@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
 import { invokeWithAdminKey } from '@/lib/adminApi';
-import { format, formatDistanceToNow } from 'date-fns';
+import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
 import {
   Sheet,
@@ -28,7 +28,6 @@ import {
   XCircle,
   Play,
   ArrowUpCircle,
-  Copy,
   Check,
   Loader2,
   FileText,
