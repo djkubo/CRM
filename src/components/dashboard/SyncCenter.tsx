@@ -22,7 +22,6 @@ import {
   Zap,
   Eye,
   Clock,
-  ArrowRight,
   Loader2
 } from "lucide-react";
 import { format } from "date-fns";
@@ -52,16 +51,6 @@ interface MergeConflict {
   raw_data: any;
   suggested_client_id: string | null;
   status: string;
-  created_at: string;
-}
-
-interface ContactIdentity {
-  id: string;
-  source: string;
-  external_id: string;
-  email_normalized: string | null;
-  phone_e164: string | null;
-  client_id: string | null;
   created_at: string;
 }
 

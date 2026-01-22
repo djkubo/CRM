@@ -131,7 +131,7 @@ async function runSync(serviceClient: any, stripe: any, syncRunId: string) {
   }
 }
 
-serve(async (req) => {
+serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
   }

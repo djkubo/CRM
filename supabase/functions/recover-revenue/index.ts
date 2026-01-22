@@ -416,7 +416,7 @@ addEventListener('beforeunload', (ev: Event) => {
   console.log('🛑 Function shutdown due to:', detail?.reason || 'unknown');
 });
 
-serve(async (req) => {
+serve(async (req: Request) => {
   const origin = req.headers.get("origin");
   const corsHeaders = getCorsHeaders(origin);
 

@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react';
-import { MessageCircle, Phone, AlertTriangle, CheckCircle, XCircle, Clock, Send, Smartphone, Facebook, MessageSquare } from 'lucide-react';
+import { MessageCircle, Phone, AlertTriangle, CheckCircle, XCircle, Clock, Send, Smartphone, MessagesSquare } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
@@ -316,7 +316,7 @@ export function RecoveryPage() {
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
                         <Button size="sm" className="h-7 px-2 shrink-0 bg-[#0084FF]/15 hover:bg-[#0084FF]/25 text-[#0084FF] text-[10px] gap-1">
-                          <Facebook className="h-3 w-3" />
+                          <MessagesSquare className="h-3 w-3" />
                           FB
                         </Button>
                       </DropdownMenuTrigger>
@@ -461,7 +461,7 @@ export function RecoveryPage() {
                             <DropdownMenu>
                               <DropdownMenuTrigger asChild>
                                 <Button size="sm" variant="outline" className="gap-2 border-[#0084FF]/30 text-[#0084FF] hover:bg-[#0084FF]/10">
-                                  <Facebook className="h-4 w-4" />
+                                  <MessagesSquare className="h-4 w-4" />
                                   Messenger
                                 </Button>
                               </DropdownMenuTrigger>

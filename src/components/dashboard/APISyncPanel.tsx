@@ -290,8 +290,6 @@ export function APISyncPanel() {
   };
 
   // Each sync can run independently - no global blocking
-  const anySyncing = stripeSyncing || paypalSyncing || manychatSyncing || ghlSyncing;
-
   return (
     <Card className="bg-[#1a1f36] border-border/50">
       <CardHeader className="pb-3">

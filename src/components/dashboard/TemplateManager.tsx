@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { 
   FileText, Plus, Edit2, Trash2, Save, X, Eye,
-  MessageCircle, Smartphone, Mail, Facebook
+  MessageCircle, Smartphone, Mail, MessagesSquare
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -13,7 +13,6 @@ import {
   CardContent,
   CardHeader,
   CardTitle,
-  CardDescription,
 } from '@/components/ui/card';
 import {
   Dialog,
@@ -48,7 +47,7 @@ const channelConfig: Record<string, { icon: typeof MessageCircle; label: string;
   whatsapp: { icon: MessageCircle, label: 'WhatsApp', color: 'bg-[#25D366]/10 text-[#25D366] border-[#25D366]/30' },
   sms: { icon: Smartphone, label: 'SMS', color: 'bg-blue-500/10 text-blue-400 border-blue-500/30' },
   email: { icon: Mail, label: 'Email', color: 'bg-purple-500/10 text-purple-400 border-purple-500/30' },
-  messenger: { icon: Facebook, label: 'Messenger', color: 'bg-[#0084FF]/10 text-[#0084FF] border-[#0084FF]/30' },
+  messenger: { icon: MessagesSquare, label: 'Messenger', color: 'bg-[#0084FF]/10 text-[#0084FF] border-[#0084FF]/30' },
 };
 
 export function TemplateManager() {
