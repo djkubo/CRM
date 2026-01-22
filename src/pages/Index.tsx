@@ -12,7 +12,7 @@ import { RevenueOpsPipeline } from "@/components/dashboard/RevenueOpsPipeline";
 import { CampaignControlCenter } from "@/components/dashboard/CampaignControlCenter";
 import SyncCenter from "@/components/dashboard/SyncCenter";
 import DiagnosticsPanel from "@/components/dashboard/DiagnosticsPanel";
-import MessagesPage from "@/components/dashboard/MessagesPage";
+import MessagesPageWrapper from "@/components/dashboard/MessagesPageWrapper";
 import { SyncStatusBanner } from "@/components/dashboard/SyncStatusBanner";
 import { useClients } from "@/hooks/useClients";
 import { useTransactions } from "@/hooks/useTransactions";
@@ -45,7 +45,7 @@ const Index = () => {
       case "dashboard":
         return <DashboardHome lastSync={lastSync} onNavigate={setActiveMenuItem} />;
       case "messages":
-        return <MessagesPage />;
+        return <MessagesPageWrapper />;
       case "recovery":
         return <RevenueOpsPipeline />;
       case "invoices":
