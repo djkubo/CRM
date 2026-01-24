@@ -169,6 +169,11 @@ Deno.serve(async (req) => {
     const now = new Date();
     const threeYearsAgo = new Date(now.getTime() - (3 * 365 - 7) * 24 * 60 * 60 * 1000);
 
+    // PayPal requires dates in ISO 8601 format WITHOUT milliseconds: YYYY-MM-DDTHH:MM:SSZ
+    const formatPayPalDate = (date: Date): string => {
+      return date.toISOString().replace(/\.\d{3}Z$/, 'Z');
+    };
+
     try {
       const body = await req.json();
       fetchAll = body.fetchAll === true;
@@ -181,15 +186,16 @@ Deno.serve(async (req) => {
         if (requestedStart < threeYearsAgo) {
           requestedStart = threeYearsAgo;
         }
-        startDate = requestedStart.toISOString();
-        endDate = body.endDate;
+        startDate = formatPayPalDate(requestedStart);
+        // Also format endDate to ensure consistent format
+        endDate = formatPayPalDate(new Date(body.endDate));
       } else {
-        startDate = new Date(now.getTime() - 31 * 24 * 60 * 60 * 1000).toISOString();
-        endDate = now.toISOString();
+        startDate = formatPayPalDate(new Date(now.getTime() - 31 * 24 * 60 * 60 * 1000));
+        endDate = formatPayPalDate(now);
       }
     } catch {
-      startDate = new Date(now.getTime() - 31 * 24 * 60 * 60 * 1000).toISOString();
-      endDate = now.toISOString();
+      startDate = formatPayPalDate(new Date(now.getTime() - 31 * 24 * 60 * 60 * 1000));
+      endDate = formatPayPalDate(now);
     }
 
     // ============ CLEANUP STALE SYNCS ============
