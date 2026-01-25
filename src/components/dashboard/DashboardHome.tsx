@@ -35,6 +35,7 @@ import { es } from 'date-fns/locale';
 import { openWhatsApp, getRecoveryMessage } from './RecoveryTable';
 import type { RecoveryClient } from '@/lib/csvProcessor';
 import { invokeWithAdminKey } from '@/lib/adminApi';
+import { SyncResultsPanel } from './SyncResultsPanel';
 import type { 
   FetchStripeBody, 
   FetchStripeResponse, 
@@ -485,6 +486,9 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
           );
         })}
       </div>
+
+      {/* Sync Results Panel - Shows sync status and recent results */}
+      <SyncResultsPanel />
 
       {/* C) 3 Short Lists with CTAs - Stack on mobile */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 md:gap-4">
