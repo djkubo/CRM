@@ -133,6 +133,8 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
         let previousTotal = 0;
         let pageAttempts = 0;
         const maxPageAttempts = 1000;
+        let consecutiveErrors = 0;
+        const maxConsecutiveErrors = 3;
         
         while (hasMore && pageAttempts < maxPageAttempts) {
           pageAttempts++;
@@ -142,49 +144,76 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
             await supabase.auth.refreshSession();
           }
           
-          const stripeData = await invokeWithAdminKey<FetchStripeResponse, FetchStripeBody>(
-            'fetch-stripe', 
-            { 
-              fetchAll, 
-              startDate: startDate.toISOString(), 
-              endDate: endDate.toISOString(),
-              cursor,
-              syncRunId,
-              previousTotal
+          try {
+            const stripeData = await invokeWithAdminKey<FetchStripeResponse, FetchStripeBody>(
+              'fetch-stripe', 
+              { 
+                fetchAll, 
+                startDate: startDate.toISOString(), 
+                endDate: endDate.toISOString(),
+                cursor,
+                syncRunId,
+                previousTotal
+              }
+            );
+            
+            // Handle null response
+            if (!stripeData) {
+              console.error('[Stripe] Null response from API');
+              consecutiveErrors++;
+              if (consecutiveErrors >= maxConsecutiveErrors) {
+                toast.error('Stripe sync falló - respuesta vacía');
+                break;
+              }
+              await new Promise(resolve => setTimeout(resolve, 2000));
+              continue;
             }
-          );
-          
-          if (stripeData?.error === 'sync_already_running') {
-            toast.warning('Ya hay un sync de Stripe en progreso');
-            break;
-          }
-          
-          if (!stripeData?.success && stripeData?.error) {
-            console.error('[Stripe] Error:', stripeData.error);
-            results.errors++;
-            break;
-          }
-          
-          // Update totals
-          const thisPageTx = stripeData?.synced_transactions ?? 0;
-          if (stripeData?.total_so_far) {
-            results.stripe = stripeData.total_so_far;
-            previousTotal = stripeData.total_so_far;
-          } else {
-            results.stripe += thisPageTx;
-            previousTotal = results.stripe;
-          }
-          
-          syncRunId = stripeData?.syncRunId ?? syncRunId;
-          cursor = stripeData?.nextCursor ?? null;
-          hasMore = stripeData?.hasMore === true && cursor !== null;
-          
-          console.log(`[Stripe] Page ${pageAttempts}: ${results.stripe} tx, hasMore: ${hasMore}`);
-          setSyncProgress(`Stripe... ${results.stripe} tx (página ${pageAttempts})`);
-          
-          // Small delay between pages
-          if (hasMore) {
-            await new Promise(resolve => setTimeout(resolve, 50));
+            
+            // Reset error counter on any response
+            consecutiveErrors = 0;
+            
+            if (stripeData.error === 'sync_already_running') {
+              toast.warning('Ya hay un sync de Stripe en progreso');
+              break;
+            }
+            
+            if (!stripeData.success && stripeData.error) {
+              console.error('[Stripe] Error:', stripeData.error);
+              results.errors++;
+              break;
+            }
+            
+            // Update totals
+            const thisPageTx = stripeData.synced_transactions ?? 0;
+            if (stripeData.total_so_far) {
+              results.stripe = stripeData.total_so_far;
+              previousTotal = stripeData.total_so_far;
+            } else {
+              results.stripe += thisPageTx;
+              previousTotal = results.stripe;
+            }
+            
+            syncRunId = stripeData.syncRunId ?? syncRunId;
+            cursor = stripeData.nextCursor ?? null;
+            hasMore = stripeData.hasMore === true && cursor !== null;
+            
+            console.log(`[Stripe] Page ${pageAttempts}: ${results.stripe} tx, hasMore: ${hasMore}, cursor: ${cursor?.slice(0, 15)}`);
+            setSyncProgress(`Stripe... ${results.stripe} tx (página ${pageAttempts})`);
+            
+            // Small delay between pages
+            if (hasMore) {
+              await new Promise(resolve => setTimeout(resolve, 50));
+            }
+          } catch (pageError) {
+            consecutiveErrors++;
+            console.error(`[Stripe] Page ${pageAttempts} error (${consecutiveErrors}/${maxConsecutiveErrors}):`, pageError);
+            
+            if (consecutiveErrors >= maxConsecutiveErrors) {
+              toast.error(`Stripe sync falló después de ${consecutiveErrors} errores`);
+              break;
+            }
+            
+            await new Promise(resolve => setTimeout(resolve, 2000 * consecutiveErrors));
           }
         }
         
