@@ -277,20 +277,36 @@ const KNOWN_GHL_COLUMNS = new Set([
 ].map(c => c.toLowerCase()));
 
 /**
- * Extracts all unmapped columns into a raw_data object.
- * This is the CATCH-ALL to never lose data from CSV imports.
+ * Extracts all unmapped columns into a metadata object for csv_raw.
+ * This is a SECONDARY store for traceability.
  */
-function extractRawData(
+function extractUnmappedColumns(
   row: Record<string, string>, 
   knownColumns: Set<string>
 ): Record<string, string> {
-  const rawData: Record<string, string> = {};
+  const unmapped: Record<string, string> = {};
   
   for (const [key, value] of Object.entries(row)) {
     const keyLower = key.toLowerCase().trim();
     // If column is not in known list and has a value, capture it
     if (!knownColumns.has(keyLower) && value && value.trim()) {
-      rawData[key] = value.trim();
+      unmapped[key] = value.trim();
+    }
+  }
+  
+  return unmapped;
+}
+
+/**
+ * Creates a clean copy of the entire raw row for raw_data storage.
+ * This is the PRIMARY store - NEVER loses any data from CSV.
+ */
+function createFullRawData(row: Record<string, string>): Record<string, string> {
+  const rawData: Record<string, string> = {};
+  
+  for (const [key, value] of Object.entries(row)) {
+    if (value !== undefined && value !== null && value !== '') {
+      rawData[key] = value;
     }
   }
   
@@ -322,7 +338,8 @@ export async function processPayPalCSV(csvText: string): Promise<ProcessingResul
     transactionDate: Date;
     transactionId: string;
     currency: string;
-    rawData: Record<string, string>; // CATCH-ALL for unmapped columns
+    rawData: Record<string, string>; // FULL raw row - never lose data
+    unmappedColumns: Record<string, string>; // Extra columns for metadata.csv_raw
   }
 
   const parsedRowsMap = new Map<string, ParsedPayPalRow>();
@@ -376,8 +393,10 @@ export async function processPayPalCSV(csvText: string): Promise<ProcessingResul
 
     const currency = rawAmount.toLowerCase().includes('mxn') ? 'mxn' : 'usd';
 
-    // CATCH-ALL: Capture all unmapped columns
-    const rawData = extractRawData(row, KNOWN_PAYPAL_COLUMNS);
+    // FULL RAW DATA: Capture entire row - never lose any CSV data
+    const rawData = createFullRawData(row);
+    // UNMAPPED COLUMNS: For metadata.csv_raw traceability
+    const unmappedColumns = extractUnmappedColumns(row, KNOWN_PAYPAL_COLUMNS);
 
     parsedRowsMap.set(trimmedTxId, { 
       email: trimmedEmail, 
@@ -386,7 +405,8 @@ export async function processPayPalCSV(csvText: string): Promise<ProcessingResul
       transactionDate, 
       transactionId: trimmedTxId, 
       currency,
-      rawData // Store extra columns
+      rawData, // Complete row
+      unmappedColumns // Extra columns only
     });
     paypalTransactionsCache.set(trimmedTxId, { email: trimmedEmail, amount: amountCents, status, date: transactionDate });
   }
@@ -505,8 +525,10 @@ export async function processPayPalCSV(csvText: string): Promise<ProcessingResul
     currency: row.currency.toLowerCase(), // Normalize to lowercase
     failure_code: row.status === 'failed' ? 'payment_failed' : null,
     failure_message: row.status === 'failed' ? 'Pago rechazado por PayPal' : null,
-    // CATCH-ALL: Store extra columns in metadata
-    metadata: Object.keys(row.rawData).length > 0 ? { csv_raw: row.rawData } : null
+    // RAW_DATA: Complete row from CSV - NEVER lose data
+    raw_data: row.rawData,
+    // METADATA: Unmapped columns for traceability
+    metadata: Object.keys(row.unmappedColumns).length > 0 ? { csv_raw: row.unmappedColumns } : null
   }));
 
   if (transactionsToUpsert.length > 0) {
@@ -947,6 +969,7 @@ export async function processPaymentCSV(
     amount: number;
     status: string;
     date: string;
+    rawData: Record<string, string>; // FULL raw row - never lose data
   }
 
   const parsedRowsMap = new Map<string, ParsedStripeRow>();
@@ -992,13 +1015,17 @@ export async function processPaymentCSV(
     // CRITICAL FIX: Stripe CSV amounts are in DOLLARS (19.50) -> multiply by 100
     const amountCents = parseCurrency(rawAmount, false);
     
+    // FULL RAW DATA: Complete row - never lose any CSV data
+    const rawData = createFullRawData(row);
+    
     parsedRowsMap.set(finalStripeId, { 
       email, 
       chargeId,
       paymentIntentId: finalStripeId, 
       amount: amountCents, 
       status, 
-      date 
+      date,
+      rawData // Complete row
     });
   }
 
@@ -1116,7 +1143,9 @@ export async function processPaymentCSV(
       stripe_created_at: new Date(row.date).toISOString(),
       currency: 'usd',
       failure_code: row.status === 'failed' ? 'payment_failed' : null,
-      failure_message: row.status === 'failed' ? 'Pago fallido' : null
+      failure_message: row.status === 'failed' ? 'Pago fallido' : null,
+      // RAW_DATA: Complete row from CSV - NEVER lose data
+      raw_data: row.rawData
     };
   });
 
@@ -1209,7 +1238,8 @@ export async function processStripePaymentsCSV(csvText: string): Promise<StripeP
     failureMessage: string | null;
     paymentMethodType: string | null;
     isRefunded: boolean;
-    rawData: Record<string, string>;
+    rawData: Record<string, string>; // FULL raw row - never lose data
+    unmappedColumns: Record<string, string>; // Extra columns for metadata
   }
 
   const parsedRowsMap = new Map<string, ParsedStripePayment>();
@@ -1311,12 +1341,15 @@ export async function processStripePaymentsCSV(csvText: string): Promise<StripeP
       row['Refunded'] || row['refunded'] || ''
     ).toLowerCase() === 'true' || amountRefundedCents > 0;
 
-    // CATCH-ALL: Extract unmapped columns to raw_data
-    const rawData: Record<string, string> = {};
+    // FULL RAW DATA: Complete row - never lose any CSV data
+    const rawData = createFullRawData(row);
+    
+    // UNMAPPED COLUMNS: Extra columns for metadata.csv_raw
+    const unmappedColumns: Record<string, string> = {};
     for (const [key, value] of Object.entries(row)) {
       const keyLower = key.toLowerCase().trim();
       if (!KNOWN_STRIPE_PAYMENTS_COLUMNS.has(keyLower) && value && value.trim()) {
-        rawData[key] = value.trim();
+        unmappedColumns[key] = value.trim();
       }
     }
 
@@ -1340,7 +1373,8 @@ export async function processStripePaymentsCSV(csvText: string): Promise<StripeP
       failureMessage,
       paymentMethodType,
       isRefunded,
-      rawData
+      rawData, // Complete row
+      unmappedColumns // Extra columns only
     });
   }
 
@@ -1491,12 +1525,11 @@ export async function processStripePaymentsCSV(csvText: string): Promise<StripeP
     failure_code: row.failureCode,
     failure_message: row.failureMessage,
     payment_type: row.invoiceId ? 'renewal' : 'new', // Simple heuristic
-    metadata: Object.keys(row.rawData).length > 0 ? { 
-      csv_raw: row.rawData,
-      payment_method_type: row.paymentMethodType,
-      description: row.description,
-      amount_refunded: row.amountRefunded
-    } : {
+    // RAW_DATA: Complete row from CSV - NEVER lose data
+    raw_data: row.rawData,
+    // METADATA: Unmapped columns + extra info for traceability
+    metadata: {
+      csv_raw: Object.keys(row.unmappedColumns).length > 0 ? row.unmappedColumns : undefined,
       payment_method_type: row.paymentMethodType,
       description: row.description,
       amount_refunded: row.amountRefunded
