@@ -18,24 +18,31 @@ export async function invokeWithAdminKey<
 >(
   functionName: string,
   body?: B
-): Promise<T> {
-  // Get current session - the SDK automatically includes the JWT in requests
-  const { data: { session } } = await supabase.auth.getSession();
-  
-  if (!session) {
-    throw new Error('No hay sesión activa. Por favor, inicia sesión.');
+): Promise<T | null> {
+  try {
+    // Get current session - the SDK automatically includes the JWT in requests
+    const { data: { session } } = await supabase.auth.getSession();
+    
+    if (!session) {
+      console.error('[AdminAPI] No active session');
+      return null;
+    }
+
+    const { data, error } = await supabase.functions.invoke(functionName, {
+      body,
+    });
+
+    if (error) {
+      console.error(`[AdminAPI] ${functionName} error:`, error);
+      // Return the error as part of the response instead of throwing
+      return { success: false, error: error.message } as T;
+    }
+
+    return data as T;
+  } catch (e) {
+    console.error(`[AdminAPI] ${functionName} fatal:`, e);
+    return { success: false, error: e instanceof Error ? e.message : 'Unknown error' } as T;
   }
-
-  const { data, error } = await supabase.functions.invoke(functionName, {
-    body,
-    // JWT is automatically included via the session
-  });
-
-  if (error) {
-    throw error;
-  }
-
-  return data as T;
 }
 
 // Helper to get admin headers (for compatibility - now just returns empty since JWT is automatic)
