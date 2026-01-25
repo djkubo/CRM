@@ -98,7 +98,13 @@ export function useInvoices(options: UseInvoicesOptions = {}) {
   const { statusFilter = 'all', searchQuery = '', startDate, endDate } = options;
   const { toast } = useToast();
   const queryClient = useQueryClient();
-  const [syncProgress, setSyncProgress] = useState<{ current: number; hasMore: boolean } | null>(null);
+  const [syncProgress, setSyncProgress] = useState<{ 
+    current: number; 
+    total: number | null;
+    hasMore: boolean;
+    page: number;
+  } | null>(null);
+  const [isSyncing, setIsSyncing] = useState(false);
 
   // Fetch invoices with filters - JOIN with clients for unified identity
   const { data: invoices = [], isLoading, refetch } = useQuery({
@@ -159,15 +165,30 @@ export function useInvoices(options: UseInvoicesOptions = {}) {
     return () => { supabase.removeChannel(channel); };
   }, [refetch]);
 
-  // Full sync with pagination
+  // Full paginated sync - handles 10,000+ invoices
   const syncInvoicesFull = useCallback(async (mode: 'full' | 'recent' = 'recent') => {
-    setSyncProgress({ current: 0, hasMore: true });
+    if (isSyncing) {
+      toast({
+        title: "Sincronización en progreso",
+        description: "Espera a que termine la sincronización actual",
+        variant: "destructive",
+      });
+      return { success: false, error: 'Already syncing' };
+    }
+
+    setIsSyncing(true);
+    setSyncProgress({ current: 0, total: null, hasMore: true, page: 0 });
+    
     let cursor: string | null = null;
     let totalSynced = 0;
     let syncRunId: string | null = null;
+    let pageCount = 0;
+    const maxPages = 200; // Safety limit: 200 pages * 100/page = 20,000 invoices max
 
     try {
-      while (true) {
+      while (pageCount < maxPages) {
+        pageCount++;
+        
         const result = await invokeWithAdminKey<FetchInvoicesResponse>("fetch-invoices", {
           mode,
           cursor,
@@ -178,9 +199,16 @@ export function useInvoices(options: UseInvoicesOptions = {}) {
           throw new Error(result.error || 'Sync failed');
         }
 
-        totalSynced += result.upserted;
+        const batchSynced = result.upserted ?? result.synced ?? 0;
+        totalSynced += batchSynced;
         syncRunId = result.syncRunId;
-        setSyncProgress({ current: totalSynced, hasMore: result.hasMore });
+        
+        setSyncProgress({ 
+          current: totalSynced, 
+          total: null, // Stripe doesn't give us total count upfront
+          hasMore: result.hasMore, 
+          page: pageCount 
+        });
 
         if (!result.hasMore || !result.nextCursor) {
           break;
@@ -188,16 +216,24 @@ export function useInvoices(options: UseInvoicesOptions = {}) {
 
         cursor = result.nextCursor;
         
-        // Small delay to avoid rate limits
-        await new Promise(r => setTimeout(r, 200));
+        // Small delay to avoid rate limits and allow UI updates
+        await new Promise(r => setTimeout(r, 150));
+      }
+
+      if (pageCount >= maxPages) {
+        toast({
+          title: "Límite de páginas alcanzado",
+          description: `Se sincronizaron ${totalSynced} facturas. Si hay más, ejecuta otra sincronización.`,
+          variant: "default",
+        });
+      } else {
+        toast({
+          title: "Sincronización completa",
+          description: `${totalSynced.toLocaleString()} facturas sincronizadas`,
+        });
       }
 
       queryClient.invalidateQueries({ queryKey: ["invoices"] });
-      toast({
-        title: "Sincronización completa",
-        description: `${totalSynced} facturas sincronizadas`,
-      });
-
       return { success: true, synced: totalSynced };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Error desconocido';
@@ -208,29 +244,15 @@ export function useInvoices(options: UseInvoicesOptions = {}) {
       });
       return { success: false, error: message };
     } finally {
+      setIsSyncing(false);
       setSyncProgress(null);
     }
-  }, [queryClient, toast]);
+  }, [isSyncing, queryClient, toast]);
 
-  // Quick sync mutation (recent only)
+  // Quick sync - uses same paginated approach but with 'recent' mode (last 30 days)
   const syncInvoices = useMutation({
     mutationFn: async () => {
-      return await invokeWithAdminKey<FetchInvoicesResponse>("fetch-invoices", { mode: 'recent' });
-    },
-    onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ["invoices"] });
-      toast({
-        title: "Facturas sincronizadas",
-        description: `${data.upserted || 0} facturas actualizadas`,
-      });
-    },
-    onError: (error) => {
-      const message = error instanceof Error ? error.message : 'Error desconocido';
-      toast({
-        title: "Error al sincronizar facturas",
-        description: message,
-        variant: "destructive",
-      });
+      return await syncInvoicesFull('recent');
     },
   });
 
@@ -309,6 +331,7 @@ export function useInvoices(options: UseInvoicesOptions = {}) {
   return {
     invoices,
     isLoading,
+    isSyncing,
     refetch,
     syncInvoices,
     syncInvoicesFull,
