@@ -44,6 +44,12 @@ const FILE_TYPES = [
   'ghl',
 ];
 
+interface CsvStreamResult {
+  headers: string[];
+  batchRows: Array<Record<string, string>>;
+  totalRows: number;
+}
+
 async function verifyAdmin(req: Request): Promise<AdminVerifyResult> {
   const authHeader = req.headers.get('Authorization');
   if (!authHeader?.startsWith('Bearer ')) {
@@ -134,6 +140,124 @@ const toIsoDate = (raw?: string): string | null => {
   return parsed.toISOString();
 };
 
+const extractCompleteLines = (buffer: string): { lines: string[]; remainder: string } => {
+  const lines: string[] = [];
+  let inQuotes = false;
+  let lineStart = 0;
+
+  for (let index = 0; index < buffer.length; index += 1) {
+    const char = buffer[index];
+
+    if (char === '"') {
+      if (inQuotes && buffer[index + 1] === '"') {
+        index += 1;
+      } else {
+        inQuotes = !inQuotes;
+      }
+    }
+
+    if (!inQuotes && char === '\n') {
+      let line = buffer.slice(lineStart, index);
+      if (line.endsWith('\r')) {
+        line = line.slice(0, -1);
+      }
+      lines.push(line);
+      lineStart = index + 1;
+    }
+  }
+
+  return { lines, remainder: buffer.slice(lineStart) };
+};
+
+const parseCsvLine = (line: string): string[] => {
+  const parsed = Papa.parse<string[]>(line, { skipEmptyLines: true });
+  return parsed.data?.[0] ?? [];
+};
+
+const streamCsvFromUrl = async (
+  url: string,
+  cursor: number,
+  limit: number,
+): Promise<CsvStreamResult> => {
+  const response = await fetch(url);
+  if (!response.ok || !response.body) {
+    throw new Error(`Storage fetch failed: ${response.status} ${response.statusText}`);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let headers: string[] | null = null;
+  let rowIndex = 0;
+  let totalRows = 0;
+  const batchRows: Array<Record<string, string>> = [];
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    const { lines, remainder } = extractCompleteLines(buffer);
+    buffer = remainder;
+
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      if (!headers) {
+        const parsedHeaders = parseCsvLine(line);
+        headers = parsedHeaders.map((header) => header.replace(/^\uFEFF/, ''));
+        continue;
+      }
+
+      const values = parseCsvLine(line);
+      if (values.length === 0) continue;
+
+      totalRows += 1;
+      if (rowIndex >= cursor && batchRows.length < limit) {
+        const row: Record<string, string> = {};
+        headers.forEach((header, idx) => {
+          row[header] = values[idx] ?? '';
+        });
+        batchRows.push(row);
+      }
+      rowIndex += 1;
+    }
+  }
+
+  if (buffer.trim()) {
+    const { lines } = extractCompleteLines(`${buffer}\n`);
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      if (!headers) {
+        const parsedHeaders = parseCsvLine(line);
+        headers = parsedHeaders.map((header) => header.replace(/^\uFEFF/, ''));
+        continue;
+      }
+      const values = parseCsvLine(line);
+      if (values.length === 0) continue;
+
+      totalRows += 1;
+      if (rowIndex >= cursor && batchRows.length < limit) {
+        const row: Record<string, string> = {};
+        headers.forEach((header, idx) => {
+          row[header] = values[idx] ?? '';
+        });
+        batchRows.push(row);
+      }
+      rowIndex += 1;
+    }
+  }
+
+  if (!headers) {
+    return { headers: [], batchRows: [], totalRows: 0 };
+  }
+
+  return {
+    headers,
+    batchRows,
+    totalRows,
+  };
+};
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
@@ -158,37 +282,84 @@ Deno.serve(async (req) => {
     const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    let csvText = body.csvText;
-    if (!csvText && body.storageBucket && body.storagePath) {
-      const { data: fileData, error } = await supabase.storage
-        .from(body.storageBucket)
-        .download(body.storagePath);
-      if (error) {
-        throw new Error(`Storage download failed: ${error.message}`);
+    const hasStoragePath = Boolean(body.storageBucket && body.storagePath);
+    let csvText = hasStoragePath ? undefined : body.csvText;
+    let rawRows: Array<Record<string, string>> = [];
+    let headers: string[] = [];
+    let totalRows = 0;
+    let fileChecksum: string | null = null;
+    let fileSize: number | null = null;
+
+    if (hasStoragePath) {
+      const { data: signedData, error: signedError } = await supabase.storage
+        .from(body.storageBucket!)
+        .createSignedUrl(body.storagePath!, 600);
+      if (signedError || !signedData?.signedUrl) {
+        throw new Error(`Storage signed URL failed: ${signedError?.message ?? 'Unknown error'}`);
       }
-      csvText = await fileData.text();
+
+      const headResponse = await fetch(signedData.signedUrl, { method: 'HEAD' });
+      if (!headResponse.ok) {
+        throw new Error(`Storage HEAD failed: ${headResponse.status} ${headResponse.statusText}`);
+      }
+      const sizeHeader = headResponse.headers.get('content-length');
+      const etagHeader = headResponse.headers.get('etag');
+      fileSize = sizeHeader ? Number(sizeHeader) : null;
+      fileChecksum = etagHeader ? etagHeader.replace(/"/g, '') : null;
+
+      if (body.syncRunId) {
+        const { data: existingRun } = await supabase
+          .from('sync_runs')
+          .select('metadata')
+          .eq('id', body.syncRunId)
+          .single();
+        const existingMetadata = existingRun?.metadata as Record<string, unknown> | null;
+        if (existingMetadata) {
+          const previousChecksum = existingMetadata.checksum;
+          const previousFileSize = existingMetadata.file_size;
+          if (
+            (fileChecksum && previousChecksum && fileChecksum !== previousChecksum) ||
+            (fileSize && previousFileSize && fileSize !== previousFileSize)
+          ) {
+            return new Response(
+              JSON.stringify({ success: false, error: 'CSV file changed between retries.' }),
+              { status: 409, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+            );
+          }
+        }
+      }
+
+      const streamResult = await streamCsvFromUrl(signedData.signedUrl, cursor, limit);
+      rawRows = streamResult.batchRows;
+      headers = streamResult.headers;
+      totalRows = streamResult.totalRows;
+    } else if (csvText) {
+      const parsed = Papa.parse<Record<string, string>>(csvText, {
+        header: true,
+        skipEmptyLines: true,
+      });
+      rawRows = parsed.data || [];
+      headers = Object.keys(rawRows[0] || {});
+      totalRows = rawRows.length;
+      fileSize = csvText.length;
+      const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(csvText));
+      fileChecksum = Array.from(new Uint8Array(digest))
+        .map((byte) => byte.toString(16).padStart(2, '0'))
+        .join('');
     }
 
-    if (!csvText) {
+    if (!hasStoragePath && !csvText) {
       return new Response(
-        JSON.stringify({ success: false, error: 'csvText or storagePath required' }),
+        JSON.stringify({ success: false, error: 'storageBucket/storagePath or csvText required' }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
-    const parsed = Papa.parse<Record<string, string>>(csvText, {
-      header: true,
-      skipEmptyLines: true,
-    });
-
-    const rawRows = parsed.data || [];
-    const headers = Object.keys(rawRows[0] || {});
     const fileType = FILE_TYPES.includes(body.fileType || '')
       ? body.fileType!
       : detectFileType(headers, body.fileName);
 
-    const totalRows = rawRows.length;
-    const batchRows = rawRows.slice(cursor, cursor + limit);
+    const batchRows = hasStoragePath ? rawRows : rawRows.slice(cursor, cursor + limit);
 
     const stats: Record<string, number> = {
       totalRows,
@@ -339,6 +510,10 @@ Deno.serve(async (req) => {
             fileType,
             fileName: body.fileName,
             totalRows,
+            storageBucket: body.storageBucket ?? null,
+            storagePath: body.storagePath ?? null,
+            checksum: fileChecksum,
+            file_size: fileSize,
             initiatedBy: authCheck.userEmail,
           },
         })
@@ -353,12 +528,18 @@ Deno.serve(async (req) => {
     if (syncRunId) {
       const { data: currentRun } = await supabase
         .from('sync_runs')
-        .select('total_fetched, total_inserted')
+        .select('total_fetched, total_inserted, metadata')
         .eq('id', syncRunId)
         .single();
 
       const totalFetched = Math.min(totalRows, cursor + batchRows.length);
       const totalInserted = (currentRun?.total_inserted || 0) + (stats.transactionsCreated || 0) + (stats.subscriptionsUpserted || 0);
+
+      const mergedMetadata = {
+        ...(currentRun?.metadata as Record<string, unknown> | null || {}),
+        checksum: fileChecksum,
+        file_size: fileSize,
+      };
 
       await supabase
         .from('sync_runs')
@@ -368,6 +549,7 @@ Deno.serve(async (req) => {
           checkpoint: hasMore ? { cursor: nextCursor } : null,
           total_fetched: totalFetched,
           total_inserted: totalInserted,
+          metadata: mergedMetadata,
         })
         .eq('id', syncRunId);
     }
