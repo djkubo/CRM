@@ -15,6 +15,15 @@ interface SyncConfig {
   cursor?: string | null;
   limit?: number;
   includeContacts?: boolean;
+  maxPages?: number;
+  stripeCursor?: string | null;
+  stripeSyncRunId?: string | null;
+  subscriptionsCursor?: string | null;
+  subscriptionsSyncRunId?: string | null;
+  invoiceCursor?: string | null;
+  invoiceSyncRunId?: string | null;
+  paypalCursor?: string | null;
+  paypalSyncRunId?: string | null;
 }
 
 interface StripeSyncResponse {
@@ -66,6 +75,22 @@ interface SyncRunMetadata {
   lastUpdate?: string;
   results?: Record<string, SyncStepResult>;
   completedAt?: string;
+  stripe_cursor?: string | null;
+  stripe_sync_run_id?: string | null;
+  stripe_pages?: number;
+  stripe_has_more?: boolean;
+  subscriptions_cursor?: string | null;
+  subscriptions_sync_run_id?: string | null;
+  subscriptions_pages?: number;
+  subscriptions_has_more?: boolean;
+  invoice_cursor?: string | null;
+  invoice_sync_run_id?: string | null;
+  invoice_pages?: number;
+  invoice_has_more?: boolean;
+  paypal_cursor?: string | null;
+  paypal_sync_run_id?: string | null;
+  paypal_pages?: number;
+  paypal_has_more?: boolean;
 }
 
 interface SyncRun {
@@ -159,6 +184,16 @@ Deno.serve(async (req: Request) => {
         cursor: body.cursor ?? null,
         limit: body.limit,
         includeContacts: body.includeContacts ?? false,
+        maxPages: body.maxPages,
+        stripeCursor: body.stripeCursor ?? (body as { stripe_cursor?: string | null }).stripe_cursor ?? null,
+        stripeSyncRunId: body.stripeSyncRunId ?? (body as { stripe_sync_run_id?: string | null }).stripe_sync_run_id ?? null,
+        subscriptionsCursor: body.subscriptionsCursor ?? (body as { subscriptions_cursor?: string | null }).subscriptions_cursor ?? null,
+        subscriptionsSyncRunId:
+          body.subscriptionsSyncRunId ?? (body as { subscriptions_sync_run_id?: string | null }).subscriptions_sync_run_id ?? null,
+        invoiceCursor: body.invoiceCursor ?? (body as { invoice_cursor?: string | null }).invoice_cursor ?? null,
+        invoiceSyncRunId: body.invoiceSyncRunId ?? (body as { invoice_sync_run_id?: string | null }).invoice_sync_run_id ?? null,
+        paypalCursor: body.paypalCursor ?? (body as { paypal_cursor?: string | null }).paypal_cursor ?? null,
+        paypalSyncRunId: body.paypalSyncRunId ?? (body as { paypal_sync_run_id?: string | null }).paypal_sync_run_id ?? null,
       };
     } catch {
       // Use defaults
@@ -182,6 +217,14 @@ Deno.serve(async (req: Request) => {
       authMethod: "jwt+is_admin",
       userEmail,
       steps: [],
+      stripe_cursor: config.stripeCursor ?? null,
+      stripe_sync_run_id: config.stripeSyncRunId ?? null,
+      subscriptions_cursor: config.subscriptionsCursor ?? null,
+      subscriptions_sync_run_id: config.subscriptionsSyncRunId ?? null,
+      invoice_cursor: config.invoiceCursor ?? null,
+      invoice_sync_run_id: config.invoiceSyncRunId ?? null,
+      paypal_cursor: config.paypalCursor ?? null,
+      paypal_sync_run_id: config.paypalSyncRunId ?? null,
     };
 
     const { data: syncRunData, error: syncRunError } = await dbClient
@@ -206,18 +249,22 @@ Deno.serve(async (req: Request) => {
     const updateProgress = async (
       step: string, 
       details: string, 
-      counts?: { fetched?: number; inserted?: number }
+      counts?: { fetched?: number; inserted?: number },
+      metadataUpdates?: Partial<SyncRunMetadata>
     ): Promise<void> => {
       const currentMetadata = syncRun.metadata ?? { steps: [] };
       const steps = [...(currentMetadata.steps ?? []), `${step}: ${details}`];
       
+      const nextMetadata = {
+        ...currentMetadata,
+        ...metadataUpdates,
+        steps,
+        currentStep: step,
+        lastUpdate: new Date().toISOString(),
+      };
+
       const updateData: Record<string, unknown> = {
-        metadata: { 
-          ...currentMetadata, 
-          steps, 
-          currentStep: step, 
-          lastUpdate: new Date().toISOString() 
-        },
+        metadata: nextMetadata,
         checkpoint: { step, details, timestamp: new Date().toISOString() },
       };
 
@@ -232,19 +279,39 @@ Deno.serve(async (req: Request) => {
         .from("sync_runs")
         .update(updateData)
         .eq("id", syncRunId);
+
+      syncRun.metadata = nextMetadata;
     };
 
     const results: Record<string, SyncStepResult> = {};
+    const continuingSteps: string[] = [];
+    const maxPages = config.maxPages && config.maxPages > 0 ? config.maxPages : undefined;
 
     // ============ STRIPE TRANSACTIONS ============
     try {
       await updateProgress("stripe-transactions", "Iniciando...");
       let totalStripe = 0;
       let hasMore = true;
-      let cursor: string | null = null;
-      let stripeSyncId: string | null = null;
+      let cursor: string | null = config.stripeCursor ?? null;
+      let stripeSyncId: string | null = config.stripeSyncRunId ?? null;
+      let pageCount = 0;
       
       while (hasMore) {
+        if (maxPages && pageCount >= maxPages) {
+          continuingSteps.push("stripe-transactions");
+          await updateProgress(
+            "stripe-transactions",
+            `Continuando desde página ${pageCount + 1}`,
+            undefined,
+            {
+              stripe_cursor: cursor,
+              stripe_sync_run_id: stripeSyncId,
+              stripe_pages: pageCount,
+              stripe_has_more: hasMore,
+            }
+          );
+          break;
+        }
         const response = await invokeClient.functions.invoke('fetch-stripe', {
           body: {
             fetchAll: config.fetchAll ?? false,
@@ -267,8 +334,14 @@ Deno.serve(async (req: Request) => {
         stripeSyncId = respData?.syncRunId ?? stripeSyncId;
         cursor = respData?.nextCursor ?? null;
         hasMore = respData?.hasMore === true && cursor !== null;
+        pageCount += 1;
         
-        await updateProgress("stripe-transactions", `${totalStripe} transacciones`);
+        await updateProgress("stripe-transactions", `${totalStripe} transacciones`, undefined, {
+          stripe_cursor: cursor,
+          stripe_sync_run_id: stripeSyncId,
+          stripe_pages: pageCount,
+          stripe_has_more: hasMore,
+        });
       }
       if (!results["stripe"]) {
         results["stripe"] = { success: true, count: totalStripe };
@@ -283,10 +356,26 @@ Deno.serve(async (req: Request) => {
       await updateProgress("stripe-subscriptions", "Iniciando...");
       let totalSubs = 0;
       let hasMore = true;
-      let cursor: string | null = null;
-      let subsSyncId: string | null = null;
+      let cursor: string | null = config.subscriptionsCursor ?? null;
+      let subsSyncId: string | null = config.subscriptionsSyncRunId ?? null;
+      let pageCount = 0;
 
       while (hasMore) {
+        if (maxPages && pageCount >= maxPages) {
+          continuingSteps.push("stripe-subscriptions");
+          await updateProgress(
+            "stripe-subscriptions",
+            `Continuando desde página ${pageCount + 1}`,
+            undefined,
+            {
+              subscriptions_cursor: cursor,
+              subscriptions_sync_run_id: subsSyncId,
+              subscriptions_pages: pageCount,
+              subscriptions_has_more: hasMore,
+            }
+          );
+          break;
+        }
         const response = await invokeClient.functions.invoke('fetch-subscriptions', {
           body: { cursor, syncRunId: subsSyncId }
         });
@@ -296,7 +385,13 @@ Deno.serve(async (req: Request) => {
         subsSyncId = (respData as { syncRunId?: string })?.syncRunId ?? subsSyncId;
         cursor = (respData as { nextCursor?: string | null })?.nextCursor ?? null;
         hasMore = (respData as { hasMore?: boolean })?.hasMore === true && cursor !== null;
-        await updateProgress("stripe-subscriptions", `${totalSubs} suscripciones`);
+        pageCount += 1;
+        await updateProgress("stripe-subscriptions", `${totalSubs} suscripciones`, undefined, {
+          subscriptions_cursor: cursor,
+          subscriptions_sync_run_id: subsSyncId,
+          subscriptions_pages: pageCount,
+          subscriptions_has_more: hasMore,
+        });
       }
 
       results["subscriptions"] = { success: true, count: totalSubs };
@@ -310,10 +405,26 @@ Deno.serve(async (req: Request) => {
       await updateProgress("stripe-invoices", "Iniciando...");
       let totalInvoices = 0;
       let hasMore = true;
-      let cursor: string | null = null;
-      let invoicesSyncId: string | null = null;
+      let cursor: string | null = config.invoiceCursor ?? null;
+      let invoicesSyncId: string | null = config.invoiceSyncRunId ?? null;
+      let pageCount = 0;
 
       while (hasMore) {
+        if (maxPages && pageCount >= maxPages) {
+          continuingSteps.push("stripe-invoices");
+          await updateProgress(
+            "stripe-invoices",
+            `Continuando desde página ${pageCount + 1}`,
+            undefined,
+            {
+              invoice_cursor: cursor,
+              invoice_sync_run_id: invoicesSyncId,
+              invoice_pages: pageCount,
+              invoice_has_more: hasMore,
+            }
+          );
+          break;
+        }
         const response = await invokeClient.functions.invoke('fetch-invoices', {
           body: {
             fetchAll: config.fetchAll ?? false,
@@ -331,8 +442,14 @@ Deno.serve(async (req: Request) => {
         invoicesSyncId = (respData as { syncRunId?: string })?.syncRunId ?? invoicesSyncId;
         cursor = (respData as { nextCursor?: string | null })?.nextCursor ?? null;
         hasMore = (respData as { hasMore?: boolean })?.hasMore === true && cursor !== null;
+        pageCount += 1;
 
-        await updateProgress("stripe-invoices", `${totalInvoices} facturas`);
+        await updateProgress("stripe-invoices", `${totalInvoices} facturas`, undefined, {
+          invoice_cursor: cursor,
+          invoice_sync_run_id: invoicesSyncId,
+          invoice_pages: pageCount,
+          invoice_has_more: hasMore,
+        });
       }
 
       results["invoices"] = { success: true, count: totalInvoices };
@@ -410,10 +527,26 @@ Deno.serve(async (req: Request) => {
       await updateProgress("paypal-transactions", "Iniciando...");
       let totalPaypal = 0;
       let hasMore = true;
-      let cursor: string | null = null;
-      let paypalSyncId: string | null = null;
+      let cursor: string | null = config.paypalCursor ?? null;
+      let paypalSyncId: string | null = config.paypalSyncRunId ?? null;
+      let pageCount = 0;
       
       while (hasMore) {
+        if (maxPages && pageCount >= maxPages) {
+          continuingSteps.push("paypal-transactions");
+          await updateProgress(
+            "paypal-transactions",
+            `Continuando desde página ${pageCount + 1}`,
+            undefined,
+            {
+              paypal_cursor: cursor,
+              paypal_sync_run_id: paypalSyncId,
+              paypal_pages: pageCount,
+              paypal_has_more: hasMore,
+            }
+          );
+          break;
+        }
         const response = await invokeClient.functions.invoke('fetch-paypal', {
           body: {
             fetchAll: config.fetchAll ?? false,
@@ -436,8 +569,14 @@ Deno.serve(async (req: Request) => {
         paypalSyncId = respData?.syncRunId ?? paypalSyncId;
         cursor = respData?.nextCursor ?? null;
         hasMore = respData?.hasMore === true && cursor !== null;
+        pageCount += 1;
         
-        await updateProgress("paypal-transactions", `${totalPaypal} transacciones`);
+        await updateProgress("paypal-transactions", `${totalPaypal} transacciones`, undefined, {
+          paypal_cursor: cursor,
+          paypal_sync_run_id: paypalSyncId,
+          paypal_pages: pageCount,
+          paypal_has_more: hasMore,
+        });
       }
       if (!results["paypal"]) {
         results["paypal"] = { success: true, count: totalPaypal };
@@ -532,23 +671,25 @@ Deno.serve(async (req: Request) => {
     const totalFetched = Object.values(results).reduce((sum, r) => sum + r.count, 0);
     const failedSteps = Object.entries(results).filter(([, r]) => !r.success).map(([k]) => k);
     
+    const finalStatus = continuingSteps.length > 0
+      ? "continuing"
+      : (failedSteps.length > 0 ? "completed_with_errors" : "completed");
+
     const finalMetadata: SyncRunMetadata = {
       ...syncRun.metadata,
       results,
-      completedAt: new Date().toISOString(),
+      completedAt: finalStatus === "continuing" ? undefined : new Date().toISOString(),
     };
-
-    const finalStatus = failedSteps.length > 0 ? "completed_with_errors" : "completed";
 
     await dbClient
       .from("sync_runs")
       .update({
         status: finalStatus,
-        completed_at: new Date().toISOString(),
+        completed_at: continuingSteps.length > 0 ? null : new Date().toISOString(),
         total_fetched: totalFetched,
         total_inserted: totalFetched,
         error_message: failedSteps.length > 0 ? `Errors in: ${failedSteps.join(", ")}` : null,
-        metadata: finalMetadata
+        metadata: finalMetadata,
       })
       .eq("id", syncRunId);
 
@@ -561,6 +702,7 @@ Deno.serve(async (req: Request) => {
         syncRunId,
         totalRecords: totalFetched,
         results,
+        continuingSteps: continuingSteps.length > 0 ? continuingSteps : undefined,
         failedSteps: failedSteps.length > 0 ? failedSteps : undefined,
         duration_ms: Date.now() - startTime
       }),
