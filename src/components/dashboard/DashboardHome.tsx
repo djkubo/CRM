@@ -160,7 +160,7 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
       setSyncProgress('PayPal...');
       try {
         let hasMore = true;
-        let page = 1;
+        let cursor: string | null = null;
         let syncRunId: string | null = null;
         let attempts = 0;
         const maxAttempts = 100;
@@ -173,7 +173,7 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
               fetchAll, 
               startDate: startDate.toISOString(), 
               endDate: endDate.toISOString(),
-              cursor: String(page),
+              cursor,
               syncRunId
             }
           );
@@ -186,8 +186,8 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
           
           results.paypal += paypalData?.synced_transactions ?? 0;
           syncRunId = paypalData?.syncRunId ?? syncRunId;
-          hasMore = paypalData?.hasMore === true;
-          page = paypalData?.nextCursor ? Number(paypalData.nextCursor) : page + 1;
+          hasMore = paypalData?.hasMore === true && !!paypalData?.nextCursor;
+          cursor = hasMore ? paypalData?.nextCursor ?? null : null;
           
           if (hasMore) {
             setSyncProgress(`PayPal... ${results.paypal} tx`);

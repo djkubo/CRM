@@ -247,7 +247,7 @@ Deno.serve(async (req) => {
       const body = await req.json();
       fetchAll = body.fetchAll === true;
       cleanupStale = body.cleanupStale === true;
-      page = body.cursor ? Number(body.cursor) : body.page || 1;
+      page = body.cursor ? Number(body.cursor) : 1;
       syncRunId = body.syncRunId || null;
       if (body.limit) {
         limit = Math.min(Number(body.limit), 100);
@@ -496,6 +496,7 @@ Deno.serve(async (req) => {
     // Check if more pages
     const hasMore = fetchAll && page < result.totalPages;
     const nextCursor = hasMore ? String(page + 1) : null;
+    const responseHasMore = hasMore && !!nextCursor;
 
     const { data: currentRun } = await supabase
       .from('sync_runs')
@@ -506,7 +507,7 @@ Deno.serve(async (req) => {
     const totalFetched = (currentRun?.total_fetched || 0) + transactionsSaved;
     const totalInserted = (currentRun?.total_inserted || 0) + transactionsSaved;
 
-    if (hasMore) {
+    if (responseHasMore) {
       await supabase
         .from('sync_runs')
         .update({
