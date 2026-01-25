@@ -185,11 +185,10 @@ async function fetchPayPalPage(
 }
 
 function formatPayPalDate(date: Date): string {
-  // PayPal requires ISO 8601 format with timezone offset, not Z
-  // Format: YYYY-MM-DDTHH:mm:ss+00:00
+  // PayPal requires ISO 8601 format: YYYY-MM-DDTHH:mm:ssZ (no milliseconds)
   const iso = date.toISOString();
-  // Replace Z with +00:00 and remove milliseconds
-  return iso.replace(/\.\d{3}Z$/, '+00:00');
+  // Remove milliseconds, keep Z
+  return iso.replace(/\.\d{3}Z$/, 'Z');
 }
 
 // ============= MAIN HANDLER =============
