@@ -69,6 +69,42 @@ function normalizePhone(phone: string): string | null {
   return cleaned.startsWith('+') ? cleaned : `+${cleaned}`;
 }
 
+// Normalize header: remove dots, accents, parentheses, extra spaces
+function normalizeHeader(h: string): string {
+  return h
+    .toLowerCase()
+    .replace(/\./g, '')           // Remove dots
+    .replace(/[áàäâ]/g, 'a')       // Normalize accents
+    .replace(/[éèëê]/g, 'e')
+    .replace(/[íìïî]/g, 'i')
+    .replace(/[óòöô]/g, 'o')
+    .replace(/[úùüû]/g, 'u')
+    .replace(/ñ/g, 'n')
+    .replace(/\(/g, '')            // Remove parentheses
+    .replace(/\)/g, '')
+    .replace(/\s+/g, ' ')          // Collapse multiple spaces
+    .trim();
+}
+
+// Find column index with flexible matching
+function findColumnIndex(headers: string[], patterns: string[]): number {
+  const normalizedHeaders = headers.map(normalizeHeader);
+  
+  for (const pattern of patterns) {
+    const normalizedPattern = normalizeHeader(pattern);
+    
+    // Try exact match first
+    const exactIdx = normalizedHeaders.findIndex(h => h === normalizedPattern);
+    if (exactIdx !== -1) return exactIdx;
+    
+    // Try contains match
+    const containsIdx = normalizedHeaders.findIndex(h => h.includes(normalizedPattern));
+    if (containsIdx !== -1) return containsIdx;
+  }
+  
+  return -1;
+}
+
 function parseCSVLine(line: string): string[] {
   const result: string[] = [];
   let current = '';
@@ -750,56 +786,68 @@ async function processMasterCSV(
     clientsUpdated: 0
   };
 
-  // Build column index maps by prefix
+  // Build column index maps by prefix - now with normalization
   const colMap: Record<string, number> = {};
+  const normalizedColMap: Record<string, number> = {};
   headers.forEach((h, idx) => {
     colMap[h] = idx;
+    normalizedColMap[normalizeHeader(h)] = idx;
   });
 
-  // Find key columns
-  const emailIdx = headers.findIndex(h => h === 'email');
+  // Find key columns with flexible matching
+  const emailIdx = findColumnIndex(headers, ['email', 'correo electronico', 'correo']);
   
   // Auto_Master fields (pre-calculated unified data)
-  const autoNameIdx = colMap['auto_master_name'] ?? -1;
-  const autoPhoneIdx = colMap['auto_master_phone'] ?? -1;
-  const autoSpendIdx = colMap['auto_total_spend'] ?? -1;
-  const autoSourcesIdx = colMap['auto_data_sources'] ?? -1;
+  const autoNameIdx = findColumnIndex(headers, ['auto_master_name', 'auto master name']);
+  const autoPhoneIdx = findColumnIndex(headers, ['auto_master_phone', 'auto master phone']);
+  const autoSpendIdx = findColumnIndex(headers, ['auto_total_spend', 'auto total spend']);
+  const autoSourcesIdx = findColumnIndex(headers, ['auto_data_sources', 'auto data sources']);
   
   // CNT_ (GHL Contact) fields
-  const cntContactIdIdx = colMap['cnt_contact id'] ?? -1;
-  const cntFirstNameIdx = colMap['cnt_first name'] ?? -1;
-  const cntLastNameIdx = colMap['cnt_last name'] ?? -1;
-  const cntPhoneIdx = colMap['cnt_phone'] ?? -1;
-  const cntTagsIdx = colMap['cnt_tags'] ?? -1;
-  const cntCreatedIdx = colMap['cnt_created'] ?? -1;
+  const cntContactIdIdx = findColumnIndex(headers, ['cnt_contact id', 'cnt_contactid', 'cnt contact id']);
+  const cntFirstNameIdx = findColumnIndex(headers, ['cnt_first name', 'cnt_firstname', 'cnt first name']);
+  const cntLastNameIdx = findColumnIndex(headers, ['cnt_last name', 'cnt_lastname', 'cnt last name']);
+  const cntPhoneIdx = findColumnIndex(headers, ['cnt_phone', 'cnt phone']);
+  const cntTagsIdx = findColumnIndex(headers, ['cnt_tags', 'cnt tags']);
+  const cntCreatedIdx = findColumnIndex(headers, ['cnt_created', 'cnt created']);
+  const cntBusinessNameIdx = findColumnIndex(headers, ['cnt_business name', 'cnt business name']);
+  const cntLastActivityIdx = findColumnIndex(headers, ['cnt_last activity', 'cnt last activity']);
   
-  // ST_ (Stripe) fields
-  const stIdIdx = colMap['st_id'] ?? -1;
-  const stAmountIdx = colMap['st_amount'] ?? -1;
-  const stStatusIdx = colMap['st_status'] ?? -1;
-  const stCurrencyIdx = colMap['st_currency'] ?? -1;
-  const stCreatedIdx = colMap['st_created date (utc)'] ?? -1;
-  const stCustomerIdIdx = colMap['st_customer id'] ?? -1;
-  const stPaymentIntentIdx = colMap['st_paymentintent id'] ?? -1;
+  // ST_ (Stripe) fields - flexible matching for various formats
+  const stIdIdx = findColumnIndex(headers, ['st_id', 'st id']);
+  const stAmountIdx = findColumnIndex(headers, ['st_amount', 'st amount']);
+  const stStatusIdx = findColumnIndex(headers, ['st_status', 'st status']);
+  const stCurrencyIdx = findColumnIndex(headers, ['st_currency', 'st currency']);
+  const stCreatedIdx = findColumnIndex(headers, ['st_created date utc', 'st_created', 'st created date']);
+  const stCustomerIdIdx = findColumnIndex(headers, ['st_customer id', 'st customer id']);
+  const stPaymentIntentIdx = findColumnIndex(headers, ['st_paymentintent id', 'st paymentintent', 'st payment intent']);
+  const stCustomerEmailIdx = findColumnIndex(headers, ['st_correo electronico del cliente metadata', 'st customer email']);
   
-  // PP_ (PayPal) fields
-  const ppTxIdIdx = colMap['pp_id. de transacción'] ?? colMap['pp_id de transacción'] ?? -1;
-  const ppBrutoIdx = colMap['pp_bruto'] ?? -1;
-  const ppEstadoIdx = colMap['pp_estado'] ?? -1;
-  const ppFechaIdx = colMap['pp_fecha'] ?? -1;
-  const ppNombreIdx = colMap['pp_nombre'] ?? -1;
+  // PP_ (PayPal) fields - flexible matching for Spanish with special chars
+  const ppTxIdIdx = findColumnIndex(headers, ['pp_id de transaccion', 'pp_id transaccion', 'pp id de transaccion', 'pp transaction id']);
+  const ppBrutoIdx = findColumnIndex(headers, ['pp_bruto', 'pp bruto']);
+  const ppEstadoIdx = findColumnIndex(headers, ['pp_estado', 'pp estado']);
+  const ppFechaIdx = findColumnIndex(headers, ['pp_fecha', 'pp fecha']);
+  const ppNombreIdx = findColumnIndex(headers, ['pp_nombre', 'pp nombre']);
+  const ppNetoIdx = findColumnIndex(headers, ['pp_neto', 'pp neto']);
+  const ppCorreoIdx = findColumnIndex(headers, ['pp_correo electronico del destinatario', 'pp correo']);
+  const ppTipoIdx = findColumnIndex(headers, ['pp_tipo', 'pp tipo']);
   
   // SUB_ (Subscription) fields
-  const subPlanNameIdx = colMap['sub_plan name'] ?? -1;
-  const subStatusIdx = colMap['sub_status'] ?? -1;
-  const subPriceIdx = colMap['sub_price'] ?? -1;
-  const subExpiresIdx = colMap['sub_expires at (cdmx)'] ?? -1;
-  const subCreatedIdx = colMap['sub_created at (cdmx)'] ?? -1;
+  const subPlanNameIdx = findColumnIndex(headers, ['sub_plan name', 'sub plan name']);
+  const subStatusIdx = findColumnIndex(headers, ['sub_status', 'sub status']);
+  const subPriceIdx = findColumnIndex(headers, ['sub_price', 'sub price']);
+  const subExpiresIdx = findColumnIndex(headers, ['sub_expires at cdmx', 'sub expires at', 'sub_expires at']);
+  const subCreatedIdx = findColumnIndex(headers, ['sub_created at cdmx', 'sub created at', 'sub_created at']);
+  const subPhoneIdx = findColumnIndex(headers, ['sub_phone', 'sub phone']);
+  const subUserNameIdx = findColumnIndex(headers, ['sub_user name', 'sub user name']);
+  const subSubscriptionIdIdx = findColumnIndex(headers, ['sub_subscription id', 'sub subscription id']);
   
   // USR_ (User) fields
-  const usrNombreIdx = colMap['usr_nombre'] ?? -1;
-  const usrTelefonoIdx = colMap['usr_telefono'] ?? -1;
-  const usrRoleIdx = colMap['usr_role'] ?? -1;
+  const usrNombreIdx = findColumnIndex(headers, ['usr_nombre', 'usr nombre']);
+  const usrTelefonoIdx = findColumnIndex(headers, ['usr_telefono', 'usr telefono']);
+  const usrRoleIdx = findColumnIndex(headers, ['usr_role', 'usr role']);
+  const usrMetodoPagoIdx = findColumnIndex(headers, ['usr_metodo de pago', 'usr metodo pago']);
 
   if (emailIdx === -1) {
     result.errors.push('Missing Email column in Master CSV');
@@ -808,7 +856,8 @@ async function processMasterCSV(
 
   logger.info('Master CSV column mapping', { 
     emailIdx, autoNameIdx, autoPhoneIdx, cntContactIdIdx, stIdIdx, ppTxIdIdx, subPlanNameIdx,
-    totalColumns: headers.length
+    totalColumns: headers.length,
+    sampleHeaders: headers.slice(0, 10)
   });
 
   interface MasterRow {
@@ -822,6 +871,7 @@ async function processMasterCSV(
     ghlContactId: string | null;
     ghlTags: string[];
     ghlCreated: string | null;
+    ghlBusinessName: string | null;
     // Stripe transaction
     stripeId: string | null;
     stripeAmount: number;
@@ -835,12 +885,14 @@ async function processMasterCSV(
     paypalAmount: number;
     paypalStatus: string | null;
     paypalDate: string | null;
+    paypalType: string | null;
     // Subscription
     subPlanName: string | null;
     subStatus: string | null;
     subPrice: number;
     subExpires: string | null;
     subCreated: string | null;
+    subSubscriptionId: string | null;
     // User
     userRole: string | null;
   }
@@ -875,6 +927,7 @@ async function processMasterCSV(
       const cntPhone = cntPhoneIdx >= 0 ? normalizePhone(values[cntPhoneIdx] || '') : null;
       const cntTags = cntTagsIdx >= 0 ? (values[cntTagsIdx]?.replace(/"/g, '').trim() || '').split(',').map(t => t.trim()).filter(Boolean) : [];
       const cntCreated = cntCreatedIdx >= 0 ? values[cntCreatedIdx]?.replace(/"/g, '').trim() || null : null;
+      const cntBusinessName = cntBusinessNameIdx >= 0 ? values[cntBusinessNameIdx]?.replace(/"/g, '').trim() || null : null;
 
       // Parse Stripe fields
       const stId = stIdIdx >= 0 ? values[stIdIdx]?.replace(/"/g, '').trim() || null : null;
@@ -890,6 +943,7 @@ async function processMasterCSV(
       const ppAmount = ppBrutoIdx >= 0 ? normalizeAmount(values[ppBrutoIdx] || '0') : 0;
       const ppStatus = ppEstadoIdx >= 0 ? values[ppEstadoIdx]?.replace(/"/g, '').trim() || null : null;
       const ppDate = ppFechaIdx >= 0 ? values[ppFechaIdx]?.replace(/"/g, '').trim() || null : null;
+      const ppType = ppTipoIdx >= 0 ? values[ppTipoIdx]?.replace(/"/g, '').trim() || null : null;
 
       // Parse Subscription fields
       const subPlanName = subPlanNameIdx >= 0 ? values[subPlanNameIdx]?.replace(/"/g, '').trim() || null : null;
@@ -897,6 +951,7 @@ async function processMasterCSV(
       const subPrice = subPriceIdx >= 0 ? normalizeAmount(values[subPriceIdx] || '0') : 0;
       const subExpires = subExpiresIdx >= 0 ? values[subExpiresIdx]?.replace(/"/g, '').trim() || null : null;
       const subCreated = subCreatedIdx >= 0 ? values[subCreatedIdx]?.replace(/"/g, '').trim() || null : null;
+      const subSubscriptionId = subSubscriptionIdIdx >= 0 ? values[subSubscriptionIdIdx]?.replace(/"/g, '').trim() || null : null;
 
       // Parse User fields
       const usrNombre = usrNombreIdx >= 0 ? values[usrNombreIdx]?.replace(/"/g, '').trim() || null : null;
@@ -916,6 +971,7 @@ async function processMasterCSV(
         ghlContactId: cntContactId,
         ghlTags: cntTags,
         ghlCreated: cntCreated,
+        ghlBusinessName: cntBusinessName,
         stripeId: stId,
         stripeAmount: stAmount,
         stripeStatus: stStatus,
@@ -927,11 +983,13 @@ async function processMasterCSV(
         paypalAmount: ppAmount,
         paypalStatus: ppStatus,
         paypalDate: ppDate,
+        paypalType: ppType,
         subPlanName: subPlanName,
         subStatus: subStatus,
         subPrice: subPrice,
         subExpires: subExpires,
         subCreated: subCreated,
+        subSubscriptionId: subSubscriptionId,
         userRole: usrRole
       });
 
