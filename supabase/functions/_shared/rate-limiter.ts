@@ -44,6 +44,8 @@ export class RateLimiter {
 export const RATE_LIMITERS = {
     STRIPE: new RateLimiter(100, 5),
     PAYPAL: new RateLimiter(10, 2),
-    GHL: new RateLimiter(10, 2),
+    // GHL API v2.0 can handle more requests - increased from 10 to 30 req/sec
+    // Burst size increased to 5 for faster initial requests
+    GHL: new RateLimiter(30, 5),
     MANYCHAT: new RateLimiter(10, 2)
 } as const;

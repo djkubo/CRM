@@ -157,8 +157,9 @@ async function processSinglePage(
       };
     }
 
-    // Process contacts - batch of 10 in parallel
-    const PARALLEL_SIZE = 10;
+    // Process contacts - batch of 20 in parallel for better throughput
+    // Increased from 10 to 20 to speed up processing
+    const PARALLEL_SIZE = 20;
     for (let i = 0; i < contacts.length; i += PARALLEL_SIZE) {
       const batch = contacts.slice(i, i + PARALLEL_SIZE);
       const results = await Promise.all(
@@ -412,7 +413,8 @@ Deno.serve(async (req) => {
     }
 
     // ============ PROCESS PAGE ============
-    logger.info(`Processing GHL page`, { startAfterId });
+    const pageStartTime = Date.now();
+    logger.info(`Processing GHL page`, { startAfterId, syncRunId });
 
     const pageResult = await processSinglePage(
       supabase as any,
@@ -423,6 +425,17 @@ Deno.serve(async (req) => {
       startAfterId,
       startAfter
     );
+    
+    const pageDuration = Date.now() - pageStartTime;
+    logger.info(`GHL page processed`, { 
+      duration_ms: pageDuration,
+      contactsFetched: pageResult.contactsFetched,
+      inserted: pageResult.inserted,
+      updated: pageResult.updated,
+      skipped: pageResult.skipped,
+      conflicts: pageResult.conflicts,
+      contactsPerSecond: pageResult.contactsFetched > 0 ? (pageResult.contactsFetched / (pageDuration / 1000)).toFixed(2) : 0
+    });
 
     if (pageResult.error) {
       await supabase.from('sync_runs').update({ status: 'failed', completed_at: new Date().toISOString(), error_message: pageResult.error }).eq('id', syncRunId);
