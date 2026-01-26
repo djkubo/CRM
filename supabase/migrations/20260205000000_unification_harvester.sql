@@ -92,8 +92,47 @@ BEGIN
     END;
   END LOOP;
 
+  -- 4. Scan Transactions (New)
+  FOR v_rec IN (
+    SELECT DISTINCT
+      customer_email,
+      stripe_customer_id,
+      id AS transaction_id,
+      metadata,
+      source
+    FROM transactions
+    WHERE stripe_created_at >= now() - v_lookback
+    AND customer_email IS NOT NULL
+    AND client_id IS NULL -- Only process unlinked
+  ) LOOP
+    BEGIN
+      v_result := public.unify_identity(
+        p_source => 'transaction', 
+        p_email => v_rec.customer_email,
+        p_stripe_customer_id => v_rec.stripe_customer_id,
+        p_tracking_data => COALESCE(v_rec.metadata, '{}'::jsonb)
+      );
+      
+      IF (v_result->>'success')::boolean THEN
+         IF v_result->>'action' = 'created' THEN v_created := v_created + 1;
+         ELSE v_updated := v_updated + 1;
+         END IF;
+         
+         -- Auto-link the transaction to the client
+         UPDATE transactions 
+         SET client_id = (v_result->>'client_id')::uuid
+         WHERE id = v_rec.transaction_id;
+         
+      END IF;
+      
+      v_processed := v_processed + 1;
+    EXCEPTION WHEN OTHERS THEN
+      v_errors := v_errors + 1;
+    END;
+  END LOOP;
+  
+  -- Return stats
   RETURN jsonb_build_object(
-    'success', true,
     'processed', v_processed,
     'created', v_created,
     'updated', v_updated,

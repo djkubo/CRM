@@ -101,19 +101,19 @@ async function verifyAdmin(req: Request): Promise<AdminVerifyResult> {
 
   const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
   const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY')!;
-  
+
   const supabase = createClient(supabaseUrl, supabaseAnonKey, {
     global: { headers: { Authorization: authHeader } }
   });
 
   const { data: { user }, error: userError } = await supabase.auth.getUser();
-  
+
   if (userError || !user) {
     return { valid: false, error: 'Invalid or expired token' };
   }
 
   const { data: isAdmin, error: adminError } = await supabase.rpc('is_admin');
-  
+
   if (adminError || !isAdmin) {
     return { valid: false, error: 'User is not an admin' };
   }
@@ -188,7 +188,7 @@ async function processSinglePage(
     url.searchParams.append("expand[]", "data.customer");
     url.searchParams.append("expand[]", "data.latest_charge");
     url.searchParams.append("expand[]", "data.invoice");
-    
+
     if (startDate) url.searchParams.set("created[gte]", startDate.toString());
     if (endDate) url.searchParams.set("created[lte]", endDate.toString());
     if (cursor) url.searchParams.set("starting_after", cursor);
@@ -203,13 +203,13 @@ async function processSinglePage(
     }
 
     const data: StripeListResponse = await response.json();
-    
+
     if (data.data.length === 0) {
       return { transactions: 0, clients: 0, hasMore: false, nextCursor: null, error: null };
     }
 
     const transactions: TransactionRecord[] = [];
-    const clientsMap = new Map<string, ClientRecord>();
+    // removed clientsMap
 
     for (const pi of data.data) {
       let email = pi.receipt_email || null;
@@ -225,15 +225,13 @@ async function processSinglePage(
           customerId = pi.customer.id;
         } else if (typeof pi.customer === 'string') {
           customerId = pi.customer;
-          await delay(STRIPE_API_DELAY_MS);
-          const info = await getCustomerInfo(pi.customer, stripeSecretKey);
-          email = email || info.email;
-          customerName = info.name;
-          customerPhone = info.phone;
+          // SKIP serial Stripe fetch for speed. 
+          // If we don't have the expanded customer object, we just proceed with what we have.
+          // The SQL Harvester will likely find the email from other sources or invoices.
         }
       }
 
-      if (!email) continue;
+      if (!email && !customerId) continue; // Skip if absolutely no identifier
 
       let cardLast4: string | null = null;
       let cardBrand: string | null = null;
@@ -291,7 +289,7 @@ async function processSinglePage(
         amount: pi.amount,
         currency: pi.currency?.toLowerCase() || "usd",
         status: mappedStatus,
-        customer_email: email.toLowerCase(),
+        customer_email: email ? email.toLowerCase() : '',
         stripe_customer_id: customerId,
         stripe_created_at: new Date(pi.created * 1000).toISOString(),
         source: "stripe",
@@ -302,18 +300,6 @@ async function processSinglePage(
         metadata: { card_last4: cardLast4, card_brand: cardBrand, product_name: productName, invoice_number: invoiceNumber, decline_reason_es: declineReasonEs, customer_name: customerName },
         raw_data: pi as unknown as Record<string, unknown>,
       });
-
-      const emailLower = email.toLowerCase();
-      if (!clientsMap.has(emailLower)) {
-        clientsMap.set(emailLower, {
-          email: emailLower,
-          full_name: customerName || null,
-          phone: customerPhone || null,
-          stripe_customer_id: customerId,
-          lifecycle_stage: mappedStatus === "paid" ? "CUSTOMER" : "LEAD",
-          last_sync: new Date().toISOString(),
-        });
-      }
     }
 
     // Save transactions
@@ -326,22 +312,13 @@ async function processSinglePage(
       transactionsSaved = txData?.length || 0;
     }
 
-    // Save clients
-    let clientsSaved = 0;
-    const clientsToSave = Array.from(clientsMap.values());
-    if (clientsToSave.length > 0) {
-      const { data: clientData } = await supabase
-        .from("clients")
-        .upsert(clientsToSave, { onConflict: "email", ignoreDuplicates: false })
-        .select("id");
-      clientsSaved = clientData?.length || 0;
-    }
+    // removed client upsert
 
     const nextCursor = data.data.length > 0 ? data.data[data.data.length - 1].id : null;
 
     return {
       transactions: transactionsSaved,
-      clients: clientsSaved,
+      clients: 0, // No longer counting clients here
       hasMore: data.has_more,
       nextCursor,
       error: null
@@ -392,7 +369,7 @@ Deno.serve(async (req) => {
     let syncRunId: string | null = null;
     let cleanupStale = false;
     let limit = RECORDS_PER_PAGE;
-    
+
     try {
       const body = await req.json();
       fetchAll = body.fetchAll === true;
@@ -400,7 +377,7 @@ Deno.serve(async (req) => {
       cursor = body.cursor ?? null;
       syncRunId = body.syncRunId ?? null;
       limit = body.limit && body.limit > 0 ? Math.min(body.limit, RECORDS_PER_PAGE) : RECORDS_PER_PAGE;
-      
+
       if (body.startDate) startDate = Math.floor(new Date(body.startDate).getTime() / 1000);
       if (body.endDate) endDate = Math.floor(new Date(body.endDate).getTime() / 1000);
     } catch {
@@ -422,7 +399,7 @@ Deno.serve(async (req) => {
         .in('status', ['running', 'continuing'])
         .lt('started_at', staleThreshold)
         .select('id');
-      
+
       return new Response(
         JSON.stringify({ success: true, status: 'completed', cleaned: staleSyncs?.length || 0 }),
         { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
@@ -448,8 +425,8 @@ Deno.serve(async (req) => {
     if (!syncRunId && existingRuns && existingRuns.length > 0) {
       // Return existing sync info so user can resume
       return new Response(
-        JSON.stringify({ 
-          success: false, 
+        JSON.stringify({
+          success: false,
           error: 'sync_already_running',
           existingSyncId: existingRuns[0].id,
           currentTotal: existingRuns[0].total_fetched || 0,
@@ -466,7 +443,7 @@ Deno.serve(async (req) => {
         .insert({ source: 'stripe', status: 'running', metadata: { fetchAll, startDate, endDate } })
         .select('id')
         .single();
-      
+
       if (syncError || !syncRun) {
         return new Response(
           JSON.stringify({ success: false, error: "Failed to create sync record" }),
