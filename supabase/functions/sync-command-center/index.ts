@@ -111,13 +111,13 @@ interface AdminVerifyResult {
 
 async function verifyAdmin(supabase: SupabaseClient): Promise<AdminVerifyResult> {
   const { data: { user }, error: userError } = await supabase.auth.getUser();
-  
+
   if (userError || !user) {
     return { valid: false, error: 'Invalid or expired token' };
   }
 
   const { data: isAdmin, error: adminError } = await supabase.rpc('is_admin');
-  
+
   if (adminError || !isAdmin) {
     return { valid: false, error: 'User is not an admin' };
   }
@@ -140,11 +140,11 @@ Deno.serve(async (req: Request) => {
   const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
   const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
   const startTime = Date.now();
-  
+
   try {
     // ============ AUTHENTICATION ============
     const authHeader = req.headers.get("Authorization");
-    
+
     if (!authHeader?.startsWith("Bearer ")) {
       return new Response(
         JSON.stringify({ success: false, status: 'failed', error: "Missing or invalid Authorization header" }),
@@ -155,9 +155,9 @@ Deno.serve(async (req: Request) => {
     const authClient = createClient(supabaseUrl, supabaseAnonKey, {
       global: { headers: { Authorization: authHeader } }
     });
-    
+
     const authCheck = await verifyAdmin(authClient);
-    
+
     if (!authCheck.valid) {
       return new Response(
         JSON.stringify({ success: false, status: 'failed', error: authCheck.error }),
@@ -248,14 +248,14 @@ Deno.serve(async (req: Request) => {
 
     // Helper to update progress
     const updateProgress = async (
-      step: string, 
-      details: string, 
+      step: string,
+      details: string,
       counts?: { fetched?: number; inserted?: number },
       metadataUpdates?: Partial<SyncRunMetadata>
     ): Promise<void> => {
       const currentMetadata = syncRun.metadata ?? { steps: [] };
       const steps = [...(currentMetadata.steps ?? []), `${step}: ${details}`];
-      
+
       const nextMetadata = {
         ...currentMetadata,
         ...metadataUpdates,
@@ -296,7 +296,7 @@ Deno.serve(async (req: Request) => {
       let cursor: string | null = config.stripeCursor ?? null;
       let stripeSyncId: string | null = config.stripeSyncRunId ?? null;
       let pageCount = 0;
-      
+
       while (hasMore) {
         if (maxPages && pageCount >= maxPages) {
           continuingSteps.push("stripe-transactions");
@@ -323,20 +323,20 @@ Deno.serve(async (req: Request) => {
             syncRunId: stripeSyncId,
           }
         });
-        
+
         const respData = response.data as StripeSyncResponse | null;
         if (response.error) throw response.error;
         if (respData?.error === 'sync_already_running') {
           results["stripe"] = { success: false, count: 0, error: "sync_already_running" };
           break;
         }
-        
+
         totalStripe += respData?.synced_transactions ?? 0;
         stripeSyncId = respData?.syncRunId ?? stripeSyncId;
         cursor = respData?.nextCursor ?? null;
         hasMore = respData?.hasMore === true && cursor !== null;
         pageCount += 1;
-        
+
         await updateProgress("stripe-transactions", `${totalStripe} transacciones`, undefined, {
           stripe_cursor: cursor,
           stripe_sync_run_id: stripeSyncId,
@@ -531,7 +531,7 @@ Deno.serve(async (req: Request) => {
       let cursor: string | null = config.paypalCursor ?? null;
       let paypalSyncId: string | null = config.paypalSyncRunId ?? null;
       let pageCount = 0;
-      
+
       while (hasMore) {
         if (maxPages && pageCount >= maxPages) {
           continuingSteps.push("paypal-transactions");
@@ -558,20 +558,20 @@ Deno.serve(async (req: Request) => {
             syncRunId: paypalSyncId,
           }
         });
-        
+
         const respData = response.data as PayPalSyncResponse | null;
         if (response.error) throw response.error;
         if (respData?.error === 'sync_already_running') {
           results["paypal"] = { success: false, count: 0, error: "sync_already_running" };
           break;
         }
-        
+
         totalPaypal += respData?.synced_transactions ?? 0;
         paypalSyncId = respData?.syncRunId ?? paypalSyncId;
         cursor = respData?.nextCursor ?? null;
         hasMore = respData?.hasMore === true && cursor !== null;
         pageCount += 1;
-        
+
         await updateProgress("paypal-transactions", `${totalPaypal} transacciones`, undefined, {
           paypal_cursor: cursor,
           paypal_sync_run_id: paypalSyncId,
@@ -671,7 +671,7 @@ Deno.serve(async (req: Request) => {
     // ============ COMPLETE SYNC RUN ============
     const totalFetched = Object.values(results).reduce((sum, r) => sum + r.count, 0);
     const failedSteps = Object.entries(results).filter(([, r]) => !r.success).map(([k]) => k);
-    
+
     const finalStatus = continuingSteps.length > 0
       ? "continuing"
       : (failedSteps.length > 0 ? "completed_with_errors" : "completed");
@@ -705,6 +705,7 @@ Deno.serve(async (req: Request) => {
         results,
         continuingSteps: continuingSteps.length > 0 ? continuingSteps : undefined,
         failedSteps: failedSteps.length > 0 ? failedSteps : undefined,
+        metadata: finalMetadata,
         duration_ms: Date.now() - startTime
       }),
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }

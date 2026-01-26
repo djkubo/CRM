@@ -125,46 +125,84 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
     toast.info(`Sincronizando ${syncRangeLabels[range]}...`);
 
     try {
+      let currentStep = 'Iniciando';
+      let totalRecords = 0;
+      let hasMore = true;
+      let iteration = 0;
+
       // Estado inicial de sync params
-      // NOTA: Eliminamos el loop infinito del frontend.
-      // El edge function manejará la paginación internamente hasta el timeout o maxPages.
-      // 100 páginas x 100 items = 10,000 items, suficiente para "Hoy" o "7 días".
-      const syncParams: any = {
+      // Usamos maxPages: 5 para evitar timeouts en Edge Functions (aprox 10s ejecución)
+      // El loop del cliente se encargará de continuar
+      let syncParams: any = {
         startDate: startDate.toISOString(),
         endDate: endDate.toISOString(),
         fetchAll,
-        limit: 100,
-        maxPages: 100,
+        limit: 50,
+        maxPages: 5,
         includeContacts: true,
       };
 
-      const response = await invokeWithAdminKey<any>('sync-command-center', syncParams);
+      while (hasMore) {
+        iteration++;
+        setSyncProgress(`${currentStep}${iteration > 1 ? ` (Lote ${iteration})` : ''}... ${totalRecords > 0 ? `(${totalRecords} rec)` : ''}`);
 
-      if (!response?.success) {
-        throw new Error(response?.error || 'Error desconocido en sync');
-      }
+        const response = await invokeWithAdminKey<any>('sync-command-center', syncParams);
 
-      // Procesar resultados
-      const totalRecords = response.totalRecords || 0;
+        if (!response?.success) {
+          throw new Error(response?.error || 'Error desconocido en sync');
+        }
 
-      // Mostrar detalles específicos
-      if (response.results) {
-        if (response.results.stripe?.count) toast.info(`Stripe: ${response.results.stripe.count}`, { id: 'sync-stripe' });
-        if (response.results.paypal?.count) toast.info(`PayPal: ${response.results.paypal.count}`, { id: 'sync-paypal' });
-        if (response.results.invoices?.count) toast.info(`Facturas: ${response.results.invoices.count}`, { id: 'sync-invoices' });
-        if (response.results.unify?.count) toast.info(`Usuarios: ${response.results.unify.count} unificados`, { id: 'sync-unify' });
+        const newRecords = response.totalRecords || 0;
+        totalRecords = newRecords; // El server reporta el total acumulado si reutilizamos IDs, o parcial si no.
+        // En este diseño command-center crea Master nuevo, pero los Sub-Syncs se reutilizan.
+        // Asumimos que response.totalRecords es el acumulado TOTAL de esta sesión de sub-syncs.
+
+        // Log de progreso específico
+        if (response.results) {
+          const steps = Object.keys(response.results);
+          const lastStep = steps[steps.length - 1];
+          if (lastStep) currentStep = lastStep;
+
+          if (response.results.stripe?.count) toast.info(`Stripe: ${response.results.stripe.count}`, { id: 'sync-stripe' });
+          if (response.results.invoices?.count) toast.info(`Facturas: ${response.results.invoices.count}`, { id: 'sync-invoices' });
+        }
+
+        // Determinar si debemos continuar
+        if (response.status === 'continuing') {
+          console.log('Sync continuing...', response.continuingSteps);
+
+          // Actualizar params con la metadata retornada para la siguiente vuelta
+          const meta = response.metadata;
+          if (meta) {
+            syncParams = {
+              ...syncParams,
+              stripeCursor: meta.stripe_cursor,
+              stripeSyncRunId: meta.stripe_sync_run_id,
+              invoiceCursor: meta.invoice_cursor,
+              invoiceSyncRunId: meta.invoice_sync_run_id,
+              paypalCursor: meta.paypal_cursor,
+              paypalSyncRunId: meta.paypal_sync_run_id,
+              subscriptionsCursor: meta.subscriptions_cursor,
+              subscriptionsSyncRunId: meta.subscriptions_sync_run_id,
+            };
+          }
+          // Pequeña pausa para no saturar
+          await new Promise(r => setTimeout(r, 500));
+        } else {
+          hasMore = false;
+        }
+
+        // Safety break
+        if (iteration > 50) {
+          hasMore = false;
+          toast.warning('Límite de lotes alcanzado. Puede que falten datos antiguos.');
+        }
       }
 
       setSyncStatus('ok');
       setSyncProgress('');
+      toast.success(`✅ Completado: ${totalRecords} registros procesados`);
 
-      if (response.status === 'continuing') {
-        toast.warning(`Sincronización parcial (${totalRecords} registros). Límite de tiempo alcanzado. Intente de nuevo si faltan datos.`);
-      } else {
-        toast.success(`✅ Completado: ${totalRecords} registros procesados`);
-      }
-
-      // Invalidar queries para refrescar UI
       queryClient.invalidateQueries({ queryKey: ['transactions'] });
       queryClient.invalidateQueries({ queryKey: ['clients'] });
       queryClient.invalidateQueries({ queryKey: ['subscriptions'] });
