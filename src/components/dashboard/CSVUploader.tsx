@@ -10,24 +10,27 @@ import {
   processStripeCustomersCSV,
   processStripePaymentsCSV,
   processGoHighLevelCSV,
+  processManyChatCSV,
   ProcessingResult,
   StripeCustomerResult,
   StripePaymentsResult,
-  GHLProcessingResult
+  GHLProcessingResult,
+  ManyChatProcessingResult
 } from '@/lib/csvProcessor';
 import { toast } from 'sonner';
 
-type CSVFileType = 'web' | 'stripe' | 'paypal' | 'subscriptions' | 'stripe_customers' | 'stripe_payments' | 'ghl';
+type CSVFileType = 'web' | 'stripe' | 'paypal' | 'subscriptions' | 'stripe_customers' | 'stripe_payments' | 'ghl' | 'manychat';
 
 interface CSVFile {
   name: string;
   type: CSVFileType;
   file: File;
   status: 'pending' | 'processing' | 'done' | 'error';
-  result?: ProcessingResult | StripeCustomerResult | StripePaymentsResult | GHLProcessingResult;
+  result?: ProcessingResult | StripeCustomerResult | StripePaymentsResult | GHLProcessingResult | ManyChatProcessingResult;
   subscriptionCount?: number;
   duplicatesResolved?: number;
   ghlStats?: { withEmail: number; withPhone: number; withTags: number };
+  manychatStats?: { withEmail: number; withPhone: number; withTags: number };
   stripePaymentsStats?: { totalAmount: number; uniqueCustomers: number; refundedCount: number };
 }
 
@@ -127,6 +130,11 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
       }
       
       // Fallback to filename patterns
+      if (lowerName.includes('manychat')) {
+        console.log(`[CSV Detection] Filename fallback: ManyChat`);
+        return 'manychat';
+      }
+      
       if (lowerName.includes('ghl') || lowerName.includes('gohighlevel') || lowerName.includes('highlevel')) {
         console.log(`[CSV Detection] Filename fallback: GoHighLevel`);
         return 'ghl';
@@ -355,6 +363,7 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
       case 'paypal': return 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30';
       case 'subscriptions': return 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30';
       case 'ghl': return 'bg-orange-500/20 text-orange-400 border-orange-500/30';
+      case 'manychat': return 'bg-pink-500/20 text-pink-400 border-pink-500/30';
       default: return 'bg-muted text-muted-foreground';
     }
   };
@@ -368,6 +377,7 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
       case 'paypal': return 'PayPal';
       case 'subscriptions': return 'Suscripciones';
       case 'ghl': return 'GoHighLevel';
+      case 'manychat': return 'ManyChat';
       default: return type;
     }
   };
@@ -405,8 +415,11 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
       acc.ghlContacts += f.result?.clientsCreated || 0;
       acc.ghlContacts += f.result?.clientsUpdated || 0;
     }
+    if (f.manychatStats) {
+      acc.manychatContacts = (acc.manychatContacts || 0) + (f.result?.clientsCreated || 0) + (f.result?.clientsUpdated || 0);
+    }
     return acc;
-  }, { clientsCreated: 0, clientsUpdated: 0, transactionsCreated: 0, transactionsSkipped: 0, subscriptions: 0, uniqueClients: 0, duplicatesResolved: 0, ghlContacts: 0 });
+  }, { clientsCreated: 0, clientsUpdated: 0, transactionsCreated: 0, transactionsSkipped: 0, subscriptions: 0, uniqueClients: 0, duplicatesResolved: 0, ghlContacts: 0, manychatContacts: 0 });
 
   return (
     <div className="rounded-xl border border-border/50 bg-[#1a1f36] p-6">
@@ -457,6 +470,7 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
                   className="text-xs border border-gray-600 rounded px-2 py-1 bg-[#1a1f36] text-white"
                 >
                   <option value="ghl">GoHighLevel</option>
+                  <option value="manychat">ManyChat</option>
                   <option value="web">Usuarios Web</option>
                   <option value="paypal">PayPal</option>
                   <option value="stripe_payments">Stripe Pagos</option>

@@ -2486,3 +2486,391 @@ export async function processGoHighLevelCSV(csvText: string): Promise<GHLProcess
   
   return result;
 }
+
+// ============= ManyChat CSV Processing =============
+
+export interface ManyChatProcessingResult {
+  clientsCreated: number;
+  clientsUpdated: number;
+  totalSubscribers: number;
+  withEmail: number;
+  withPhone: number;
+  withTags: number;
+  errors: string[];
+}
+
+/**
+ * Processes ManyChat CSV export.
+ * 
+ * ManyChat exports typically include columns like:
+ * - id, subscriber_id
+ * - email
+ * - phone, whatsapp_phone
+ * - first_name, last_name, name
+ * - tags (comma-separated or semicolon-separated)
+ * - optin_email, optin_sms, optin_whatsapp
+ * - created_at, updated_at
+ * - custom_fields (JSON)
+ */
+export async function processManyChatCSV(csvText: string): Promise<ManyChatProcessingResult> {
+  const result: ManyChatProcessingResult = {
+    clientsCreated: 0,
+    clientsUpdated: 0,
+    totalSubscribers: 0,
+    withEmail: 0,
+    withPhone: 0,
+    withTags: 0,
+    errors: []
+  };
+
+  // Use safe parser with BOM stripping
+  const normalizedText = normalizeCSV(csvText);
+  const parsed = Papa.parse(normalizedText, {
+    header: true,
+    skipEmptyLines: 'greedy',
+    transformHeader: (header) => header.trim().toLowerCase(),
+    transform: (value) => value?.trim() || ''
+  });
+
+  if (!parsed.data || parsed.data.length === 0) {
+    result.errors.push('No data found in CSV');
+    return result;
+  }
+
+  console.log(`[ManyChat CSV] Parsing ${parsed.data.length} rows`);
+
+  interface ManyChatSubscriber {
+    subscriberId: string;
+    email: string | null;
+    phone: string | null;
+    whatsappPhone: string | null;
+    fullName: string | null;
+    firstName: string | null;
+    lastName: string | null;
+    tags: string[];
+    emailOptIn: boolean;
+    smsOptIn: boolean;
+    whatsappOptIn: boolean;
+    dateCreated: string | null;
+    customFields: Record<string, string>;
+  }
+
+  const subscribers: ManyChatSubscriber[] = [];
+
+  for (const rawRow of parsed.data as Record<string, string>[]) {
+    const subscriberId = rawRow['id'] || rawRow['subscriber_id'] || rawRow['subscriberid'] || '';
+    
+    if (!subscriberId) continue;
+    
+    // Email
+    let email = rawRow['email'] || '';
+    if (email) {
+      email = email.toLowerCase().trim();
+      if (!email.includes('@')) {
+        email = '';
+      }
+    }
+    
+    // Phone
+    const phone = normalizePhone(rawRow['phone'] || '');
+    const whatsappPhone = normalizePhone(rawRow['whatsapp_phone'] || rawRow['whatsappphone'] || '');
+    
+    // Skip if no email AND no phone
+    if (!email && !phone && !whatsappPhone) {
+      result.errors.push(`Subscriber ${subscriberId}: No email or phone`);
+      continue;
+    }
+    
+    // Name
+    const firstName = rawRow['first_name'] || rawRow['firstname'] || rawRow['first name'] || '';
+    const lastName = rawRow['last_name'] || rawRow['lastname'] || rawRow['last name'] || '';
+    let fullName = rawRow['name'] || rawRow['full name'] || rawRow['fullname'] || '';
+    
+    if (!fullName && (firstName || lastName)) {
+      fullName = `${firstName} ${lastName}`.trim();
+    }
+    
+    // Tags - can be semicolon-separated or JSON array
+    let tags: string[] = [];
+    const rawTags = rawRow['tags'] || rawRow['tag'] || '';
+    if (rawTags) {
+      try {
+        if (rawTags.startsWith('[')) {
+          tags = JSON.parse(rawTags);
+        } else {
+          // Semicolon or comma-separated
+          tags = rawTags.split(/[;,]/).map(t => t.trim()).filter(t => t);
+        }
+      } catch {
+        tags = rawTags.split(/[;,]/).map(t => t.trim()).filter(t => t);
+      }
+    }
+    
+    // Opt-ins - handle boolean strings
+    const emailOptIn = rawRow['optin_email'] === 'true' || rawRow['optin_email'] === '1';
+    const smsOptIn = rawRow['optin_sms'] === 'true' || rawRow['optin_sms'] === '1';
+    const whatsappOptIn = rawRow['optin_whatsapp'] === 'true' || rawRow['optin_whatsapp'] === '1';
+    
+    // Date created
+    const dateCreated = rawRow['created_at'] || rawRow['createdat'] || rawRow['created at'] || '';
+    
+    // Custom fields
+    const customFields: Record<string, string> = {};
+    const customFieldsRaw = rawRow['custom_fields'] || '';
+    if (customFieldsRaw) {
+      try {
+        const parsed = JSON.parse(customFieldsRaw);
+        if (typeof parsed === 'object') {
+          Object.assign(customFields, parsed);
+        }
+      } catch {
+        // Ignore parse errors
+      }
+    }
+    
+    subscribers.push({
+      subscriberId,
+      email: email || null,
+      phone: phone || whatsappPhone || null,
+      whatsappPhone: whatsappPhone || null,
+      fullName: fullName || null,
+      firstName: firstName || null,
+      lastName: lastName || null,
+      tags,
+      emailOptIn,
+      smsOptIn,
+      whatsappOptIn,
+      dateCreated: dateCreated || null,
+      customFields
+    });
+    
+    result.totalSubscribers++;
+    if (email) result.withEmail++;
+    if (phone || whatsappPhone) result.withPhone++;
+    if (tags.length > 0) result.withTags++;
+  }
+
+  console.log(`[ManyChat CSV] Valid subscribers: ${subscribers.length}`);
+  console.log(`[ManyChat CSV] With email: ${result.withEmail}, With phone: ${result.withPhone}`);
+
+  // Group subscribers by email for matching
+  const emailSubscribers = subscribers.filter(s => s.email);
+  const phoneOnlySubscribers = subscribers.filter(s => !s.email && (s.phone || s.whatsappPhone));
+
+  // Load existing clients by email
+  const uniqueEmails = [...new Set(emailSubscribers.map(s => s.email!))];
+  const existingByEmail = new Map<string, any>();
+  
+  // Optimize batch size for large imports
+  const lookupBatchSize = uniqueEmails.length > 10000 ? GHL_LARGE_BATCH_SIZE : BATCH_SIZE;
+  console.log(`[ManyChat CSV] Loading existing clients: ${uniqueEmails.length} emails in batches of ${lookupBatchSize}`);
+  
+  for (let i = 0; i < uniqueEmails.length; i += lookupBatchSize) {
+    const batch = uniqueEmails.slice(i, i + lookupBatchSize);
+    const batchNum = Math.floor(i / lookupBatchSize) + 1;
+    
+    if (uniqueEmails.length > 10000 && batchNum % 20 === 0) {
+      console.log(`[ManyChat CSV] Loading existing clients: ${batchNum}/${Math.ceil(uniqueEmails.length / lookupBatchSize)} batches`);
+    }
+    
+    const { data } = await supabase
+      .from('clients')
+      .select('*')
+      .in('email', batch);
+    
+    data?.forEach(c => existingByEmail.set(c.email, c));
+  }
+
+  // Load existing clients by phone for phone-only subscribers
+  const uniquePhones = [...new Set(phoneOnlySubscribers.map(s => s.phone || s.whatsappPhone!))];
+  const existingByPhone = new Map<string, any>();
+  
+  if (uniquePhones.length > 0) {
+    console.log(`[ManyChat CSV] Loading existing clients by phone: ${uniquePhones.length} phones`);
+    
+    for (let i = 0; i < uniquePhones.length; i += lookupBatchSize) {
+      const batch = uniquePhones.slice(i, i + lookupBatchSize);
+      const { data } = await supabase
+        .from('clients')
+        .select('*')
+        .in('phone', batch);
+      
+      data?.forEach(c => {
+        if (c.phone) existingByPhone.set(c.phone, c);
+      });
+    }
+  }
+
+  console.log(`[ManyChat CSV] Found ${existingByEmail.size} existing by email, ${existingByPhone.size} by phone`);
+
+  // Prepare upsert records
+  interface ClientUpsert {
+    email?: string;
+    phone?: string;
+    full_name?: string;
+    manychat_subscriber_id: string;
+    tags?: string[];
+    acquisition_source?: string;
+    first_seen_at?: string;
+    email_opt_in?: boolean;
+    sms_opt_in?: boolean;
+    wa_opt_in?: boolean;
+    customer_metadata?: Record<string, any>;
+    lifecycle_stage?: string;
+    last_sync?: string;
+  }
+
+  const toUpsert: ClientUpsert[] = [];
+  const toInsertPhoneOnly: ClientUpsert[] = [];
+
+  for (const subscriber of emailSubscribers) {
+    const existing = existingByEmail.get(subscriber.email!);
+    
+    const record: ClientUpsert = {
+      email: subscriber.email!,
+      manychat_subscriber_id: subscriber.subscriberId,
+      last_sync: new Date().toISOString()
+    };
+    
+    if (!existing?.full_name && subscriber.fullName) {
+      record.full_name = subscriber.fullName;
+    }
+    if (!existing?.phone && (subscriber.phone || subscriber.whatsappPhone)) {
+      record.phone = subscriber.phone || subscriber.whatsappPhone || undefined;
+    }
+    if (subscriber.tags.length > 0) {
+      const existingTags = existing?.tags || [];
+      record.tags = [...new Set([...existingTags, ...subscriber.tags])];
+    }
+    if (!existing?.acquisition_source) {
+      record.acquisition_source = 'manychat';
+    }
+    if (!existing?.first_seen_at && subscriber.dateCreated) {
+      try {
+        record.first_seen_at = new Date(subscriber.dateCreated).toISOString();
+      } catch {
+        // Invalid date
+      }
+    }
+    
+    record.email_opt_in = subscriber.emailOptIn;
+    record.sms_opt_in = subscriber.smsOptIn;
+    record.wa_opt_in = subscriber.whatsappOptIn;
+    
+    if (Object.keys(subscriber.customFields).length > 0) {
+      record.customer_metadata = {
+        ...(existing?.customer_metadata || {}),
+        manychat_custom_fields: subscriber.customFields
+      };
+    }
+    
+    if (!existing?.lifecycle_stage || existing.lifecycle_stage === 'LEAD') {
+      record.lifecycle_stage = 'LEAD';
+    }
+    
+    toUpsert.push(record);
+    
+    if (existing) {
+      result.clientsUpdated++;
+    } else {
+      result.clientsCreated++;
+    }
+  }
+
+  // Handle phone-only subscribers
+  for (const subscriber of phoneOnlySubscribers) {
+    const phone = subscriber.phone || subscriber.whatsappPhone!;
+    const existing = existingByPhone.get(phone);
+    
+    if (existing) {
+      const record: ClientUpsert = {
+        email: existing.email,
+        manychat_subscriber_id: subscriber.subscriberId,
+        last_sync: new Date().toISOString()
+      };
+      
+      if (!existing.full_name && subscriber.fullName) {
+        record.full_name = subscriber.fullName;
+      }
+      if (subscriber.tags.length > 0) {
+        record.tags = [...new Set([...(existing.tags || []), ...subscriber.tags])];
+      }
+      
+      if (existing.email) {
+        toUpsert.push(record);
+      }
+      result.clientsUpdated++;
+    } else {
+      toInsertPhoneOnly.push({
+        phone: phone,
+        full_name: subscriber.fullName || undefined,
+        manychat_subscriber_id: subscriber.subscriberId,
+        tags: subscriber.tags.length > 0 ? subscriber.tags : undefined,
+        acquisition_source: 'manychat',
+        first_seen_at: subscriber.dateCreated ? new Date(subscriber.dateCreated).toISOString() : undefined,
+        sms_opt_in: subscriber.smsOptIn,
+        wa_opt_in: subscriber.whatsappOptIn,
+        lifecycle_stage: 'LEAD',
+        last_sync: new Date().toISOString()
+      });
+      result.clientsCreated++;
+    }
+  }
+
+  // Execute upserts in batches (optimized for large imports)
+  const ghlBatchSize = toUpsert.length > 10000 ? GHL_LARGE_BATCH_SIZE : BATCH_SIZE;
+  console.log(`[ManyChat CSV] Processing ${toUpsert.length} email-based subscribers in batches of ${ghlBatchSize}`);
+  
+  for (let i = 0; i < toUpsert.length; i += ghlBatchSize) {
+    const batch = toUpsert.slice(i, i + ghlBatchSize);
+    const batchNum = Math.floor(i / ghlBatchSize) + 1;
+    const totalBatches = Math.ceil(toUpsert.length / ghlBatchSize);
+    
+    if (toUpsert.length > 10000 && batchNum % 10 === 0) {
+      console.log(`[ManyChat CSV] Progress: ${batchNum}/${totalBatches} batches (${i + batch.length}/${toUpsert.length} subscribers)`);
+    }
+    
+    const { error } = await supabase
+      .from('clients')
+      .upsert(batch, { onConflict: 'email' });
+    
+    if (error) {
+      console.error(`[ManyChat CSV] Upsert batch ${batchNum} error:`, error);
+      result.errors.push(`Batch ${batchNum}: ${error.message}`);
+    }
+    
+    if (toUpsert.length > 50000 && i + ghlBatchSize < toUpsert.length) {
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+  }
+
+  // Process phone-only subscribers
+  const phoneBatchSize = toInsertPhoneOnly.length > 10000 ? GHL_LARGE_BATCH_SIZE : BATCH_SIZE;
+  console.log(`[ManyChat CSV] Processing ${toInsertPhoneOnly.length} phone-only subscribers in batches of ${phoneBatchSize}`);
+  
+  for (let i = 0; i < toInsertPhoneOnly.length; i += phoneBatchSize) {
+    const batch = toInsertPhoneOnly.slice(i, i + phoneBatchSize);
+    const batchNum = Math.floor(i / phoneBatchSize) + 1;
+    
+    if (toInsertPhoneOnly.length > 10000 && batchNum % 10 === 0) {
+      console.log(`[ManyChat CSV] Phone-only progress: ${batchNum}/${Math.ceil(toInsertPhoneOnly.length / phoneBatchSize)} batches`);
+    }
+    
+    const { error } = await supabase
+      .from('clients')
+      .insert(batch);
+    
+    if (error) {
+      console.error(`[ManyChat CSV] Insert phone-only batch ${batchNum} error:`, error);
+      result.errors.push(`Phone-only batch ${batchNum}: ${error.message}`);
+    }
+    
+    if (toInsertPhoneOnly.length > 50000 && i + phoneBatchSize < toInsertPhoneOnly.length) {
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+  }
+
+  console.log(`[ManyChat CSV] Complete: ${result.clientsCreated} created, ${result.clientsUpdated} updated`);
+  
+  return result;
+}
