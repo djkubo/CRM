@@ -65,28 +65,28 @@ function getSyncDateRange(range: SyncRange): { startDate: Date; endDate: Date; f
         startDate: subDays(now, 1),
         endDate: now,
         fetchAll: true,
-        maxPages: 3 // Reduced from 10 to prevent 504 Timeouts
+        maxPages: 10 // Increased: handles ~1,000 records
       };
     case '7d':
       return {
         startDate: subDays(now, 7),
         endDate: now,
         fetchAll: true,
-        maxPages: 3 // Reduced from 5
+        maxPages: 20 // Increased: handles ~2,000 records
       };
     case 'month':
       return {
         startDate: subMonths(now, 1),
         endDate: now,
         fetchAll: true,
-        maxPages: 3 // Reduced from 5
+        maxPages: 30 // Increased: handles ~3,000 records
       };
     case 'full':
       return {
         startDate: subYears(now, 3), // Fixed: match UI label "Todo (3 años)"
         endDate: now,
         fetchAll: true,
-        maxPages: 3 // Reduced from 5
+        maxPages: 50 // Increased: handles ~5,000 records per batch
       };
   }
 }
@@ -124,27 +124,30 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
 
     toast.info(`Sincronizando ${syncRangeLabels[range]}...`);
 
+    let totalRecords = 0; // Moved outside try-catch for error context
+
     try {
       let currentStep = 'Iniciando';
-      let totalRecords = 0;
       let hasMore = true;
       let iteration = 0;
 
       // Estado inicial de sync params
-      // Usamos maxPages: 5 para evitar timeouts en Edge Functions (aprox 10s ejecución)
-      // El loop del cliente se encargará de continuar
+      // maxPages dinámico según el rango de fecha
+      // El loop del cliente se encargará de continuar si hay más datos
+      const { maxPages } = getSyncDateRange(range);
       let syncParams: any = {
         startDate: startDate.toISOString(),
         endDate: endDate.toISOString(),
         fetchAll,
         limit: 50,
-        maxPages: 3, // Reduced from 5 to prevent timeouts
+        maxPages, // Dynamic based on sync range
         includeContacts: true,
       };
 
       while (hasMore) {
         iteration++;
-        setSyncProgress(`${currentStep}${iteration > 1 ? ` (Lote ${iteration})` : ''}... ${totalRecords > 0 ? `(${totalRecords} rec)` : ''}`);
+        const batchLabel = iteration > 1 ? ` - Lote ${iteration}` : '';
+        setSyncProgress(`Sincronizando${batchLabel}... ${totalRecords > 0 ? `(${totalRecords.toLocaleString()} registros)` : ''}`);
 
         const response = await invokeWithAdminKey<any>('sync-command-center', syncParams);
 
@@ -153,18 +156,27 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
         }
 
         const newRecords = response.totalRecords || 0;
-        totalRecords = newRecords; // El server reporta el total acumulado si reutilizamos IDs, o parcial si no.
-        // En este diseño command-center crea Master nuevo, pero los Sub-Syncs se reutilizan.
-        // Asumimos que response.totalRecords es el acumulado TOTAL de esta sesión de sub-syncs.
+        totalRecords = newRecords;
 
-        // Log de progreso específico
+        // Log de progreso específico por fuente
         if (response.results) {
           const steps = Object.keys(response.results);
           const lastStep = steps[steps.length - 1];
           if (lastStep) currentStep = lastStep;
 
-          if (response.results.stripe?.count) toast.info(`Stripe: ${response.results.stripe.count}`, { id: 'sync-stripe' });
-          if (response.results.invoices?.count) toast.info(`Facturas: ${response.results.invoices.count}`, { id: 'sync-invoices' });
+          // Mostrar progreso de cada fuente con toasts informativos
+          if (response.results.stripe?.count) {
+            const stripeCount = response.results.stripe.count;
+            toast.info(`Stripe: ${stripeCount.toLocaleString()} transacciones`, { id: 'sync-stripe' });
+          }
+          if (response.results.invoices?.count) {
+            const invoiceCount = response.results.invoices.count;
+            toast.info(`Facturas: ${invoiceCount.toLocaleString()}`, { id: 'sync-invoices' });
+          }
+          if (response.results.paypal?.count) {
+            const paypalCount = response.results.paypal.count;
+            toast.info(`PayPal: ${paypalCount.toLocaleString()} transacciones`, { id: 'sync-paypal' });
+          }
         }
 
         // Determinar si debemos continuar
@@ -192,10 +204,10 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
           hasMore = false;
         }
 
-        // Safety break
-        if (iteration > 50) {
+        // Safety break - increased limit for historical syncs
+        if (iteration > 200) {
           hasMore = false;
-          toast.warning('Límite de lotes alcanzado. Puede que falten datos antiguos.');
+          toast.warning('Límite de lotes alcanzado (200). Si necesitas más datos, contacta soporte.');
         }
       }
 
@@ -217,7 +229,10 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
       setSyncStatus('warning');
       setSyncProgress('');
       const msg = error instanceof Error ? error.message : 'Error desconocido';
-      toast.error(`Error en sincronización: ${msg}`);
+      const contextMsg = totalRecords > 0
+        ? `Error en sincronización (ya procesados: ${totalRecords.toLocaleString()}): ${msg}`
+        : `Error en sincronización: ${msg}`;
+      toast.error(contextMsg);
     } finally {
       setIsSyncing(false);
       // Clean up sticky toasts
