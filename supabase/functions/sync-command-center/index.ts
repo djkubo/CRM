@@ -384,6 +384,7 @@ Deno.serve(async (req: Request) => {
             fetchAll: config.fetchAll ?? false,
             startDate: startDate.toISOString(),
             endDate: endDate.toISOString(),
+            limit: config.limit,
           }
         });
         const respData = response.data as GenericSyncResponse | null;
