@@ -21,8 +21,21 @@ type AnySupabaseClient = SupabaseClient<any, any, any>;
 
 async function verifyAdmin(req: Request): Promise<{ valid: boolean; userId?: string; error?: string }> {
   const authHeader = req.headers.get('Authorization');
-  if (!authHeader?.startsWith('Bearer ')) {
+  
+  if (!authHeader) {
+    logger.warn('No Authorization header present');
     return { valid: false, error: 'Missing Authorization header' };
+  }
+  
+  if (!authHeader.startsWith('Bearer ')) {
+    logger.warn('Invalid Authorization format');
+    return { valid: false, error: 'Invalid Authorization format' };
+  }
+
+  const token = authHeader.replace('Bearer ', '');
+  if (!token || token.length < 10) {
+    logger.warn('Token appears invalid', { tokenLength: token?.length });
+    return { valid: false, error: 'Invalid token format' };
   }
 
   const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
@@ -32,14 +45,32 @@ async function verifyAdmin(req: Request): Promise<{ valid: boolean; userId?: str
     global: { headers: { Authorization: authHeader } }
   });
 
+  // Validate user with getUser
   const { data: { user }, error: userError } = await supabase.auth.getUser();
-  if (userError || !user) {
-    return { valid: false, error: 'Invalid token' };
+  
+  if (userError) {
+    logger.warn('User validation failed', { error: userError.message });
+    return { valid: false, error: `Auth error: ${userError.message}` };
+  }
+  
+  if (!user) {
+    logger.warn('No user returned from getUser');
+    return { valid: false, error: 'Invalid or expired session' };
   }
 
+  logger.info('User authenticated', { userId: user.id, email: user.email });
+
+  // Verify admin status
   // deno-lint-ignore no-explicit-any
   const { data: isAdmin, error: adminError } = await (supabase as any).rpc('is_admin');
-  if (adminError || !isAdmin) {
+  
+  if (adminError) {
+    logger.warn('Admin check failed', { error: adminError.message });
+    return { valid: false, error: 'Admin verification failed' };
+  }
+  
+  if (!isAdmin) {
+    logger.warn('User is not admin', { userId: user.id });
     return { valid: false, error: 'Not authorized as admin' };
   }
 
