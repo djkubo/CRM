@@ -65,28 +65,28 @@ function getSyncDateRange(range: SyncRange): { startDate: Date; endDate: Date; f
         startDate: subDays(now, 1),
         endDate: now,
         fetchAll: true,
-        maxPages: 1 // Ultra-safe chunking (1 page at a time)
+        maxPages: 10 // Recent data can handle more pages
       };
     case '7d':
       return {
         startDate: subDays(now, 7),
         endDate: now,
         fetchAll: true,
-        maxPages: 1
+        maxPages: 5 // Week of data can handle moderate batching
       };
     case 'month':
       return {
         startDate: subMonths(now, 1),
         endDate: now,
         fetchAll: true,
-        maxPages: 1
+        maxPages: 5 // Month of data, moderate batching
       };
     case 'full':
       return {
-        startDate: subYears(now, 5),
+        startDate: subYears(now, 3), // Fixed: match UI label "Todo (3 años)"
         endDate: now,
         fetchAll: true,
-        maxPages: 1
+        maxPages: 5 // Full history, conservative but efficient batching
       };
   }
 }
