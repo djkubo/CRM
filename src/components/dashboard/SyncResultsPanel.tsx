@@ -182,11 +182,31 @@ export function SyncResultsPanel() {
           <span className="text-sm font-medium text-foreground">
             Estado de Sincronización
           </span>
-          {activeSyncs.length > 0 && (
-            <Badge variant="outline" className="bg-blue-500/10 text-blue-400 border-blue-500/30 text-xs">
-              {activeSyncs.length} activo{activeSyncs.length > 1 ? 's' : ''}
-            </Badge>
-          )}
+          <div className="flex items-center gap-2">
+            {activeSyncs.length > 0 && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={async (e) => {
+                  e.stopPropagation();
+                  const { error } = await supabase.rpc('reset_stuck_syncs', { p_timeout_minutes: 0 });
+                  if (!error) {
+                    toast.success('Procesos detenidos');
+                    fetchRuns();
+                  }
+                }}
+                className="h-6 px-2 text-xs text-red-400 hover:text-red-300 hover:bg-red-500/10 gap-1 mr-2"
+              >
+                <XCircle className="h-3 w-3" />
+                Forzar Detención
+              </Button>
+            )}
+            {activeSyncs.length > 0 && (
+              <Badge variant="outline" className="bg-blue-500/10 text-blue-400 border-blue-500/30 text-xs">
+                {activeSyncs.length} activo{activeSyncs.length > 1 ? 's' : ''}
+              </Badge>
+            )}
+          </div>
         </div>
         {isExpanded ? (
           <ChevronUp className="h-4 w-4 text-muted-foreground" />
@@ -200,26 +220,7 @@ export function SyncResultsPanel() {
           {/* Active syncs */}
           {activeSyncs.length > 0 && (
             <div className="p-4 space-y-3 bg-blue-500/5">
-              <div className="flex items-center justify-between">
-                <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">En progreso</p>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={async () => {
-                    const { error } = await supabase.rpc('reset_stuck_syncs', { p_timeout_minutes: 0 });
-                    if (!error) {
-                      toast.success('Procesos detenidos forzosamente');
-                      fetchRuns();
-                    } else {
-                      toast.error('Error al detener');
-                    }
-                  }}
-                  className="h-6 text-xs text-red-400 hover:text-red-300 hover:bg-red-500/10 gap-1"
-                >
-                  <XCircle className="h-3 w-3" />
-                  Forzar Detención
-                </Button>
-              </div>
+              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">En progreso</p>
               {activeSyncs.map((sync) => {
                 const config = getSourceConfig(sync.source);
                 const Icon = config.icon;
@@ -293,7 +294,8 @@ export function SyncResultsPanel() {
             </div>
           ))}
         </div>
-      )}
-    </div>
+      )
+      }
+    </div >
   );
 }
