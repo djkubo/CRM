@@ -32,6 +32,7 @@ export interface SyncCommandCenterBody {
   startDate?: string;
   endDate?: string;
   includeContacts?: boolean;
+  [key: string]: unknown;
 }
 
 export interface SyncStepResult {

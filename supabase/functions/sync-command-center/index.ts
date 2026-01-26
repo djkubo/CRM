@@ -562,7 +562,7 @@ Deno.serve(async (req: Request) => {
               startDate: new Date().toISOString(),
               endDate: new Date().toISOString(),
               authMethod: "jwt+is_admin",
-              userEmail: userEmailForError || "unknown",
+              userEmail: "unknown",
               steps: [],
               fatalError: errorMessage,
               completedAt: new Date().toISOString(),

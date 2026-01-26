@@ -227,7 +227,7 @@ Deno.serve(async (req) => {
         await new Promise(resolve => setTimeout(resolve, 150));
 
       } catch (subError) {
-        logger.error('Error processing email', subError, { email });
+        logger.error('Error processing email', subError instanceof Error ? subError : new Error(String(subError)), { email });
         totalSkipped++;
       }
     }
@@ -277,25 +277,12 @@ Deno.serve(async (req) => {
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
 
-  } catch (error: any) {
-    const errorMessage = error?.message || 'Unknown error';
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     logger.error('Fatal error', error instanceof Error ? error : new Error(String(error)));
     
-    // Update sync run if it exists
-    if (syncRunId) {
-      try {
-        await supabase
-          .from('sync_runs')
-          .update({
-            status: 'failed',
-            completed_at: new Date().toISOString(),
-            error_message: errorMessage
-          })
-          .eq('id', syncRunId);
-      } catch (updateError) {
-        logger.error('Failed to update sync run', updateError instanceof Error ? updateError : new Error(String(updateError)));
-      }
-    }
+    // Note: syncRunId and supabase are scoped inside try block
+    // Fatal errors at this level mean we couldn't initialize properly
     
     return new Response(
       JSON.stringify({
