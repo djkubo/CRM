@@ -364,12 +364,13 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
           if (useEdgeFunction) {
             toast.info(`Procesando CSV grande de Stripe Payments (${fileSizeMB.toFixed(1)}MB, ${lineCount.toLocaleString()} líneas) en servidor...`, { duration: 5000 });
             
-            const response = await invokeWithAdminKey<{ ok: boolean; result?: any; error?: string }>(
+            const response = await invokeWithAdminKey<{ ok?: boolean; success?: boolean; result?: any; error?: string }>(
               'process-csv-bulk',
               { csvText: text, filename: file.name, type: 'stripe_payments' }
             );
 
-            if (!response || !response.ok || !response.result) {
+            // Handle both response formats: { ok: true, result } or { success: false, error }
+            if (!response || (response.success === false) || (response.ok === false)) {
               const errorMsg = response?.error || 'Error desconocido';
               setFiles(prev => prev.map((f, idx) => 
                 idx === originalIndex ? { ...f, status: 'error' } : f
@@ -378,7 +379,8 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
               continue;
             }
 
-            const result = response.result;
+            // Response can be { ok: true, result } or direct { result }
+            const result = (response as any).result || response;
             const processingResult: ProcessingResult = {
               clientsCreated: result.clientsCreated || result.created || 0,
               clientsUpdated: result.clientsUpdated || result.updated || 0,
@@ -440,12 +442,13 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
           if (useEdgeFunction) {
             toast.info(`Procesando CSV de Stripe Customers (${fileSizeMB.toFixed(1)}MB, ${lineCount.toLocaleString()} líneas) en servidor...`, { duration: 5000 });
 
-            const response = await invokeWithAdminKey<{ ok: boolean; result?: any; error?: string }>(
+            const response = await invokeWithAdminKey<{ ok?: boolean; success?: boolean; result?: any; error?: string }>(
               'process-csv-bulk',
               { csvText: text, filename: file.name, type: 'stripe_customers' }
             );
 
-            if (!response || !response.ok || !response.result) {
+            // Handle both response formats: { ok: true, result } or { success: false, error }
+            if (!response || (response.success === false) || (response.ok === false)) {
               const errorMsg = response?.error || 'Error desconocido';
               setFiles(prev => prev.map((f, idx) => 
                 idx === originalIndex ? { ...f, status: 'error' } : f
@@ -454,7 +457,8 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
               continue;
             }
 
-            const result = response.result;
+            // Response can be { ok: true, result } or direct { result }
+            const result = (response as any).result || response;
             const customerResult: StripeCustomerResult = {
               clientsCreated: result.clientsCreated || result.created || 0,
               clientsUpdated: result.clientsUpdated || result.updated || 0,
@@ -515,12 +519,13 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
             if (useEdgeFunction) {
               toast.info(`Procesando CSV grande de PayPal (${fileSizeMB.toFixed(1)}MB, ${lineCount.toLocaleString()} líneas) en servidor...`, { duration: 5000 });
 
-              const response = await invokeWithAdminKey<{ ok: boolean; result?: any; error?: string }>(
+              const response = await invokeWithAdminKey<{ ok?: boolean; success?: boolean; result?: any; error?: string }>(
                 'process-csv-bulk',
                 { csvText: text, filename: file.name, type: 'paypal' }
               );
 
-              if (!response || !response.ok || !response.result) {
+              // Handle both response formats: { ok: true, result } or { success: false, error }
+              if (!response || (response.success === false) || (response.ok === false)) {
                 const errorMsg = response?.error || 'Error desconocido';
                 setFiles(prev => prev.map((f, idx) => 
                   idx === originalIndex ? { ...f, status: 'error' } : f
@@ -529,7 +534,8 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
                 continue;
               }
 
-              const paypalResult = response.result;
+              // Response can be { ok: true, result } or direct { result }
+              const paypalResult = (response as any).result || response;
               const processingResult: ProcessingResult = {
                 clientsCreated: paypalResult.clientsCreated || paypalResult.created || 0,
                 clientsUpdated: paypalResult.clientsUpdated || paypalResult.updated || 0,

@@ -44,15 +44,20 @@ export async function invokeWithAdminKey<
       hasData: !!data,
       hasError: !!error,
       errorMessage: error?.message,
-      dataKeys: data ? Object.keys(data) : []
+      dataKeys: data ? Object.keys(data) : [],
+      dataType: data ? typeof data : 'null',
+      dataOk: (data as any)?.ok,
+      dataSuccess: (data as any)?.success
     });
 
     if (error) {
       console.error(`[AdminAPI] ${functionName} error:`, error);
       // Return the error as part of the response instead of throwing
-      return { success: false, error: error.message } as T;
+      return { ok: false, success: false, error: error.message } as T;
     }
 
+    // Edge Functions return { ok: true, result } or { ok: false, error }
+    // Return as-is so frontend can handle both formats
     return data as T;
   } catch (e) {
     console.error(`[AdminAPI] ${functionName} fatal:`, e);
