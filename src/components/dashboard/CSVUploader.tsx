@@ -247,31 +247,7 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
         
         const text = await file.file.text();
 
-        if (file.type === 'stripe_customers') {
-          // Process Stripe Customers (LTV Master Data)
-          const customerResult = await processStripeCustomersCSV(text);
-          setFiles(prev => prev.map((f, idx) => 
-            idx === originalIndex ? { 
-              ...f, 
-              status: 'done', 
-              result: customerResult,
-              duplicatesResolved: customerResult.duplicatesResolved
-            } : f
-          ));
-          toast.success(
-            `${file.name}: ${customerResult.clientsUpdated} clientes actualizados con LTV. ` +
-            `${customerResult.duplicatesResolved} duplicados resueltos. ` +
-            `Total LTV: $${(customerResult.totalLTV / 100).toFixed(2)}`
-          );
-          
-          if (customerResult.delinquentCount > 0) {
-            toast.warning(`⚠️ ${customerResult.delinquentCount} clientes morosos detectados`);
-          }
-          
-          if (customerResult.errors.length > 0) {
-            toast.warning(`${file.name}: ${customerResult.errors.length} errores`);
-          }
-        } else if (file.type === 'subscriptions') {
+        if (file.type === 'subscriptions') {
           const subsResult = await processSubscriptionsCSV(text);
           setFiles(prev => prev.map((f, idx) => 
             idx === originalIndex ? { 
@@ -388,13 +364,44 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
           if (useEdgeFunction) {
             toast.info(`Procesando CSV grande de Stripe Payments (${fileSizeMB.toFixed(1)}MB, ${lineCount.toLocaleString()} líneas) en servidor...`, { duration: 5000 });
             
-            // TODO: Create Edge Function for large Stripe Payments CSV
-            // For now, fallback to local processing with warning
-            toast.warning('Archivo muy grande. Procesando localmente (puede tardar)...', { duration: 10000 });
-          }
-          
-          // Process Stripe Payments (unified_payments.csv)
-          const paymentsResult = await processStripePaymentsCSV(text);
+            const response = await invokeWithAdminKey<{ ok: boolean; result?: any; error?: string }>(
+              'process-csv-bulk',
+              { csvText: text, filename: file.name, type: 'stripe_payments' }
+            );
+
+            if (!response || !response.ok || !response.result) {
+              const errorMsg = response?.error || 'Error desconocido';
+              setFiles(prev => prev.map((f, idx) => 
+                idx === originalIndex ? { ...f, status: 'error' } : f
+              ));
+              toast.error(`Error procesando CSV: ${errorMsg}`);
+              continue;
+            }
+
+            const result = response.result;
+            setFiles(prev => prev.map((f, idx) => 
+              idx === originalIndex ? { 
+                ...f, 
+                status: 'done', 
+                result: {
+                  clientsCreated: result.clientsCreated || 0,
+                  clientsUpdated: result.clientsUpdated || 0,
+                  transactionsCreated: result.transactionsCreated || 0
+                },
+                stripePaymentsStats: {
+                  totalAmount: 0,
+                  uniqueCustomers: result.clientsCreated || 0,
+                  refundedCount: 0
+                }
+              } : f
+            ));
+            toast.success(
+              `${file.name}: ${result.transactionsCreated || 0} transacciones importadas. ` +
+              `${result.clientsCreated || 0} clientes creados/actualizados`
+            );
+          } else {
+            // Process Stripe Payments (unified_payments.csv) locally
+            const paymentsResult = await processStripePaymentsCSV(text);
           setFiles(prev => prev.map((f, idx) => 
             idx === originalIndex ? { 
               ...f, 
@@ -413,12 +420,76 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
             `Total: $${(paymentsResult.totalAmountCents / 100).toLocaleString()}`
           );
           
-          if (paymentsResult.refundedCount > 0) {
-            toast.info(`📋 ${paymentsResult.refundedCount} transacciones con reembolsos`);
+            if (paymentsResult.refundedCount > 0) {
+              toast.info(`📋 ${paymentsResult.refundedCount} transacciones con reembolsos`);
+            }
+            
+            if (paymentsResult.errors.length > 0) {
+              toast.warning(`${file.name}: ${paymentsResult.errors.length} errores`);
+            }
           }
-          
-          if (paymentsResult.errors.length > 0) {
-            toast.warning(`${file.name}: ${paymentsResult.errors.length} errores`);
+        } else if (file.type === 'stripe_customers') {
+          // Use Edge Function for Stripe Customers (LTV)
+          const fileSizeMB = file.file.size / (1024 * 1024);
+          const lineCount = text.split('\n').length;
+          const useEdgeFunction = fileSizeMB > 5 || lineCount > 10000;
+
+          if (useEdgeFunction) {
+            toast.info(`Procesando CSV de Stripe Customers (${fileSizeMB.toFixed(1)}MB, ${lineCount.toLocaleString()} líneas) en servidor...`, { duration: 5000 });
+
+            const response = await invokeWithAdminKey<{ ok: boolean; result?: any; error?: string }>(
+              'process-csv-bulk',
+              { csvText: text, filename: file.name, type: 'stripe_customers' }
+            );
+
+            if (!response || !response.ok || !response.result) {
+              const errorMsg = response?.error || 'Error desconocido';
+              setFiles(prev => prev.map((f, idx) => 
+                idx === originalIndex ? { ...f, status: 'error' } : f
+              ));
+              toast.error(`Error procesando CSV: ${errorMsg}`);
+              continue;
+            }
+
+            const result = response.result;
+            setFiles(prev => prev.map((f, idx) => 
+              idx === originalIndex ? {
+                ...f,
+                status: 'done',
+                result: {
+                  clientsUpdated: result.clientsUpdated || 0,
+                  duplicatesResolved: 0
+                },
+                duplicatesResolved: 0
+              } : f
+            ));
+            toast.success(
+              `${file.name}: ${result.clientsUpdated || 0} clientes actualizados con LTV`
+            );
+          } else {
+            // Process Stripe Customers (LTV Master Data) locally
+            const customerResult = await processStripeCustomersCSV(text);
+            setFiles(prev => prev.map((f, idx) => 
+              idx === originalIndex ? { 
+                ...f, 
+                status: 'done', 
+                result: customerResult,
+                duplicatesResolved: customerResult.duplicatesResolved
+              } : f
+            ));
+            toast.success(
+              `${file.name}: ${customerResult.clientsUpdated} clientes actualizados con LTV. ` +
+              `${customerResult.duplicatesResolved} duplicados resueltos. ` +
+              `Total LTV: $${(customerResult.totalLTV / 100).toFixed(2)}`
+            );
+
+            if (customerResult.delinquentCount > 0) {
+              toast.warning(`⚠️ ${customerResult.delinquentCount} clientes morosos detectados`);
+            }
+
+            if (customerResult.errors.length > 0) {
+              toast.warning(`${file.name}: ${customerResult.errors.length} errores`);
+            }
           }
         } else {
           let result: ProcessingResult;
@@ -426,7 +497,48 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
           if (file.type === 'web') {
             result = await processWebUsersCSV(text);
           } else if (file.type === 'paypal') {
-            result = await processPayPalCSV(text);
+            // Use Edge Function for large PayPal CSVs
+            const fileSizeMB = file.file.size / (1024 * 1024);
+            const lineCount = text.split('\n').length;
+            const useEdgeFunction = fileSizeMB > 10 || lineCount > 50000;
+
+            if (useEdgeFunction) {
+              toast.info(`Procesando CSV grande de PayPal (${fileSizeMB.toFixed(1)}MB, ${lineCount.toLocaleString()} líneas) en servidor...`, { duration: 5000 });
+
+              const response = await invokeWithAdminKey<{ ok: boolean; result?: any; error?: string }>(
+                'process-csv-bulk',
+                { csvText: text, filename: file.name, type: 'paypal' }
+              );
+
+              if (!response || !response.ok || !response.result) {
+                const errorMsg = response?.error || 'Error desconocido';
+                setFiles(prev => prev.map((f, idx) => 
+                  idx === originalIndex ? { ...f, status: 'error' } : f
+                ));
+                toast.error(`Error procesando CSV: ${errorMsg}`);
+                continue;
+              }
+
+              const paypalResult = response.result;
+              setFiles(prev => prev.map((f, idx) => 
+                idx === originalIndex ? {
+                  ...f,
+                  status: 'done',
+                  result: {
+                    clientsCreated: paypalResult.clientsCreated || 0,
+                    clientsUpdated: paypalResult.clientsUpdated || 0,
+                    transactionsCreated: paypalResult.transactionsCreated || 0
+                  }
+                } : f
+              ));
+              toast.success(
+                `${file.name}: ${paypalResult.transactionsCreated || 0} transacciones importadas. ` +
+                `${paypalResult.clientsCreated || 0} clientes creados/actualizados`
+              );
+              continue;
+            } else {
+              result = await processPayPalCSV(text);
+            }
           } else {
             result = await processPaymentCSV(text, 'stripe');
           }
