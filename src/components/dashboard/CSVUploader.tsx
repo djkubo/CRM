@@ -2,6 +2,7 @@ import { useState, useRef } from 'react';
 import { Upload, FileText, Check, AlertCircle, Loader2, X, Users } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Progress } from '@/components/ui/progress';
 import { 
   processWebUsersCSV, 
   processPayPalCSV, 
@@ -35,13 +36,58 @@ interface CSVFile {
   stripePaymentsStats?: { totalAmount: number; uniqueCustomers: number; refundedCount: number };
 }
 
+interface ChunkProgress {
+  currentChunk: number;
+  totalChunks: number;
+  rowsProcessed: number;
+  totalRows: number;
+}
+
 interface CSVUploaderProps {
   onProcessingComplete: () => void;
+}
+
+// Split CSV text into chunks of approximately maxSizeBytes
+function splitCSVIntoChunks(csvText: string, maxSizeBytes: number = 4 * 1024 * 1024): string[] {
+  const lines = csvText.split('\n');
+  if (lines.length < 2) return [csvText];
+  
+  const headerLine = lines[0];
+  const headerSize = new Blob([headerLine + '\n']).size;
+  const chunks: string[] = [];
+  
+  let currentChunk: string[] = [headerLine];
+  let currentSize = headerSize;
+  
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line.trim()) continue;
+    
+    const lineSize = new Blob([line + '\n']).size;
+    
+    // If adding this line would exceed the limit, start a new chunk
+    if (currentSize + lineSize > maxSizeBytes && currentChunk.length > 1) {
+      chunks.push(currentChunk.join('\n'));
+      currentChunk = [headerLine];
+      currentSize = headerSize;
+    }
+    
+    currentChunk.push(line);
+    currentSize += lineSize;
+  }
+  
+  // Don't forget the last chunk
+  if (currentChunk.length > 1) {
+    chunks.push(currentChunk.join('\n'));
+  }
+  
+  return chunks;
 }
 
 export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
   const [files, setFiles] = useState<CSVFile[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [chunkProgress, setChunkProgress] = useState<ChunkProgress | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const detectFileType = async (file: File): Promise<CSVFileType> => {
@@ -231,10 +277,119 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
     setFiles(prev => prev.filter((_, i) => i !== index));
   };
 
+  // Process a large file in chunks
+  const processInChunks = async (
+    csvText: string, 
+    csvType: string, 
+    filename: string
+  ): Promise<{ ok: boolean; result?: ProcessingResult; error?: string }> => {
+    const fileSizeBytes = new Blob([csvText]).size;
+    const MAX_CHUNK_SIZE = 4 * 1024 * 1024; // 4MB per chunk
+    
+    // If file is small enough, send directly
+    if (fileSizeBytes <= MAX_CHUNK_SIZE) {
+      console.log(`[Chunking] File ${filename} is small (${(fileSizeBytes / 1024 / 1024).toFixed(2)}MB), sending directly`);
+      const response = await invokeWithAdminKey<{ ok?: boolean; success?: boolean; result?: ProcessingResult; error?: string }>(
+        'process-csv-bulk',
+        { csvText, csvType, filename }
+      );
+      
+      if (!response || response.success === false || response.ok === false) {
+        return { ok: false, error: response?.error || 'Error desconocido' };
+      }
+      
+      const result = (response as { result?: ProcessingResult }).result || response as unknown as ProcessingResult;
+      return { ok: true, result };
+    }
+    
+    // Split into chunks
+    const chunks = splitCSVIntoChunks(csvText, MAX_CHUNK_SIZE);
+    const totalRows = csvText.split('\n').length - 1;
+    
+    console.log(`[Chunking] File ${filename} (${(fileSizeBytes / 1024 / 1024).toFixed(2)}MB) split into ${chunks.length} chunks`);
+    
+    toast.info(`📦 Archivo grande detectado. Dividiendo en ${chunks.length} partes...`, { duration: 5000 });
+    
+    // Track accumulated results
+    const accumulatedResult: ProcessingResult = {
+      clientsCreated: 0,
+      clientsUpdated: 0,
+      transactionsCreated: 0,
+      transactionsSkipped: 0,
+      errors: []
+    };
+    
+    let rowsProcessed = 0;
+    
+    // Process each chunk sequentially
+    for (let i = 0; i < chunks.length; i++) {
+      const chunk = chunks[i];
+      const chunkRows = chunk.split('\n').length - 1;
+      
+      setChunkProgress({
+        currentChunk: i + 1,
+        totalChunks: chunks.length,
+        rowsProcessed,
+        totalRows
+      });
+      
+      console.log(`[Chunking] Processing chunk ${i + 1}/${chunks.length} (${chunkRows} rows)`);
+      
+      try {
+        const response = await invokeWithAdminKey<{ ok?: boolean; success?: boolean; result?: ProcessingResult; error?: string }>(
+          'process-csv-bulk',
+          { 
+            csvText: chunk, 
+            csvType, 
+            filename: `${filename}_chunk_${i + 1}`,
+            isChunk: true,
+            chunkIndex: i,
+            totalChunks: chunks.length
+          }
+        );
+        
+        if (!response || response.success === false || response.ok === false) {
+          const errorMsg = response?.error || `Error en chunk ${i + 1}`;
+          accumulatedResult.errors.push(errorMsg);
+          console.error(`[Chunking] Chunk ${i + 1} failed:`, errorMsg);
+          continue;
+        }
+        
+        const chunkResult = (response as { result?: ProcessingResult }).result || response as unknown as ProcessingResult;
+        
+        // Accumulate results
+        accumulatedResult.clientsCreated += chunkResult.clientsCreated || 0;
+        accumulatedResult.clientsUpdated += chunkResult.clientsUpdated || 0;
+        accumulatedResult.transactionsCreated += (chunkResult.transactionsCreated || 0);
+        accumulatedResult.transactionsSkipped += (chunkResult.transactionsSkipped || 0);
+        if (chunkResult.errors?.length) {
+          accumulatedResult.errors.push(...chunkResult.errors.slice(0, 5)); // Limit errors per chunk
+        }
+        
+        rowsProcessed += chunkRows;
+        
+        // Small delay between chunks to avoid overwhelming the server
+        if (i < chunks.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 300));
+        }
+        
+      } catch (chunkError) {
+        const errorMsg = chunkError instanceof Error ? chunkError.message : 'Error desconocido';
+        accumulatedResult.errors.push(`Chunk ${i + 1}: ${errorMsg}`);
+        console.error(`[Chunking] Chunk ${i + 1} exception:`, chunkError);
+      }
+    }
+    
+    setChunkProgress(null);
+    
+    return { ok: true, result: accumulatedResult };
+  };
+
   const processFiles = async () => {
     if (files.length === 0) return;
     
     setIsProcessing(true);
+    setChunkProgress(null);
     
     // Process in order: GHL/Web (for contacts) -> Stripe Customers (LTV) -> Stripe Payments -> Subscriptions -> Legacy Stripe/PayPal
     const sortedFiles = [...files].sort((a, b) => {
@@ -264,41 +419,27 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
         // Show progress for large files
         const fileSizeMB = file.file.size / (1024 * 1024);
         if (fileSizeMB > 5) {
-          toast.info(`Cargando ${file.name} (${fileSizeMB.toFixed(1)}MB)...`, { duration: 3000 });
+          toast.info(`📂 Cargando ${file.name} (${fileSizeMB.toFixed(1)}MB)...`, { duration: 3000 });
         }
         
         const text = await file.file.text();
 
-        // MASTER CSV - Process via Edge Function (contains all sources)
+        // MASTER CSV - Process via Edge Function with chunking support
         if (file.type === 'master') {
-          const fileSizeMB = file.file.size / (1024 * 1024);
           const lineCount = text.split('\n').length;
           
-          toast.info(`🗂️ Procesando CSV Maestro (${fileSizeMB.toFixed(1)}MB, ${lineCount.toLocaleString()} filas) en servidor...`, { duration: 10000 });
+          toast.info(`🗂️ Procesando CSV Maestro (${fileSizeMB.toFixed(1)}MB, ${lineCount.toLocaleString()} filas)...`, { duration: 10000 });
           
-          const response = await invokeWithAdminKey<{ ok?: boolean; success?: boolean; result?: any; error?: string }>(
-            'process-csv-bulk',
-            { csvText: text, csvType: 'master', filename: file.name }
-          );
+          const { ok, result: masterResult, error } = await processInChunks(text, 'master', file.name);
 
-          if (!response || (response.success === false) || (response.ok === false)) {
-            const errorMsg = response?.error || 'Error desconocido';
+          if (!ok || !masterResult) {
             setFiles(prev => prev.map((f, idx) => 
               idx === originalIndex ? { ...f, status: 'error' } : f
             ));
-            toast.error(`Error procesando CSV Maestro: ${errorMsg}`);
+            toast.error(`❌ Error procesando CSV Maestro: ${error || 'Error desconocido'}`);
             continue;
           }
 
-          const result = (response as any).result || response;
-          const masterResult: ProcessingResult = {
-            clientsCreated: result.clientsCreated || result.created || 0,
-            clientsUpdated: result.clientsUpdated || result.updated || 0,
-            transactionsCreated: result.transactionsCreated || 0,
-            transactionsSkipped: result.transactionsSkipped || result.skipped || 0,
-            errors: result.errors || []
-          };
-          
           setFiles(prev => prev.map((f, idx) => 
             idx === originalIndex ? { 
               ...f, 
@@ -309,24 +450,11 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
           
           toast.success(
             `✅ CSV Maestro: ${masterResult.clientsCreated} nuevos, ${masterResult.clientsUpdated} actualizados. ` +
-            `${masterResult.transactionsCreated} transacciones importadas.`
+            `${masterResult.transactionsCreated || 0} transacciones.`
           );
           
-          if (result.ghlContacts) {
-            toast.info(`📋 GHL: ${result.ghlContacts} contactos`);
-          }
-          if (result.stripePayments) {
-            toast.info(`💳 Stripe: ${result.stripePayments} pagos`);
-          }
-          if (result.paypalPayments) {
-            toast.info(`🅿️ PayPal: ${result.paypalPayments} pagos`);
-          }
-          if (result.subscriptions) {
-            toast.info(`📦 Suscripciones: ${result.subscriptions}`);
-          }
-          
           if (masterResult.errors.length > 0) {
-            toast.warning(`${file.name}: ${masterResult.errors.length} errores`);
+            toast.warning(`⚠️ ${masterResult.errors.length} advertencias`);
           }
         } else if (file.type === 'subscriptions') {
           const subsResult = await processSubscriptionsCSV(text);
@@ -346,43 +474,36 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
         } else if (file.type === 'ghl') {
           // For large GHL CSVs (> 10MB or > 100k lines), use Edge Function
           // For smaller files, use local processing (faster)
-          const fileSizeMB = file.file.size / (1024 * 1024);
           const lineCount = text.split('\n').length;
           const useEdgeFunction = fileSizeMB > 10 || lineCount > 100000;
 
           if (useEdgeFunction) {
             toast.info(`Procesando CSV grande (${fileSizeMB.toFixed(1)}MB, ${lineCount.toLocaleString()} líneas) en servidor...`, { duration: 5000 });
             
-            const response = await invokeWithAdminKey<{ ok: boolean; result?: GHLProcessingResult; error?: string }>(
-              'process-ghl-csv',
-              { csvText: text }
-            );
+            const { ok, result: ghlResult, error } = await processInChunks(text, 'ghl', file.name);
 
-            if (!response || !response.ok || !response.result) {
-              const errorMsg = response?.error || 'Error desconocido';
+            if (!ok || !ghlResult) {
               setFiles(prev => prev.map((f, idx) => 
                 idx === originalIndex ? { ...f, status: 'error' } : f
               ));
-              toast.error(`Error procesando CSV: ${errorMsg}`);
+              toast.error(`Error procesando CSV: ${error}`);
               continue;
             }
 
-            const ghlResult = response.result;
             setFiles(prev => prev.map((f, idx) => 
               idx === originalIndex ? { 
                 ...f, 
                 status: 'done', 
                 result: ghlResult,
                 ghlStats: {
-                  withEmail: ghlResult.withEmail,
-                  withPhone: ghlResult.withPhone,
-                  withTags: ghlResult.withTags
+                  withEmail: 0,
+                  withPhone: 0,
+                  withTags: 0
                 }
               } : f
             ));
             toast.success(
-              `${file.name}: ${ghlResult.clientsCreated} nuevos, ${ghlResult.clientsUpdated} actualizados. ` +
-              `Total: ${ghlResult.totalContacts} contactos GHL`
+              `${file.name}: ${ghlResult.clientsCreated} nuevos, ${ghlResult.clientsUpdated} actualizados`
             );
             
             if (ghlResult.errors.length > 0) {
@@ -437,38 +558,23 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
             toast.warning(`${file.name}: ${manychatResult.errors.length} errores`);
           }
         } else if (file.type === 'stripe_payments') {
-          // For large Stripe Payments CSVs (> 10MB), use Edge Function
-          const fileSizeMB = file.file.size / (1024 * 1024);
+          // For large Stripe Payments CSVs (> 10MB), use Edge Function with chunking
           const lineCount = text.split('\n').length;
           const useEdgeFunction = fileSizeMB > 10 || lineCount > 50000;
 
           if (useEdgeFunction) {
-            toast.info(`Procesando CSV grande de Stripe Payments (${fileSizeMB.toFixed(1)}MB, ${lineCount.toLocaleString()} líneas) en servidor...`, { duration: 5000 });
+            toast.info(`Procesando CSV grande de Stripe Payments (${fileSizeMB.toFixed(1)}MB, ${lineCount.toLocaleString()} líneas)...`, { duration: 5000 });
             
-            const response = await invokeWithAdminKey<{ ok?: boolean; success?: boolean; result?: any; error?: string }>(
-              'process-csv-bulk',
-              { csvText: text, csvType: 'stripe_payments', filename: file.name }
-            );
+            const { ok, result: processingResult, error } = await processInChunks(text, 'stripe_payments', file.name);
 
-            // Handle both response formats: { ok: true, result } or { success: false, error }
-            if (!response || (response.success === false) || (response.ok === false)) {
-              const errorMsg = response?.error || 'Error desconocido';
+            if (!ok || !processingResult) {
               setFiles(prev => prev.map((f, idx) => 
                 idx === originalIndex ? { ...f, status: 'error' } : f
               ));
-              toast.error(`Error procesando CSV: ${errorMsg}`);
+              toast.error(`Error procesando CSV: ${error}`);
               continue;
             }
 
-            // Response can be { ok: true, result } or direct { result }
-            const result = (response as any).result || response;
-            const processingResult: ProcessingResult = {
-              clientsCreated: result.clientsCreated || result.created || 0,
-              clientsUpdated: result.clientsUpdated || result.updated || 0,
-              transactionsCreated: result.transactionsCreated || result.created || 0,
-              transactionsSkipped: result.transactionsSkipped || result.skipped || 0,
-              errors: result.errors || []
-            };
             setFiles(prev => prev.map((f, idx) => 
               idx === originalIndex ? { 
                 ...f, 
@@ -476,14 +582,14 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
                 result: processingResult,
                 stripePaymentsStats: {
                   totalAmount: 0,
-                  uniqueCustomers: result.clientsCreated || result.created || 0,
+                  uniqueCustomers: processingResult.clientsCreated || 0,
                   refundedCount: 0
                 }
               } : f
             ));
             toast.success(
-              `${file.name}: ${result.transactionsCreated || 0} transacciones importadas. ` +
-              `${result.clientsCreated || 0} clientes creados/actualizados`
+              `${file.name}: ${processingResult.transactionsCreated || 0} transacciones importadas. ` +
+              `${processingResult.clientsCreated || 0} clientes creados/actualizados`
             );
           } else {
             // Process Stripe Payments (unified_payments.csv) locally
@@ -515,41 +621,23 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
             }
           }
         } else if (file.type === 'stripe_customers') {
-          // Use Edge Function for Stripe Customers (LTV)
-          const fileSizeMB = file.file.size / (1024 * 1024);
+          // Use Edge Function for Stripe Customers (LTV) with chunking
           const lineCount = text.split('\n').length;
           const useEdgeFunction = fileSizeMB > 5 || lineCount > 10000;
 
           if (useEdgeFunction) {
-            toast.info(`Procesando CSV de Stripe Customers (${fileSizeMB.toFixed(1)}MB, ${lineCount.toLocaleString()} líneas) en servidor...`, { duration: 5000 });
+            toast.info(`Procesando CSV de Stripe Customers (${fileSizeMB.toFixed(1)}MB, ${lineCount.toLocaleString()} líneas)...`, { duration: 5000 });
 
-            const response = await invokeWithAdminKey<{ ok?: boolean; success?: boolean; result?: any; error?: string }>(
-              'process-csv-bulk',
-              { csvText: text, csvType: 'stripe_customers', filename: file.name }
-            );
+            const { ok, result: customerResult, error } = await processInChunks(text, 'stripe_customers', file.name);
 
-            // Handle both response formats: { ok: true, result } or { success: false, error }
-            if (!response || (response.success === false) || (response.ok === false)) {
-              const errorMsg = response?.error || 'Error desconocido';
+            if (!ok || !customerResult) {
               setFiles(prev => prev.map((f, idx) => 
                 idx === originalIndex ? { ...f, status: 'error' } : f
               ));
-              toast.error(`Error procesando CSV: ${errorMsg}`);
+              toast.error(`Error procesando CSV: ${error}`);
               continue;
             }
 
-            // Response can be { ok: true, result } or direct { result }
-            const result = (response as any).result || response;
-            const customerResult: StripeCustomerResult = {
-              clientsCreated: result.clientsCreated || result.created || 0,
-              clientsUpdated: result.clientsUpdated || result.updated || 0,
-              transactionsCreated: 0,
-              transactionsSkipped: result.transactionsSkipped || result.skipped || 0,
-              errors: result.errors || [],
-              totalLTV: 0,
-              delinquentCount: 0,
-              duplicatesResolved: 0
-            };
             setFiles(prev => prev.map((f, idx) => 
               idx === originalIndex ? {
                 ...f,
@@ -559,7 +647,7 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
               } : f
             ));
             toast.success(
-              `${file.name}: ${result.clientsUpdated || 0} clientes actualizados con LTV`
+              `${file.name}: ${customerResult.clientsUpdated || 0} clientes actualizados con LTV`
             );
           } else {
             // Process Stripe Customers (LTV Master Data) locally
@@ -592,43 +680,28 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
           if (file.type === 'web') {
             result = await processWebUsersCSV(text);
           } else if (file.type === 'paypal') {
-            // Use Edge Function for large PayPal CSVs
-            const fileSizeMB = file.file.size / (1024 * 1024);
+            // Use Edge Function for large PayPal CSVs with chunking
             const lineCount = text.split('\n').length;
             const useEdgeFunction = fileSizeMB > 10 || lineCount > 50000;
 
             if (useEdgeFunction) {
-              toast.info(`Procesando CSV grande de PayPal (${fileSizeMB.toFixed(1)}MB, ${lineCount.toLocaleString()} líneas) en servidor...`, { duration: 5000 });
+              toast.info(`Procesando CSV grande de PayPal (${fileSizeMB.toFixed(1)}MB, ${lineCount.toLocaleString()} líneas)...`, { duration: 5000 });
 
-              const response = await invokeWithAdminKey<{ ok?: boolean; success?: boolean; result?: any; error?: string }>(
-                'process-csv-bulk',
-                { csvText: text, csvType: 'paypal', filename: file.name }
-              );
+              const { ok, result: paypalResult, error } = await processInChunks(text, 'paypal', file.name);
 
-              // Handle both response formats: { ok: true, result } or { success: false, error }
-              if (!response || (response.success === false) || (response.ok === false)) {
-                const errorMsg = response?.error || 'Error desconocido';
+              if (!ok || !paypalResult) {
                 setFiles(prev => prev.map((f, idx) => 
                   idx === originalIndex ? { ...f, status: 'error' } : f
                 ));
-                toast.error(`Error procesando CSV: ${errorMsg}`);
+                toast.error(`Error procesando CSV: ${error}`);
                 continue;
               }
 
-              // Response can be { ok: true, result } or direct { result }
-              const paypalResult = (response as any).result || response;
-              const processingResult: ProcessingResult = {
-                clientsCreated: paypalResult.clientsCreated || paypalResult.created || 0,
-                clientsUpdated: paypalResult.clientsUpdated || paypalResult.updated || 0,
-                transactionsCreated: paypalResult.transactionsCreated || paypalResult.created || 0,
-                transactionsSkipped: paypalResult.transactionsSkipped || paypalResult.skipped || 0,
-                errors: paypalResult.errors || []
-              };
               setFiles(prev => prev.map((f, idx) => 
                 idx === originalIndex ? {
                   ...f,
                   status: 'done' as const,
-                  result: processingResult
+                  result: paypalResult
                 } : f
               ));
               toast.success(
@@ -653,14 +726,24 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
         }
       } catch (error) {
         console.error('Error processing file:', error);
+        
+        const errorMessage = error instanceof Error ? error.message : 'Error desconocido';
+        
+        // Check for specific network errors that indicate file too large
+        if (errorMessage.includes('Failed to fetch') || errorMessage.includes('Failed to send')) {
+          toast.error(`❌ ${file.name}: Archivo demasiado grande. Intenta con un archivo más pequeño o contacta soporte.`, { duration: 8000 });
+        } else {
+          toast.error(`❌ Error procesando ${file.name}: ${errorMessage}`);
+        }
+        
         setFiles(prev => prev.map((f, idx) => 
           idx === originalIndex ? { ...f, status: 'error' } : f
         ));
-        toast.error(`Error procesando ${file.name}`);
       }
     }
 
     setIsProcessing(false);
+    setChunkProgress(null);
     
     // Check if there were any errors
     const hasErrors = files.some(f => f.status === 'error');
@@ -671,7 +754,7 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
     } else if (hasErrors) {
       toast.error('Procesamiento completado con errores');
     } else {
-      toast.success('Procesamiento completado');
+      toast.success('✅ Procesamiento completado');
     }
     
     onProcessingComplete();
@@ -687,6 +770,7 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
       case 'subscriptions': return 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30';
       case 'ghl': return 'bg-orange-500/20 text-orange-400 border-orange-500/30';
       case 'manychat': return 'bg-pink-500/20 text-pink-400 border-pink-500/30';
+      case 'master': return 'bg-gradient-to-r from-blue-500/20 to-purple-500/20 text-white border-blue-500/30';
       default: return 'bg-muted text-muted-foreground';
     }
   };
@@ -701,6 +785,7 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
       case 'subscriptions': return 'Suscripciones';
       case 'ghl': return 'GoHighLevel';
       case 'manychat': return 'ManyChat';
+      case 'master': return '🗂️ Master CSV';
       default: return type;
     }
   };
@@ -752,7 +837,7 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
         </div>
         <div>
           <h3 className="text-lg font-semibold text-white">Cargar Archivos CSV</h3>
-          <p className="text-sm text-gray-400">PayPal, Stripe, unified_customers.csv (LTV), Suscripciones</p>
+          <p className="text-sm text-gray-400">PayPal, Stripe, Master CSV, GHL, Suscripciones</p>
         </div>
       </div>
 
@@ -773,9 +858,27 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
           Arrastra archivos o haz clic para seleccionar
         </p>
         <p className="text-xs text-gray-500">
-          Detecta: unified_payments.csv, unified_customers.csv, Download-X.csv (PayPal), GHL, subscriptions
+          Detecta: Master CSV, unified_payments.csv, unified_customers.csv, PayPal, GHL, ManyChat
         </p>
       </div>
+
+      {/* Chunk progress indicator */}
+      {chunkProgress && (
+        <div className="mt-4 p-4 bg-blue-500/10 border border-blue-500/20 rounded-lg">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-sm text-blue-400">
+              Procesando parte {chunkProgress.currentChunk} de {chunkProgress.totalChunks}
+            </span>
+            <span className="text-sm text-gray-400">
+              {chunkProgress.rowsProcessed.toLocaleString()} / {chunkProgress.totalRows.toLocaleString()} filas
+            </span>
+          </div>
+          <Progress 
+            value={(chunkProgress.currentChunk / chunkProgress.totalChunks) * 100} 
+            className="h-2"
+          />
+        </div>
+      )}
 
       {files.length > 0 && (
         <div className="mt-4 space-y-2">
@@ -802,6 +905,7 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
                   disabled={file.status !== 'pending'}
                   className="text-xs border border-gray-600 rounded px-2 py-1 bg-[#1a1f36] text-white"
                 >
+                  <option value="master">🗂️ Master CSV</option>
                   <option value="ghl">GoHighLevel</option>
                   <option value="manychat">ManyChat</option>
                   <option value="web">Usuarios Web</option>
@@ -868,7 +972,7 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
         {isProcessing ? (
           <>
             <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-            Procesando...
+            {chunkProgress ? `Procesando parte ${chunkProgress.currentChunk}/${chunkProgress.totalChunks}...` : 'Procesando...'}
           </>
         ) : (
           <>
