@@ -654,68 +654,97 @@ Deno.serve(async (req: Request) => {
         results["manychat"] = { success: false, count: 0, error: String(e) };
       }
 
-      // Unify identities
+      // Unify identities (Harvester)
       try {
-        await updateProgress("unify-identity", "Iniciando...");
-        const response = await invokeClient.functions.invoke('unify-identity');
-        const respData = response.data as GenericSyncResponse | null;
-        if (response.error) throw response.error;
-        results["unify"] = { success: true, count: respData?.unified ?? 0 };
-        await updateProgress("unify-identity", `${results["unify"].count} identidades unificadas`);
+        await updateProgress("unify-identity", "Iniciando unificación (Harvester)...");
+
+        // Use the new SQL Harvester instead of the empty Edge Function call
+        const { data: harvestResult, error: harvestError } = await dbClient.rpc('harvest_recent_contacts', {
+          p_lookback_hours: config.fetchAll ? 720 : 72 // 30 days if fetchAll, else 3 days
+        });
+
+        if (harvestError) throw harvestError;
+
+        const unifiedCount = (harvestResult as any)?.processed || 0;
+        const createdCount = (harvestResult as any)?.created || 0;
+        const updatedCount = (harvestResult as any)?.updated || 0;
+
+        results["unify"] = { success: true, count: unifiedCount };
+        await updateProgress("unify-identity", `${unifiedCount} procesados (${createdCount} nuevos, ${updatedCount} actualizados)`);
       } catch (e) {
         console.error("Unify identity error:", e);
         results["unify"] = { success: false, count: 0, error: String(e) };
       }
     }
 
+    // ============ REFRESH METRICS (KPIs) ============
+    try {
+      await updateProgress("refresh-metrics", "Regenerando Métricas...");
+
+      // Call the metrics rebuild function (defined in 20260120023809)
+      const { error: rebuildError } = await dbClient.rpc('rebuild_metrics_staging');
+      if (rebuildError) throw rebuildError;
+
+      // Promote immediately for real-time feel
+      const { error: promoteError } = await dbClient.rpc('promote_metrics_staging');
+      if (promoteError) throw promoteError;
+
+      results["metrics"] = { success: true, count: 1 };
+      await updateProgress("refresh-metrics", "KPIs actualizados");
+    } catch (e) {
+      console.error("Metrics refresh error:", e);
+      results["metrics"] = { success: false, count: 0, error: String(e) };
+    }
+  }
+
     // ============ COMPLETE SYNC RUN ============
     const totalFetched = Object.values(results).reduce((sum, r) => sum + r.count, 0);
-    const failedSteps = Object.entries(results).filter(([, r]) => !r.success).map(([k]) => k);
+  const failedSteps = Object.entries(results).filter(([, r]) => !r.success).map(([k]) => k);
 
-    const finalStatus = continuingSteps.length > 0
-      ? "continuing"
-      : (failedSteps.length > 0 ? "completed_with_errors" : "completed");
+  const finalStatus = continuingSteps.length > 0
+    ? "continuing"
+    : (failedSteps.length > 0 ? "completed_with_errors" : "completed");
 
-    const finalMetadata: SyncRunMetadata = {
-      ...syncRun.metadata,
+  const finalMetadata: SyncRunMetadata = {
+    ...syncRun.metadata,
+    results,
+    completedAt: finalStatus === "continuing" ? undefined : new Date().toISOString(),
+  };
+
+  await dbClient
+    .from("sync_runs")
+    .update({
+      status: finalStatus,
+      completed_at: continuingSteps.length > 0 ? null : new Date().toISOString(),
+      total_fetched: totalFetched,
+      total_inserted: totalFetched,
+      error_message: failedSteps.length > 0 ? `Errors in: ${failedSteps.join(", ")}` : null,
+      metadata: finalMetadata,
+    })
+    .eq("id", syncRunId);
+
+  console.log(`✅ Sync completed: ${totalFetched} total records, ${failedSteps.length} failed steps in ${Date.now() - startTime}ms`);
+
+  return new Response(
+    JSON.stringify({
+      success: true,
+      status: finalStatus,
+      syncRunId,
+      totalRecords: totalFetched,
       results,
-      completedAt: finalStatus === "continuing" ? undefined : new Date().toISOString(),
-    };
+      continuingSteps: continuingSteps.length > 0 ? continuingSteps : undefined,
+      failedSteps: failedSteps.length > 0 ? failedSteps : undefined,
+      metadata: finalMetadata,
+      duration_ms: Date.now() - startTime
+    }),
+    { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+  );
 
-    await dbClient
-      .from("sync_runs")
-      .update({
-        status: finalStatus,
-        completed_at: continuingSteps.length > 0 ? null : new Date().toISOString(),
-        total_fetched: totalFetched,
-        total_inserted: totalFetched,
-        error_message: failedSteps.length > 0 ? `Errors in: ${failedSteps.join(", ")}` : null,
-        metadata: finalMetadata,
-      })
-      .eq("id", syncRunId);
-
-    console.log(`✅ Sync completed: ${totalFetched} total records, ${failedSteps.length} failed steps in ${Date.now() - startTime}ms`);
-
-    return new Response(
-      JSON.stringify({
-        success: true,
-        status: finalStatus,
-        syncRunId,
-        totalRecords: totalFetched,
-        results,
-        continuingSteps: continuingSteps.length > 0 ? continuingSteps : undefined,
-        failedSteps: failedSteps.length > 0 ? failedSteps : undefined,
-        metadata: finalMetadata,
-        duration_ms: Date.now() - startTime
-      }),
-      { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-    );
-
-  } catch (error) {
-    console.error("Fatal error:", error);
-    return new Response(
-      JSON.stringify({ success: false, status: 'failed', error: error instanceof Error ? error.message : "Unknown error" }),
-      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-    );
-  }
+} catch (error) {
+  console.error("Fatal error:", error);
+  return new Response(
+    JSON.stringify({ success: false, status: 'failed', error: error instanceof Error ? error.message : "Unknown error" }),
+    { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+  );
+}
 });
