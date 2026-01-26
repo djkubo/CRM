@@ -4,6 +4,8 @@ import { invokeWithAdminKey } from "@/lib/adminApi";
 
 // ============= Constants =============
 const BATCH_SIZE = 500;
+// Optimized batch size for large GHL imports (67k+ contacts)
+const GHL_LARGE_BATCH_SIZE = 1000;
 
 // ============= Interfaces =============
 
@@ -2253,10 +2255,21 @@ export async function processGoHighLevelCSV(csvText: string): Promise<GHLProcess
 
   // Load existing clients by email
   const uniqueEmails = [...new Set(emailContacts.map(c => c.email!))];
+  // Optimize batch size for large imports
+  const lookupBatchSize = uniqueEmails.length > 10000 ? GHL_LARGE_BATCH_SIZE : BATCH_SIZE;
+  console.log(`[GHL CSV] Loading existing clients: ${uniqueEmails.length} emails in batches of ${lookupBatchSize}`);
+  
   const existingByEmail = new Map<string, any>();
   
-  for (let i = 0; i < uniqueEmails.length; i += BATCH_SIZE) {
-    const batch = uniqueEmails.slice(i, i + BATCH_SIZE);
+  for (let i = 0; i < uniqueEmails.length; i += lookupBatchSize) {
+    const batch = uniqueEmails.slice(i, i + lookupBatchSize);
+    const batchNum = Math.floor(i / lookupBatchSize) + 1;
+    
+    // Progress logging for large lookups
+    if (uniqueEmails.length > 10000 && batchNum % 20 === 0) {
+      console.log(`[GHL CSV] Loading existing clients: ${batchNum}/${Math.ceil(uniqueEmails.length / lookupBatchSize)} batches`);
+    }
+    
     const { data } = await supabase
       .from('clients')
       .select('*')
@@ -2269,16 +2282,20 @@ export async function processGoHighLevelCSV(csvText: string): Promise<GHLProcess
   const uniquePhones = [...new Set(phoneOnlyContacts.map(c => c.phone!))];
   const existingByPhone = new Map<string, any>();
   
-  for (let i = 0; i < uniquePhones.length; i += BATCH_SIZE) {
-    const batch = uniquePhones.slice(i, i + BATCH_SIZE);
-    const { data } = await supabase
-      .from('clients')
-      .select('*')
-      .in('phone', batch);
+  if (uniquePhones.length > 0) {
+    console.log(`[GHL CSV] Loading existing clients by phone: ${uniquePhones.length} phones`);
     
-    data?.forEach(c => {
-      if (c.phone) existingByPhone.set(c.phone, c);
-    });
+    for (let i = 0; i < uniquePhones.length; i += lookupBatchSize) {
+      const batch = uniquePhones.slice(i, i + lookupBatchSize);
+      const { data } = await supabase
+        .from('clients')
+        .select('*')
+        .in('phone', batch);
+      
+      data?.forEach(c => {
+        if (c.phone) existingByPhone.set(c.phone, c);
+      });
+    }
   }
 
   console.log(`[GHL CSV] Found ${existingByEmail.size} existing by email, ${existingByPhone.size} by phone`);
