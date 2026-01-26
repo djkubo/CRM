@@ -2421,28 +2421,64 @@ export async function processGoHighLevelCSV(csvText: string): Promise<GHLProcess
   }
 
   // Execute upserts in batches (email-based)
-  for (let i = 0; i < toUpsert.length; i += BATCH_SIZE) {
-    const batch = toUpsert.slice(i, i + BATCH_SIZE);
+  // Use larger batch size for GHL imports to handle 67k+ contacts efficiently
+  const ghlBatchSize = toUpsert.length > 10000 ? GHL_LARGE_BATCH_SIZE : BATCH_SIZE;
+  console.log(`[GHL CSV] Processing ${toUpsert.length} email-based contacts in batches of ${ghlBatchSize}`);
+  
+  for (let i = 0; i < toUpsert.length; i += ghlBatchSize) {
+    const batch = toUpsert.slice(i, i + ghlBatchSize);
+    const batchNum = Math.floor(i / ghlBatchSize) + 1;
+    const totalBatches = Math.ceil(toUpsert.length / ghlBatchSize);
+    
+    // Progress logging for large imports
+    if (toUpsert.length > 10000 && batchNum % 10 === 0) {
+      console.log(`[GHL CSV] Progress: ${batchNum}/${totalBatches} batches (${i + batch.length}/${toUpsert.length} contacts)`);
+    }
+    
     const { error } = await supabase
       .from('clients')
       .upsert(batch, { onConflict: 'email' });
     
     if (error) {
-      console.error(`[GHL CSV] Upsert batch error:`, error);
-      result.errors.push(`Batch ${Math.floor(i / BATCH_SIZE) + 1}: ${error.message}`);
+      console.error(`[GHL CSV] Upsert batch ${batchNum} error:`, error);
+      result.errors.push(`Batch ${batchNum}: ${error.message}`);
+    } else {
+      // Update counters correctly
+      const newInBatch = batch.filter(c => !existingByEmail.has(c.email!)).length;
+      const updatedInBatch = batch.filter(c => existingByEmail.has(c.email!)).length;
+      // Note: These are already counted in the loop above, but we log for debugging
+    }
+    
+    // Small delay between batches for very large imports to avoid overwhelming DB
+    if (toUpsert.length > 50000 && i + ghlBatchSize < toUpsert.length) {
+      await new Promise(resolve => setTimeout(resolve, 50));
     }
   }
 
-  // Insert phone-only records
-  for (let i = 0; i < toInsertPhoneOnly.length; i += BATCH_SIZE) {
-    const batch = toInsertPhoneOnly.slice(i, i + BATCH_SIZE);
+  // Process phone-only contacts
+  const phoneBatchSize = toInsertPhoneOnly.length > 10000 ? GHL_LARGE_BATCH_SIZE : BATCH_SIZE;
+  console.log(`[GHL CSV] Processing ${toInsertPhoneOnly.length} phone-only contacts in batches of ${phoneBatchSize}`);
+  
+  for (let i = 0; i < toInsertPhoneOnly.length; i += phoneBatchSize) {
+    const batch = toInsertPhoneOnly.slice(i, i + phoneBatchSize);
+    const batchNum = Math.floor(i / phoneBatchSize) + 1;
+    
+    if (toInsertPhoneOnly.length > 10000 && batchNum % 10 === 0) {
+      console.log(`[GHL CSV] Phone-only progress: ${batchNum}/${Math.ceil(toInsertPhoneOnly.length / phoneBatchSize)} batches`);
+    }
+    
     const { error } = await supabase
       .from('clients')
       .insert(batch);
     
     if (error) {
-      console.error(`[GHL CSV] Insert phone-only batch error:`, error);
-      result.errors.push(`Phone-only batch ${Math.floor(i / BATCH_SIZE) + 1}: ${error.message}`);
+      console.error(`[GHL CSV] Insert phone-only batch ${batchNum} error:`, error);
+      result.errors.push(`Phone-only batch ${batchNum}: ${error.message}`);
+    }
+    
+    // Small delay for very large imports
+    if (toInsertPhoneOnly.length > 50000 && i + phoneBatchSize < toInsertPhoneOnly.length) {
+      await new Promise(resolve => setTimeout(resolve, 50));
     }
   }
 
