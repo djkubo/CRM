@@ -77,13 +77,15 @@ async function processSinglePage(
       pageLimit: CONTACTS_PER_PAGE
     };
 
-    // Pagination logic: use startAfterId if available
+    // Pagination logic for GHL API v2.0
+    // The API uses startAfterId (contact ID) for pagination
+    // We can also use startAfter (timestamp) as alternative
     if (startAfterId) {
       bodyParams.startAfterId = startAfterId;
-    }
-    // Fallback or alternative: startAfter (timestamp)
-    if (startAfter) {
+      logger.info('Using startAfterId for pagination', { startAfterId });
+    } else if (startAfter) {
       bodyParams.startAfter = startAfter;
+      logger.info('Using startAfter (timestamp) for pagination', { startAfter });
     }
 
     logger.info('Fetching GHL contacts (V2 Search)', { startAfterId, limit: CONTACTS_PER_PAGE });
@@ -150,7 +152,16 @@ async function processSinglePage(
       const results = await Promise.all(
         batch.map(async (contact: Record<string, unknown>) => {
           try {
-            // Save raw contact
+            // Skip contacts without email AND phone (can't merge without identifier)
+            const email = (contact.email as string) || null;
+            const phone = (contact.phone as string) || null;
+            
+            if (!email && !phone) {
+              logger.debug('Skipping contact without email or phone', { contactId: contact.id });
+              return { action: 'skipped', reason: 'no_email_no_phone' };
+            }
+
+            // Save raw contact for audit trail
             if (!dryRun) {
               await (supabase.from('ghl_contacts_raw') as any)
                 .upsert({
@@ -161,21 +172,50 @@ async function processSinglePage(
                 }, { onConflict: 'external_id' });
             }
 
+            // Extract contact data - using actual API structure
             const email = (contact.email as string) || null;
-            const phone = (contact.phone as string) || (contact.phoneNumber as string) || null;
-            const firstName = contact.firstName as string || '';
-            const lastName = contact.lastName as string || '';
-            const fullName = [firstName, lastName].filter(Boolean).join(' ') || (contact.name as string) || null;
+            const phone = (contact.phone as string) || null;
+            const firstName = (contact.firstName as string) || '';
+            const lastName = (contact.lastName as string) || '';
+            // Use contactName if available (it's the full name in lowercase), otherwise construct from firstName/lastName
+            const fullName = (contact.contactName as string) || 
+                           [firstName, lastName].filter(Boolean).join(' ') || 
+                           null;
             const tags = (contact.tags as string[]) || [];
+            const source = (contact.source as string) || 'ghl';
+            const type = (contact.type as string) || 'lead';
+            const dateAdded = contact.dateAdded ? new Date(contact.dateAdded as string).toISOString() : null;
+            const dateUpdated = contact.dateUpdated ? new Date(contact.dateUpdated as string).toISOString() : null;
+            
+            // Extract attribution data if available
+            const attributionSource = contact.attributionSource as Record<string, unknown> | undefined;
+            const lastAttributionSource = contact.lastAttributionSource as Record<string, unknown> | undefined;
 
+            // DND settings - check if contact has opted out
             const dndSettings = contact.dndSettings as Record<string, { status?: string }> | undefined;
-            const waOptIn = dndSettings?.whatsApp?.status !== 'active';
-            const smsOptIn = dndSettings?.sms?.status !== 'active';
-            const emailOptIn = dndSettings?.email?.status !== 'active';
+            const inboundDndSettings = contact.inboundDndSettings as Record<string, { status?: string }> | undefined;
+            // Opt-in logic: if dnd is false, they're opted in; if dndSettings has status 'active', they're opted out
+            const waOptIn = !contact.dnd && (dndSettings?.whatsApp?.status !== 'active' && inboundDndSettings?.whatsApp?.status !== 'active');
+            const smsOptIn = !contact.dnd && (dndSettings?.sms?.status !== 'active' && inboundDndSettings?.sms?.status !== 'active');
+            const emailOptIn = !contact.dnd && (dndSettings?.email?.status !== 'active' && inboundDndSettings?.email?.status !== 'active');
 
             if (dryRun) {
               return { action: 'skipped' };
             }
+
+            // Prepare extra data with all relevant fields
+            const extraData = {
+              ...contact,
+              // Add computed fields for easier access
+              source: source,
+              type: type,
+              dateAdded: dateAdded,
+              dateUpdated: dateUpdated,
+              attributionSource: attributionSource,
+              lastAttributionSource: lastAttributionSource,
+              // Include custom fields if present
+              customFieldsArray: Array.isArray(contact.customFields) ? contact.customFields : []
+            };
 
             const { data: mergeResult, error: mergeError } = await (supabase as any).rpc('merge_contact', {
               p_source: 'ghl',
@@ -187,7 +227,7 @@ async function processSinglePage(
               p_wa_opt_in: waOptIn,
               p_sms_opt_in: smsOptIn,
               p_email_opt_in: emailOptIn,
-              p_extra_data: contact,
+              p_extra_data: extraData,
               p_dry_run: false,
               p_sync_run_id: syncRunId
             });
@@ -214,11 +254,36 @@ async function processSinglePage(
       }
     }
 
+    // Determine if there are more pages
+    // If we got exactly CONTACTS_PER_PAGE contacts, likely there are more
     const hasMore = contacts.length >= CONTACTS_PER_PAGE;
-    // Get cursor for next page from the last contact
+    
+    // Get pagination cursor from the last contact
+    // GHL API v2.0 uses searchAfter array [timestamp, id] for pagination
     const lastContact = contacts[contacts.length - 1];
-    const nextStartAfterId = lastContact.id as string;
-    const nextStartAfter = lastContact.dateAdded ? new Date(lastContact.dateAdded).getTime() : null;
+    const searchAfter = lastContact.searchAfter as [number, string] | undefined;
+    
+    // Extract next cursor values
+    let nextStartAfterId: string | null = null;
+    let nextStartAfter: number | null = null;
+    
+    if (searchAfter && Array.isArray(searchAfter) && searchAfter.length >= 2) {
+      // searchAfter format: [timestamp, id]
+      nextStartAfter = searchAfter[0] as number;
+      nextStartAfterId = searchAfter[1] as string;
+    } else {
+      // Fallback: use contact id and dateAdded
+      nextStartAfterId = lastContact.id as string;
+      nextStartAfter = lastContact.dateAdded ? new Date(lastContact.dateAdded as string).getTime() : null;
+    }
+    
+    logger.info('Pagination info', { 
+      hasMore, 
+      contactsFetched: contacts.length, 
+      nextStartAfterId, 
+      nextStartAfter,
+      searchAfter: searchAfter ? 'present' : 'missing'
+    });
 
     return {
       contactsFetched: contacts.length,
