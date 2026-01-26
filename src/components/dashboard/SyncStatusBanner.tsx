@@ -32,7 +32,7 @@ export function SyncStatusBanner() {
 
   const fetchSyncStatus = useCallback(async () => {
     const now = Date.now();
-    
+
     // Get running syncs
     const { data: running } = await supabase
       .from("sync_runs")
@@ -43,16 +43,16 @@ export function SyncStatusBanner() {
     // Separate active vs stale
     const activeSyncs: SyncRun[] = [];
     const staleSyncsList: SyncRun[] = [];
-    
+
     for (const sync of (running || []) as SyncRun[]) {
-      const checkpoint = (typeof sync.checkpoint === 'object' && sync.checkpoint !== null) 
-        ? sync.checkpoint as Record<string, unknown> 
+      const checkpoint = (typeof sync.checkpoint === 'object' && sync.checkpoint !== null)
+        ? sync.checkpoint as Record<string, unknown>
         : null;
-      
-      const lastActivity = checkpoint?.lastActivity 
+
+      const lastActivity = checkpoint?.lastActivity
         ? new Date(checkpoint.lastActivity as string).getTime()
         : new Date(sync.started_at).getTime();
-      
+
       if (now - lastActivity > STALE_THRESHOLD_MS) {
         staleSyncsList.push(sync);
       } else {
@@ -96,7 +96,7 @@ export function SyncStatusBanner() {
     try {
       // Mark all stale syncs as failed directly in DB
       const staleIds = staleSyncs.map(s => s.id);
-      
+
       if (staleIds.length > 0) {
         const { error } = await supabase
           .from('sync_runs')
@@ -106,7 +106,7 @@ export function SyncStatusBanner() {
             error_message: 'Marcado como fallido manualmente (timeout)'
           })
           .in('id', staleIds);
-        
+
         if (error) {
           toast.error('Error limpiando syncs');
         } else {
@@ -118,6 +118,22 @@ export function SyncStatusBanner() {
       toast.error('Error limpiando syncs atascados');
     } finally {
       setIsCleaningUp(false);
+    }
+  };
+
+  const handleCancelSync = async (syncRunId: string) => {
+    try {
+      const { error } = await invokeWithAdminKey('cancel-sync', { syncRunId });
+
+      if (error) {
+        toast.error('Error cancelando sync');
+      } else {
+        toast.success('Sync cancelado exitosamente');
+        // Refresh sync status
+        fetchSyncStatus();
+      }
+    } catch (e) {
+      toast.error('Error cancelando sync');
     }
   };
 
@@ -138,11 +154,11 @@ export function SyncStatusBanner() {
   };
 
   const getProgressDetails = (sync: SyncRun) => {
-    const checkpoint = (typeof sync.checkpoint === 'object' && sync.checkpoint !== null) 
-      ? sync.checkpoint as Record<string, unknown> 
+    const checkpoint = (typeof sync.checkpoint === 'object' && sync.checkpoint !== null)
+      ? sync.checkpoint as Record<string, unknown>
       : null;
     const parts: string[] = [];
-    
+
     if (checkpoint?.page) {
       parts.push(`página ${checkpoint.page}`);
     }
@@ -152,7 +168,7 @@ export function SyncStatusBanner() {
     if (sync.total_inserted) {
       parts.push(`${sync.total_inserted.toLocaleString()} nuevos`);
     }
-    
+
     return parts.length > 0 ? parts.join(' • ') : '';
   };
 
@@ -191,7 +207,7 @@ export function SyncStatusBanner() {
       {/* Active syncs */}
       {runningSyncs.map((sync) => {
         const details = getProgressDetails(sync);
-        
+
         return (
           <div
             key={sync.id}
@@ -218,11 +234,10 @@ export function SyncStatusBanner() {
       {recentCompleted.map((sync) => (
         <div
           key={sync.id}
-          className={`rounded-lg px-4 py-3 shadow-lg backdrop-blur-sm transition-all ${
-            sync.status === "completed"
+          className={`rounded-lg px-4 py-3 shadow-lg backdrop-blur-sm transition-all ${sync.status === "completed"
               ? "bg-green-500/10 border border-green-500/30"
               : "bg-destructive/10 border border-destructive/30"
-          }`}
+            }`}
         >
           <div className="flex items-center gap-3">
             {sync.status === "completed" ? (
