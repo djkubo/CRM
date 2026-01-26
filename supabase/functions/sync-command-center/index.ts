@@ -107,6 +107,8 @@ Deno.serve(async (req: Request) => {
 
   console.log("🚀 sync-command-center: Request received");
   const startTime = Date.now();
+  const TIMEOUT_MS = 55000; // 55 seconds (Edge Functions have 60s limit)
+  let timedOut = false;
   
   const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
   const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
@@ -116,6 +118,17 @@ Deno.serve(async (req: Request) => {
   let syncRunId: string | null = null;
   let syncRun: SyncRun | null = null;
   let userEmailForError: string = "unknown";
+  
+  // Helper to check if we're running out of time
+  const isTimeout = () => {
+    const elapsed = Date.now() - startTime;
+    if (elapsed > TIMEOUT_MS) {
+      timedOut = true;
+      console.warn(`⏱️ TIMEOUT WARNING: ${elapsed}ms elapsed, approaching 60s limit`);
+      return true;
+    }
+    return false;
+  };
   
   try {
     // ============ AUTHENTICATION ============
@@ -257,17 +270,18 @@ Deno.serve(async (req: Request) => {
     const results: Record<string, SyncStepResult> = {};
 
     // ============ STRIPE TRANSACTIONS ============
-    try {
-      await updateProgress("stripe-transactions", "Iniciando...");
-      console.log("🔄 Starting Stripe transactions sync...");
-      let totalStripe = 0;
-      let hasMore = true;
-      let cursor: string | null = null;
-      let stripeSyncId: string | null = null;
-      let pageCount = 0;
-      const MAX_PAGES = 100; // Safety limit
-      
-      while (hasMore && pageCount < MAX_PAGES) {
+    if (!isTimeout()) {
+      try {
+        await updateProgress("stripe-transactions", "Iniciando...");
+        console.log("🔄 Starting Stripe transactions sync...");
+        let totalStripe = 0;
+        let hasMore = true;
+        let cursor: string | null = null;
+        let stripeSyncId: string | null = null;
+        let pageCount = 0;
+        const MAX_PAGES = config.mode === 'today' ? 5 : 20; // Reduce pages for safety
+        
+        while (hasMore && pageCount < MAX_PAGES && !isTimeout()) {
         pageCount++;
         console.log(`📄 Stripe page ${pageCount}, cursor: ${cursor ? 'yes' : 'none'}`);
         
@@ -320,9 +334,14 @@ Deno.serve(async (req: Request) => {
       console.error("❌ Stripe sync error:", e);
       results["stripe"] = { success: false, count: 0, error: String(e) };
     }
+    } else {
+      console.warn("⏱️ Skipping Stripe transactions due to timeout");
+      results["stripe"] = { success: false, count: 0, error: "Timeout" };
+    }
 
     // ============ STRIPE SUBSCRIPTIONS ============
-    try {
+    if (!isTimeout()) {
+      try {
       await updateProgress("stripe-subscriptions", "Iniciando...");
       console.log("🔄 Starting Stripe subscriptions sync...");
       const response = await invokeClient.functions.invoke('fetch-subscriptions');
@@ -332,102 +351,119 @@ Deno.serve(async (req: Request) => {
         console.error("❌ Subscriptions invoke error:", response.error);
         throw response.error;
       }
-      results["subscriptions"] = { success: true, count: respData?.synced ?? respData?.upserted ?? 0 };
-      await updateProgress("stripe-subscriptions", `${results["subscriptions"].count} suscripciones`);
-      console.log(`✅ Subscriptions sync completed: ${results["subscriptions"].count}`);
-    } catch (e) {
-      console.error("❌ Subscriptions sync error:", e);
-      results["subscriptions"] = { success: false, count: 0, error: String(e) };
+        results["subscriptions"] = { success: true, count: respData?.synced ?? respData?.upserted ?? 0 };
+        await updateProgress("stripe-subscriptions", `${results["subscriptions"].count} suscripciones`);
+        console.log(`✅ Subscriptions sync completed: ${results["subscriptions"].count}`);
+      } catch (e) {
+        console.error("❌ Subscriptions sync error:", e);
+        results["subscriptions"] = { success: false, count: 0, error: String(e) };
+      }
+    } else {
+      console.warn("⏱️ Skipping Stripe subscriptions due to timeout");
+      results["subscriptions"] = { success: false, count: 0, error: "Timeout" };
     }
 
     // ============ STRIPE INVOICES ============
-    try {
+    if (!isTimeout()) {
+      try {
       await updateProgress("stripe-invoices", "Iniciando...");
       const response = await invokeClient.functions.invoke('fetch-invoices');
       const respData = response.data as GenericSyncResponse | null;
       if (response.error) throw response.error;
       results["invoices"] = { success: true, count: respData?.synced ?? 0 };
       await updateProgress("stripe-invoices", `${results["invoices"].count} facturas`);
-    } catch (e) {
-      console.error("Invoices sync error:", e);
-      results["invoices"] = { success: false, count: 0, error: String(e) };
+      } catch (e) {
+        console.error("Invoices sync error:", e);
+        results["invoices"] = { success: false, count: 0, error: String(e) };
+      }
+    } else {
+      console.warn("⏱️ Skipping Stripe invoices due to timeout");
+      results["invoices"] = { success: false, count: 0, error: "Timeout" };
     }
 
     // ============ STRIPE CUSTOMERS ============
-    try {
+    if (!isTimeout()) {
+      try {
       await updateProgress("stripe-customers", "Iniciando...");
       const response = await invokeClient.functions.invoke('fetch-customers');
       const respData = response.data as GenericSyncResponse | null;
       if (response.error) throw response.error;
-      results["customers"] = { success: true, count: respData?.synced ?? 0 };
-      await updateProgress("stripe-customers", `${results["customers"].count} clientes`);
-    } catch (e) {
-      console.error("Customers sync error:", e);
-      results["customers"] = { success: false, count: 0, error: String(e) };
+        results["customers"] = { success: true, count: respData?.synced ?? 0 };
+        await updateProgress("stripe-customers", `${results["customers"].count} clientes`);
+      } catch (e) {
+        console.error("Customers sync error:", e);
+        results["customers"] = { success: false, count: 0, error: String(e) };
+      }
+    } else {
+      console.warn("⏱️ Skipping remaining Stripe syncs due to timeout");
     }
 
-    // ============ STRIPE PRODUCTS ============
-    try {
-      await updateProgress("stripe-products", "Iniciando...");
-      const response = await invokeClient.functions.invoke('fetch-products');
-      const respData = response.data as GenericSyncResponse | null;
-      if (response.error) throw response.error;
-      results["products"] = { success: true, count: respData?.synced ?? 0 };
-      await updateProgress("stripe-products", `${results["products"].count} productos`);
-    } catch (e) {
-      console.error("Products sync error:", e);
-      results["products"] = { success: false, count: 0, error: String(e) };
-    }
+    // Skip non-critical syncs if we're running low on time
+    if (!isTimeout() && config.mode !== 'today') {
+      // ============ STRIPE PRODUCTS ============
+      try {
+        await updateProgress("stripe-products", "Iniciando...");
+        const response = await invokeClient.functions.invoke('fetch-products');
+        const respData = response.data as GenericSyncResponse | null;
+        if (response.error) throw response.error;
+        results["products"] = { success: true, count: respData?.synced ?? 0 };
+        await updateProgress("stripe-products", `${results["products"].count} productos`);
+      } catch (e) {
+        console.error("Products sync error:", e);
+        results["products"] = { success: false, count: 0, error: String(e) };
+      }
 
-    // ============ STRIPE DISPUTES ============
-    try {
-      await updateProgress("stripe-disputes", "Iniciando...");
-      const response = await invokeClient.functions.invoke('fetch-disputes');
-      const respData = response.data as GenericSyncResponse | null;
-      if (response.error) throw response.error;
-      results["disputes"] = { success: true, count: respData?.synced ?? 0 };
-      await updateProgress("stripe-disputes", `${results["disputes"].count} disputas`);
-    } catch (e) {
-      console.error("Disputes sync error:", e);
-      results["disputes"] = { success: false, count: 0, error: String(e) };
-    }
+      // ============ STRIPE DISPUTES ============
+      try {
+        await updateProgress("stripe-disputes", "Iniciando...");
+        const response = await invokeClient.functions.invoke('fetch-disputes');
+        const respData = response.data as GenericSyncResponse | null;
+        if (response.error) throw response.error;
+        results["disputes"] = { success: true, count: respData?.synced ?? 0 };
+        await updateProgress("stripe-disputes", `${results["disputes"].count} disputas`);
+      } catch (e) {
+        console.error("Disputes sync error:", e);
+        results["disputes"] = { success: false, count: 0, error: String(e) };
+      }
 
-    // ============ STRIPE PAYOUTS ============
-    try {
-      await updateProgress("stripe-payouts", "Iniciando...");
-      const response = await invokeClient.functions.invoke('fetch-payouts');
-      const respData = response.data as GenericSyncResponse | null;
-      if (response.error) throw response.error;
-      results["payouts"] = { success: true, count: respData?.synced ?? 0 };
-      await updateProgress("stripe-payouts", `${results["payouts"].count} payouts`);
-    } catch (e) {
-      console.error("Payouts sync error:", e);
-      results["payouts"] = { success: false, count: 0, error: String(e) };
-    }
+      // ============ STRIPE PAYOUTS ============
+      try {
+        await updateProgress("stripe-payouts", "Iniciando...");
+        const response = await invokeClient.functions.invoke('fetch-payouts');
+        const respData = response.data as GenericSyncResponse | null;
+        if (response.error) throw response.error;
+        results["payouts"] = { success: true, count: respData?.synced ?? 0 };
+        await updateProgress("stripe-payouts", `${results["payouts"].count} payouts`);
+      } catch (e) {
+        console.error("Payouts sync error:", e);
+        results["payouts"] = { success: false, count: 0, error: String(e) };
+      }
 
-    // ============ STRIPE BALANCE ============
-    try {
-      await updateProgress("stripe-balance", "Iniciando...");
-      const response = await invokeClient.functions.invoke('fetch-balance');
-      if (response.error) throw response.error;
-      results["balance"] = { success: true, count: 1 };
-      await updateProgress("stripe-balance", "Balance actualizado");
-    } catch (e) {
-      console.error("Balance sync error:", e);
-      results["balance"] = { success: false, count: 0, error: String(e) };
+      // ============ STRIPE BALANCE ============
+      try {
+        await updateProgress("stripe-balance", "Iniciando...");
+        const response = await invokeClient.functions.invoke('fetch-balance');
+        if (response.error) throw response.error;
+        results["balance"] = { success: true, count: 1 };
+        await updateProgress("stripe-balance", "Balance actualizado");
+      } catch (e) {
+        console.error("Balance sync error:", e);
+        results["balance"] = { success: false, count: 0, error: String(e) };
+      }
     }
 
     // ============ PAYPAL TRANSACTIONS ============
-    try {
+    if (!isTimeout()) {
+      try {
       await updateProgress("paypal-transactions", "Iniciando...");
       console.log("🔄 Starting PayPal transactions sync...");
       let totalPaypal = 0;
       let hasMore = true;
       let page = 1;
       let paypalSyncId: string | null = null;
-      const MAX_PAGES = 100; // Safety limit
+        const MAX_PAGES = config.mode === 'today' ? 5 : 20; // Reduce pages for safety
       
-      while (hasMore && page <= MAX_PAGES) {
+        while (hasMore && page <= MAX_PAGES && !isTimeout()) {
         console.log(`📄 PayPal page ${page}`);
         
         const response = await invokeClient.functions.invoke('fetch-paypal', {
@@ -471,52 +507,59 @@ Deno.serve(async (req: Request) => {
         console.warn(`⚠️ PayPal sync reached max pages limit (${MAX_PAGES})`);
       }
       
-      if (!results["paypal"]) {
-        results["paypal"] = { success: true, count: totalPaypal };
+        if (!results["paypal"]) {
+          results["paypal"] = { success: true, count: totalPaypal };
+        }
+        console.log(`✅ PayPal sync completed: ${totalPaypal} transactions`);
+      } catch (e) {
+        console.error("❌ PayPal sync error:", e);
+        results["paypal"] = { success: false, count: 0, error: String(e) };
       }
-      console.log(`✅ PayPal sync completed: ${totalPaypal} transactions`);
-    } catch (e) {
-      console.error("❌ PayPal sync error:", e);
-      results["paypal"] = { success: false, count: 0, error: String(e) };
+    } else {
+      console.warn("⏱️ Skipping PayPal transactions due to timeout");
+      results["paypal"] = { success: false, count: 0, error: "Timeout" };
     }
 
-    // ============ PAYPAL SUBSCRIPTIONS ============
-    try {
+    // Skip non-essential PayPal syncs if running low on time or in 'today' mode
+    if (!isTimeout() && config.mode !== 'today') {
+      // ============ PAYPAL SUBSCRIPTIONS ============
+      try {
       await updateProgress("paypal-subscriptions", "Iniciando...");
       const response = await invokeClient.functions.invoke('fetch-paypal-subscriptions');
       const respData = response.data as GenericSyncResponse | null;
       if (response.error) throw response.error;
-      results["paypal-subscriptions"] = { success: true, count: respData?.synced ?? 0 };
-      await updateProgress("paypal-subscriptions", `${results["paypal-subscriptions"].count} suscripciones`);
-    } catch (e) {
-      console.error("PayPal subscriptions sync error:", e);
-      results["paypal-subscriptions"] = { success: false, count: 0, error: String(e) };
-    }
+        results["paypal-subscriptions"] = { success: true, count: respData?.synced ?? 0 };
+        await updateProgress("paypal-subscriptions", `${results["paypal-subscriptions"].count} suscripciones`);
+      } catch (e) {
+        console.error("PayPal subscriptions sync error:", e);
+        results["paypal-subscriptions"] = { success: false, count: 0, error: String(e) };
+      }
 
-    // ============ PAYPAL DISPUTES ============
-    try {
-      await updateProgress("paypal-disputes", "Iniciando...");
-      const response = await invokeClient.functions.invoke('fetch-paypal-disputes');
-      const respData = response.data as GenericSyncResponse | null;
-      if (response.error) throw response.error;
-      results["paypal-disputes"] = { success: true, count: respData?.synced ?? 0 };
-      await updateProgress("paypal-disputes", `${results["paypal-disputes"].count} disputas`);
-    } catch (e) {
-      console.error("PayPal disputes sync error:", e);
-      results["paypal-disputes"] = { success: false, count: 0, error: String(e) };
-    }
+      // ============ PAYPAL DISPUTES ============
+      try {
+        await updateProgress("paypal-disputes", "Iniciando...");
+        const response = await invokeClient.functions.invoke('fetch-paypal-disputes');
+        const respData = response.data as GenericSyncResponse | null;
+        if (response.error) throw response.error;
+        results["paypal-disputes"] = { success: true, count: respData?.synced ?? 0 };
+        await updateProgress("paypal-disputes", `${results["paypal-disputes"].count} disputas`);
+      } catch (e) {
+        console.error("PayPal disputes sync error:", e);
+        results["paypal-disputes"] = { success: false, count: 0, error: String(e) };
+      }
 
-    // ============ PAYPAL PRODUCTS ============
-    try {
-      await updateProgress("paypal-products", "Iniciando...");
-      const response = await invokeClient.functions.invoke('fetch-paypal-products');
-      const respData = response.data as GenericSyncResponse | null;
-      if (response.error) throw response.error;
-      results["paypal-products"] = { success: true, count: respData?.synced ?? 0 };
-      await updateProgress("paypal-products", `${results["paypal-products"].count} productos`);
-    } catch (e) {
-      console.error("PayPal products sync error:", e);
-      results["paypal-products"] = { success: false, count: 0, error: String(e) };
+      // ============ PAYPAL PRODUCTS ============
+      try {
+        await updateProgress("paypal-products", "Iniciando...");
+        const response = await invokeClient.functions.invoke('fetch-paypal-products');
+        const respData = response.data as GenericSyncResponse | null;
+        if (response.error) throw response.error;
+        results["paypal-products"] = { success: true, count: respData?.synced ?? 0 };
+        await updateProgress("paypal-products", `${results["paypal-products"].count} productos`);
+      } catch (e) {
+        console.error("PayPal products sync error:", e);
+        results["paypal-products"] = { success: false, count: 0, error: String(e) };
+      }
     }
 
     // ============ CONTACTS (OPTIONAL) ============
@@ -569,9 +612,15 @@ Deno.serve(async (req: Request) => {
       ...(syncRun?.metadata || {}),
       results,
       completedAt: new Date().toISOString(),
+      timedOut: timedOut ? true : undefined,
     };
 
-    const finalStatus = failedSteps.length > 0 ? "completed_with_errors" : "completed";
+    const finalStatus = timedOut ? "completed_with_timeout" : 
+                       failedSteps.length > 0 ? "completed_with_errors" : "completed";
+    
+    if (timedOut) {
+      console.warn(`⏱️ Sync completed with timeout after ${Date.now() - startTime}ms. Some steps were skipped.`);
+    }
 
     await dbClient
       .from("sync_runs")

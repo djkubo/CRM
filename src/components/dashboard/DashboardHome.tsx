@@ -174,10 +174,16 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
       setSyncProgress('');
 
       // Show detailed results
-      if (errorsCount > 0) {
+      if (commandCenterData.status === 'completed_with_timeout') {
+        toast.warning(`⏱️ Sync completado parcialmente (timeout)`, {
+          description: `Se sincronizaron ${totalRecords} registros antes del límite de tiempo. Algunos pasos fueron omitidos.`,
+          duration: 10000,
+        });
+      } else if (errorsCount > 0) {
         const errorDetails = failedSteps.map(step => {
           const stepResult = results[step];
-          return `${step}: ${stepResult?.error || 'Error desconocido'}`;
+          const error = stepResult?.error || 'Error desconocido';
+          return `${step}: ${error === 'Timeout' ? 'Se agotó el tiempo' : error}`;
         }).join(', ');
         
         toast.warning(`Sync completado con ${errorsCount} error(es)`, {
