@@ -336,7 +336,7 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-4">
             <div className="flex items-center gap-2">
               <Zap className="h-5 w-5 text-primary" />
-              <h1 className="text-base md:text-lg font-semibold text-foreground">Command Center</h1>
+              <h1 className="text-base md:text-lg font-semibold text-foreground">Command Center <span className="text-[10px] text-emerald-400 font-normal px-2 py-0.5 bg-emerald-500/10 rounded-full">v2.1 (Patch Activo)</span></h1>
             </div>
 
             {/* Time filter - scrollable on mobile */}
