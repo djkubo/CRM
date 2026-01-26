@@ -1,9 +1,15 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { retryWithBackoff, RETRY_CONFIGS, RETRYABLE_ERRORS } from '../_shared/retry.ts';
+import { createLogger, LogLevel } from '../_shared/logger.ts';
+import { RATE_LIMITERS } from '../_shared/rate-limiter.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
+
+const logger = createLogger('sync-ghl', LogLevel.INFO);
+const rateLimiter = RATE_LIMITERS.GHL;
 
 // ============ CONFIGURATION ============
 const CONTACTS_PER_PAGE = 100;
@@ -18,7 +24,7 @@ async function verifyAdmin(req: Request): Promise<{ valid: boolean; userId?: str
 
   const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
   const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY')!;
-  
+
   const supabase = createClient(supabaseUrl, supabaseAnonKey, {
     global: { headers: { Authorization: authHeader } }
   });
@@ -65,19 +71,28 @@ async function processSinglePage(
     ghlUrl.searchParams.set('limit', CONTACTS_PER_PAGE.toString());
     ghlUrl.searchParams.set('skip', offset.toString());
 
-    console.log(`📡 GHL API: offset=${offset}`);
+    logger.info('Fetching GHL contacts', { offset, limit: CONTACTS_PER_PAGE });
 
-    const ghlResponse = await fetch(ghlUrl.toString(), {
-      headers: {
-        'Authorization': `Bearer ${ghlApiKey}`,
-        'Version': '2021-07-28',
-        'Accept': 'application/json'
+    // Wrap API call with retry + rate limiting
+    const ghlResponse = await retryWithBackoff(
+      () => rateLimiter.execute(() =>
+        fetch(ghlUrl.toString(), {
+          headers: {
+            'Authorization': `Bearer ${ghlApiKey}`,
+            'Version': '2021-07-28',
+            'Accept': 'application/json'
+          }
+        })
+      ),
+      {
+        ...RETRY_CONFIGS.STANDARD,
+        retryableErrors: [...RETRYABLE_ERRORS.NETWORK, ...RETRYABLE_ERRORS.GHL, ...RETRYABLE_ERRORS.HTTP]
       }
-    });
+    );
 
     if (!ghlResponse.ok) {
       const errorText = await ghlResponse.text();
-      console.error(`GHL API error: ${ghlResponse.status} - ${errorText}`);
+      logger.error(`GHL API error: ${ghlResponse.status}`, new Error(errorText), { offset });
       return {
         contactsFetched: 0,
         inserted: 0,
@@ -92,7 +107,7 @@ async function processSinglePage(
 
     const ghlData = await ghlResponse.json();
     const contacts = ghlData.contacts || [];
-    
+
     console.log(`📦 Fetched ${contacts.length} contacts`);
 
     if (contacts.length === 0) {
@@ -132,7 +147,7 @@ async function processSinglePage(
             const lastName = contact.lastName as string || '';
             const fullName = [firstName, lastName].filter(Boolean).join(' ') || (contact.name as string) || null;
             const tags = (contact.tags as string[]) || [];
-            
+
             const dndSettings = contact.dndSettings as Record<string, { status?: string }> | undefined;
             const waOptIn = dndSettings?.whatsApp?.status !== 'active';
             const smsOptIn = dndSettings?.sms?.status !== 'active';
@@ -163,7 +178,7 @@ async function processSinglePage(
             }
 
             return { action: (mergeResult as { action?: string })?.action || 'none' };
-            
+
           } catch (err) {
             console.error(`Contact error:`, err);
             return { action: 'error' };
@@ -238,13 +253,13 @@ Deno.serve(async (req) => {
     }
 
     const supabase = createClient(supabaseUrl, supabaseKey);
-    
+
     // Parse request
     let dryRun = false;
     let offset = 0;
     let syncRunId: string | null = null;
     let cleanupStale = false;
-    
+
     try {
       const body = await req.json();
       dryRun = body.dry_run ?? false;
@@ -258,7 +273,7 @@ Deno.serve(async (req) => {
     // ============ CLEANUP STALE SYNCS ============
     if (cleanupStale) {
       const staleThreshold = new Date(Date.now() - STALE_TIMEOUT_MINUTES * 60 * 1000).toISOString();
-      
+
       const { data: staleSyncs } = await supabase
         .from('sync_runs')
         .update({
@@ -270,7 +285,7 @@ Deno.serve(async (req) => {
         .in('status', ['running', 'continuing'])
         .lt('started_at', staleThreshold)
         .select('id');
-      
+
       return new Response(
         JSON.stringify({ ok: true, status: 'cleaned', processed: staleSyncs?.length || 0, duration_ms: Date.now() - startTime }),
         { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
@@ -280,7 +295,7 @@ Deno.serve(async (req) => {
     // ============ CHECK FOR EXISTING SYNC ============
     if (!syncRunId) {
       const staleThreshold = new Date(Date.now() - STALE_TIMEOUT_MINUTES * 60 * 1000).toISOString();
-      
+
       await supabase
         .from('sync_runs')
         .update({
@@ -301,8 +316,8 @@ Deno.serve(async (req) => {
 
       if (existingRuns && existingRuns.length > 0) {
         return new Response(
-          JSON.stringify({ 
-            ok: false, 
+          JSON.stringify({
+            ok: false,
             status: 'already_running',
             error: 'Ya hay un sync de GHL en progreso',
             syncRunId: existingRuns[0].id
@@ -337,7 +352,7 @@ Deno.serve(async (req) => {
     } else {
       await supabase
         .from('sync_runs')
-        .update({ 
+        .update({
           status: 'running',
           checkpoint: { offset, lastActivity: new Date().toISOString() }
         })
@@ -358,7 +373,7 @@ Deno.serve(async (req) => {
 
     if (pageResult.error) {
       console.error(`❌ GHL sync failed:`, pageResult.error);
-      
+
       await supabase
         .from('sync_runs')
         .update({
@@ -367,10 +382,10 @@ Deno.serve(async (req) => {
           error_message: pageResult.error
         })
         .eq('id', syncRunId);
-      
+
       return new Response(
-        JSON.stringify({ 
-          ok: false, 
+        JSON.stringify({
+          ok: false,
           status: 'failed',
           error: pageResult.error,
           syncRunId,
@@ -393,7 +408,7 @@ Deno.serve(async (req) => {
           total_updated: pageResult.updated,
           total_skipped: pageResult.skipped,
           total_conflicts: pageResult.conflicts,
-          checkpoint: { 
+          checkpoint: {
             offset: pageResult.nextOffset,
             lastActivity: new Date().toISOString()
           }
