@@ -18,20 +18,20 @@ async function verifyAdmin(req: Request): Promise<{ valid: boolean; error?: stri
 
   const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
   const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY')!;
-  
+
   const supabase = createClient(supabaseUrl, supabaseAnonKey, {
     global: { headers: { Authorization: authHeader } }
   });
 
   // Use getUser() instead of getClaims() for compatibility
   const { data: { user }, error: userError } = await supabase.auth.getUser();
-  
+
   if (userError || !user) {
     return { valid: false, error: 'Invalid or expired token' };
   }
 
   const { data: isAdmin, error: adminError } = await supabase.rpc('is_admin');
-  
+
   if (adminError || !isAdmin) {
     return { valid: false, error: 'User is not an admin' };
   }
@@ -43,13 +43,26 @@ async function processPage(
   serviceClient: SupabaseClient<any, any, any>,
   stripe: Stripe,
   cursor: string | null,
-  limit: number
+  limit: number,
+  startDate?: string,
+  endDate?: string
 ): Promise<{ upserted: number; hasMore: boolean; nextCursor: string | null }> {
   const params: Stripe.SubscriptionListParams = {
     limit: Math.min(limit, 100),
     expand: ["data.customer", "data.plan.product"],
   };
-  if (cursor) params.starting_after = cursor;
+
+  if (cursor) {
+    params.starting_after = cursor;
+  } else {
+    // Only apply date filters on the first page/if no cursor (though stripe allows mixing)
+    // Actually, Stripe filtering is persistent across pages
+    if (startDate || endDate) {
+      params.created = {};
+      if (startDate) params.created.gte = Math.floor(new Date(startDate).getTime() / 1000);
+      if (endDate) params.created.lte = Math.floor(new Date(endDate).getTime() / 1000);
+    }
+  }
 
   const response = await stripe.subscriptions.list(params);
   const subscriptions = response.data;
@@ -141,6 +154,9 @@ serve(async (req: Request) => {
     let cursor = body.cursor ?? null;
     const syncRunId = body.syncRunId ?? null;
     const limit = body.limit && body.limit > 0 ? Math.min(body.limit, 100) : 100;
+    const fetchAll = body.fetchAll === true;
+    const startDate = body.startDate;
+    const endDate = body.endDate;
 
     let activeSyncId = syncRunId;
 
@@ -157,11 +173,11 @@ serve(async (req: Request) => {
         const runningSync = runningSyncs[0];
         const startedAt = new Date(runningSync.started_at);
         const minutesAgo = (Date.now() - startedAt.getTime()) / 1000 / 60;
-        
+
         if (minutesAgo < 10) {
           return new Response(
-            JSON.stringify({ 
-              success: false, 
+            JSON.stringify({
+              success: false,
               error: "sync_already_running",
               syncRunId: runningSync.id,
               status: "running"
@@ -205,7 +221,7 @@ serve(async (req: Request) => {
       cursor = checkpoint?.cursor ?? null;
     }
 
-    const result = await processPage(serviceClient, stripe, cursor, limit);
+    const result = await processPage(serviceClient, stripe, cursor, limit, startDate, endDate);
 
     const { data: currentRun } = await serviceClient
       .from("sync_runs")

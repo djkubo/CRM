@@ -378,7 +378,13 @@ Deno.serve(async (req: Request) => {
           break;
         }
         const response = await invokeClient.functions.invoke('fetch-subscriptions', {
-          body: { cursor, syncRunId: subsSyncId }
+          body: {
+            cursor,
+            syncRunId: subsSyncId,
+            fetchAll: config.fetchAll ?? false,
+            startDate: startDate.toISOString(),
+            endDate: endDate.toISOString(),
+          }
         });
         const respData = response.data as GenericSyncResponse | null;
         if (response.error) throw response.error;
