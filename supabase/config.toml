@@ -1,1 +1,127 @@
 project_id = "sbexeqqizazjfsbsgrbd"
+
+[functions.admin-actions]
+verify_jwt = false
+
+[functions.analyze-business]
+verify_jwt = false
+
+[functions.cancel-sync]
+verify_jwt = false
+
+[functions.create-portal-session]
+verify_jwt = false
+
+[functions.execute-campaign]
+verify_jwt = false
+
+[functions.export-ghl-csv]
+verify_jwt = false
+
+[functions.fetch-balance]
+verify_jwt = false
+
+[functions.fetch-customers]
+verify_jwt = false
+
+[functions.fetch-disputes]
+verify_jwt = false
+
+[functions.fetch-invoices]
+verify_jwt = false
+
+[functions.fetch-payouts]
+verify_jwt = false
+
+[functions.fetch-paypal]
+verify_jwt = false
+
+[functions.fetch-paypal-disputes]
+verify_jwt = false
+
+[functions.fetch-paypal-products]
+verify_jwt = false
+
+[functions.fetch-paypal-subscriptions]
+verify_jwt = false
+
+[functions.fetch-products]
+verify_jwt = false
+
+[functions.fetch-stripe]
+verify_jwt = false
+
+[functions.fetch-subscriptions]
+verify_jwt = false
+
+[functions.force-charge-invoice]
+verify_jwt = false
+
+[functions.generate-chat-summary]
+verify_jwt = false
+
+[functions.ghl-templates]
+verify_jwt = false
+
+[functions.merge-staged-imports]
+verify_jwt = false
+
+[functions.notify-ghl]
+verify_jwt = false
+
+[functions.paypal-webhook]
+verify_jwt = false
+
+[functions.process-csv-bulk]
+verify_jwt = false
+
+[functions.process-ghl-csv]
+verify_jwt = false
+
+[functions.receive-lead]
+verify_jwt = false
+
+[functions.reconcile-metrics]
+verify_jwt = false
+
+[functions.recover-revenue]
+verify_jwt = false
+
+[functions.send-campaign]
+verify_jwt = false
+
+[functions.send-manychat]
+verify_jwt = false
+
+[functions.send-sms]
+verify_jwt = false
+
+[functions.ses-webhook]
+verify_jwt = false
+
+[functions.stripe-webhook]
+verify_jwt = false
+
+[functions.sync-clients]
+verify_jwt = false
+
+[functions.sync-command-center]
+verify_jwt = false
+
+[functions.sync-ghl]
+verify_jwt = false
+
+[functions.sync-manychat]
+verify_jwt = false
+
+[functions.sync-web-sales]
+verify_jwt = false
+
+[functions.twilio-inbound]
+verify_jwt = false
+
+[functions.twilio-templates]
+verify_jwt = false
+
+[functions.unify-identity]
+verify_jwt = false

@@ -6,9 +6,11 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { RefreshCw, CheckCircle, Clock, AlertCircle, Users, FileText } from 'lucide-react';
+import { RefreshCw, CheckCircle, Clock, AlertCircle, Users, FileText, Play, Loader2 } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import { es } from 'date-fns/locale';
+import { toast } from 'sonner';
+import { invokeWithAdminKey } from '@/lib/adminApi';
 
 interface ImportRun {
   id: string;
@@ -40,6 +42,7 @@ interface StagedContact {
 export function StagingContactsPanel() {
   const queryClient = useQueryClient();
   const [selectedImport, setSelectedImport] = useState<string | null>(null);
+  const [mergingImportId, setMergingImportId] = useState<string | null>(null);
 
   // Fetch recent import runs
   const { data: importRuns = [], isLoading: runsLoading, refetch: refetchRuns } = useQuery({
@@ -78,18 +81,46 @@ export function StagingContactsPanel() {
 
   // Count pending imports
   const pendingRuns = importRuns.filter(r => r.status === 'staging' || r.status === 'processing');
+  const stagedRuns = importRuns.filter(r => r.status === 'staged');
   const completedRuns = importRuns.filter(r => r.status === 'completed');
+
+  // Start merge process
+  const handleStartMerge = async (importId: string) => {
+    setMergingImportId(importId);
+    
+    try {
+      toast.info('🔄 Iniciando unificación de contactos...', { duration: 3000 });
+      
+      const response = await invokeWithAdminKey<{ ok: boolean; message?: string; error?: string }>(
+        'merge-staged-imports',
+        { importId }
+      );
+      
+      if (!response || !response.ok) {
+        throw new Error(response?.error || 'Error al iniciar merge');
+      }
+      
+      toast.success('✅ Unificación iniciada en segundo plano. Puedes cerrar esta ventana.', { duration: 5000 });
+      refetchRuns();
+      
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : 'Error desconocido';
+      toast.error(`❌ Error: ${errorMsg}`);
+    } finally {
+      setMergingImportId(null);
+    }
+  };
 
   const getStatusBadge = (status: string) => {
     switch (status) {
       case 'staging':
-        return <Badge variant="secondary"><Clock className="h-3 w-3 mr-1" /> Staging</Badge>;
+        return <Badge variant="secondary"><Clock className="h-3 w-3 mr-1" /> Subiendo</Badge>;
+      case 'staged':
+        return <Badge variant="outline" className="border-yellow-500 text-yellow-600"><Clock className="h-3 w-3 mr-1" /> Listo para unificar</Badge>;
       case 'processing':
-        return <Badge variant="default" className="bg-blue-500"><RefreshCw className="h-3 w-3 mr-1 animate-spin" /> Procesando</Badge>;
+        return <Badge variant="default" className="bg-blue-500"><RefreshCw className="h-3 w-3 mr-1 animate-spin" /> Unificando</Badge>;
       case 'completed':
         return <Badge variant="default" className="bg-green-500"><CheckCircle className="h-3 w-3 mr-1" /> Completo</Badge>;
-      case 'staged':
-        return <Badge variant="outline"><Clock className="h-3 w-3 mr-1" /> En cola</Badge>;
       case 'failed':
         return <Badge variant="destructive"><AlertCircle className="h-3 w-3 mr-1" /> Error</Badge>;
       default:
@@ -123,10 +154,10 @@ export function StagingContactsPanel() {
   return (
     <div className="space-y-6">
       {/* Summary Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">Importaciones Activas</CardTitle>
+            <CardTitle className="text-sm font-medium text-muted-foreground">Subiendo</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="flex items-center gap-2">
@@ -136,9 +167,21 @@ export function StagingContactsPanel() {
           </CardContent>
         </Card>
 
+        <Card className={stagedRuns.length > 0 ? 'border-yellow-500 bg-yellow-50/50' : ''}>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">Listos para Unificar</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="flex items-center gap-2">
+              <Clock className="h-5 w-5 text-yellow-500" />
+              <span className="text-2xl font-bold">{stagedRuns.length}</span>
+            </div>
+          </CardContent>
+        </Card>
+
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">Completadas (Hoy)</CardTitle>
+            <CardTitle className="text-sm font-medium text-muted-foreground">Completadas</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="flex items-center gap-2">
@@ -150,13 +193,13 @@ export function StagingContactsPanel() {
 
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">Total Filas Procesadas</CardTitle>
+            <CardTitle className="text-sm font-medium text-muted-foreground">Total Contactos</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="flex items-center gap-2">
               <Users className="h-5 w-5 text-primary" />
               <span className="text-2xl font-bold">
-                {importRuns.reduce((acc, r) => acc + (r.rows_merged || 0), 0).toLocaleString()}
+                {importRuns.reduce((acc, r) => acc + (r.rows_staged || 0), 0).toLocaleString()}
               </span>
             </div>
           </CardContent>
@@ -172,7 +215,7 @@ export function StagingContactsPanel() {
               Importaciones Recientes
             </CardTitle>
             <CardDescription>
-              Los contactos aparecen inmediatamente. La unificación se procesa en segundo plano.
+              Los contactos se suben primero (staging). Luego puedes iniciar la unificación.
             </CardDescription>
           </div>
           <Button variant="outline" size="sm" onClick={handleRefresh}>
@@ -196,13 +239,15 @@ export function StagingContactsPanel() {
                   <TableHead>Archivo</TableHead>
                   <TableHead>Tipo</TableHead>
                   <TableHead>Estado</TableHead>
-                  <TableHead>Progreso</TableHead>
+                  <TableHead>Filas</TableHead>
                   <TableHead>Tiempo</TableHead>
-                  <TableHead></TableHead>
+                  <TableHead>Acciones</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {importRuns.map(run => {
+                  const canMerge = run.status === 'staged' && run.rows_staged > 0;
+                  const isMerging = mergingImportId === run.id || run.status === 'processing';
                   const progress = run.total_rows > 0 
                     ? Math.round(((run.rows_merged + run.rows_error + run.rows_conflict) / run.total_rows) * 100)
                     : 0;
@@ -220,11 +265,18 @@ export function StagingContactsPanel() {
                       </TableCell>
                       <TableCell>{getStatusBadge(run.status)}</TableCell>
                       <TableCell>
-                        <div className="flex items-center gap-2 min-w-[150px]">
-                          <Progress value={progress} className="h-2 flex-1" />
-                          <span className="text-xs text-muted-foreground w-12">
-                            {run.rows_merged}/{run.total_rows}
+                        <div className="flex flex-col gap-1">
+                          <span className="text-sm">
+                            {run.rows_staged?.toLocaleString() || 0} staging
                           </span>
+                          {run.status === 'completed' && (
+                            <span className="text-xs text-green-600">
+                              {run.rows_merged?.toLocaleString() || 0} unificados
+                            </span>
+                          )}
+                          {run.status === 'processing' && (
+                            <Progress value={progress} className="h-1.5 w-20" />
+                          )}
                         </div>
                       </TableCell>
                       <TableCell className="text-muted-foreground text-sm">
@@ -234,13 +286,33 @@ export function StagingContactsPanel() {
                         })}
                       </TableCell>
                       <TableCell>
-                        <Button 
-                          variant="ghost" 
-                          size="sm"
-                          onClick={() => setSelectedImport(run.id === selectedImport ? null : run.id)}
-                        >
-                          {selectedImport === run.id ? 'Ocultar' : 'Ver'}
-                        </Button>
+                        <div className="flex items-center gap-2">
+                          {canMerge && (
+                            <Button 
+                              variant="default"
+                              size="sm"
+                              onClick={() => handleStartMerge(run.id)}
+                              disabled={isMerging}
+                              className="bg-green-600 hover:bg-green-700"
+                            >
+                              {isMerging ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : (
+                                <>
+                                  <Play className="h-4 w-4 mr-1" />
+                                  Unificar
+                                </>
+                              )}
+                            </Button>
+                          )}
+                          <Button 
+                            variant="ghost" 
+                            size="sm"
+                            onClick={() => setSelectedImport(run.id === selectedImport ? null : run.id)}
+                          >
+                            {selectedImport === run.id ? 'Ocultar' : 'Ver'}
+                          </Button>
+                        </div>
                       </TableCell>
                     </TableRow>
                   );
