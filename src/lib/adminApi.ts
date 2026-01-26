@@ -20,16 +20,31 @@ export async function invokeWithAdminKey<
   body?: B
 ): Promise<T | null> {
   try {
+    console.log(`[AdminAPI] Invoking ${functionName}`, body ? 'with body' : 'without body');
+    
     // Get current session - the SDK automatically includes the JWT in requests
-    const { data: { session } } = await supabase.auth.getSession();
+    const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+    
+    if (sessionError) {
+      console.error('[AdminAPI] Session error:', sessionError);
+      return { success: false, error: `Session error: ${sessionError.message}` } as T;
+    }
     
     if (!session) {
       console.error('[AdminAPI] No active session');
-      return null;
+      return { success: false, error: 'No active session. Please log in again.' } as T;
     }
 
+    console.log(`[AdminAPI] Session valid, calling function...`);
     const { data, error } = await supabase.functions.invoke(functionName, {
       body,
+    });
+
+    console.log(`[AdminAPI] ${functionName} response:`, {
+      hasData: !!data,
+      hasError: !!error,
+      errorMessage: error?.message,
+      dataKeys: data ? Object.keys(data) : []
     });
 
     if (error) {

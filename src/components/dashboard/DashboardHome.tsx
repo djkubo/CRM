@@ -126,6 +126,7 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
     try {
       // Use sync-command-center for orchestrated sync
       setSyncProgress('Iniciando sync completo...');
+      console.log('[Command Center] Starting sync with mode:', range);
       
       const commandCenterData = await invokeWithAdminKey<SyncCommandCenterResponse, SyncCommandCenterBody>(
         'sync-command-center',
@@ -135,16 +136,26 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
         }
       );
 
+      console.log('[Command Center] Response received:', {
+        hasData: !!commandCenterData,
+        success: commandCenterData?.success,
+        error: commandCenterData?.error,
+        status: commandCenterData?.status
+      });
+
       if (!commandCenterData) {
-        throw new Error('No se recibió respuesta del servidor');
+        console.error('[Command Center] No response from server');
+        throw new Error('No se recibió respuesta del servidor. Verifica la consola para más detalles.');
       }
 
       if (commandCenterData.error) {
+        console.error('[Command Center] Error in response:', commandCenterData.error);
         throw new Error(commandCenterData.error);
       }
 
       if (!commandCenterData.success) {
-        throw new Error('El sync falló sin detalles');
+        console.error('[Command Center] Sync failed without details');
+        throw new Error(commandCenterData.error || 'El sync falló sin detalles');
       }
 
       // Extract results from command center response

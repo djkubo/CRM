@@ -105,21 +105,25 @@ Deno.serve(async (req: Request) => {
     return new Response(null, { headers: corsHeaders });
   }
 
-    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
-    const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
-    const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-    const startTime = Date.now();
-    
-    // Track sync run ID and user email for error handling
-    let syncRunId: string | null = null;
-    let syncRun: SyncRun | null = null;
-    let userEmailForError: string = "unknown";
+  console.log("🚀 sync-command-center: Request received");
+  const startTime = Date.now();
+  
+  const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+  const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
+  const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+  
+  // Track sync run ID and user email for error handling
+  let syncRunId: string | null = null;
+  let syncRun: SyncRun | null = null;
+  let userEmailForError: string = "unknown";
   
   try {
     // ============ AUTHENTICATION ============
     const authHeader = req.headers.get("Authorization");
+    console.log("🔐 Auth header present:", !!authHeader);
     
     if (!authHeader?.startsWith("Bearer ")) {
+      console.error("❌ Missing or invalid Authorization header");
       return new Response(
         JSON.stringify({ success: false, status: 'failed', error: "Missing or invalid Authorization header" }),
         { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
@@ -210,12 +214,13 @@ Deno.serve(async (req: Request) => {
       .single();
 
     if (syncRunError) {
+      console.error("❌ Failed to create sync run:", syncRunError);
       throw new Error(`Failed to create sync run: ${syncRunError.message}`);
     }
 
     syncRun = syncRunData as SyncRun;
     syncRunId = syncRun.id;
-    console.log(`📊 Master sync run created: ${syncRunId}`);
+    console.log(`✅ Master sync run created: ${syncRunId}`);
 
     // Helper to update progress
     const updateProgress = async (
@@ -254,12 +259,18 @@ Deno.serve(async (req: Request) => {
     // ============ STRIPE TRANSACTIONS ============
     try {
       await updateProgress("stripe-transactions", "Iniciando...");
+      console.log("🔄 Starting Stripe transactions sync...");
       let totalStripe = 0;
       let hasMore = true;
       let cursor: string | null = null;
       let stripeSyncId: string | null = null;
+      let pageCount = 0;
+      const MAX_PAGES = 100; // Safety limit
       
-      while (hasMore) {
+      while (hasMore && pageCount < MAX_PAGES) {
+        pageCount++;
+        console.log(`📄 Stripe page ${pageCount}, cursor: ${cursor ? 'yes' : 'none'}`);
+        
         const response = await invokeClient.functions.invoke('fetch-stripe', {
           body: {
             fetchAll: true,
@@ -270,38 +281,62 @@ Deno.serve(async (req: Request) => {
           }
         });
         
+        console.log(`📥 Stripe response:`, { 
+          hasError: !!response.error, 
+          hasData: !!response.data,
+          status: (response.data as StripeSyncResponse)?.status 
+        });
+        
         const respData = response.data as StripeSyncResponse | null;
-        if (response.error) throw response.error;
+        if (response.error) {
+          console.error("❌ Stripe invoke error:", response.error);
+          throw response.error;
+        }
         if (respData?.error === 'sync_already_running') {
+          console.warn("⚠️ Stripe sync already running");
           results["stripe"] = { success: false, count: 0, error: "sync_already_running" };
           break;
         }
         
-        totalStripe += respData?.synced_transactions ?? 0;
+        const pageCount = respData?.synced_transactions ?? 0;
+        totalStripe += pageCount;
         stripeSyncId = respData?.syncRunId ?? stripeSyncId;
         cursor = respData?.nextCursor ?? null;
         hasMore = respData?.hasMore === true && cursor !== null;
         
+        console.log(`✅ Stripe page ${pageCount}: ${pageCount} tx, total: ${totalStripe}, hasMore: ${hasMore}`);
         await updateProgress("stripe-transactions", `${totalStripe} transacciones`);
       }
+      
+      if (pageCount >= MAX_PAGES) {
+        console.warn(`⚠️ Stripe sync reached max pages limit (${MAX_PAGES})`);
+      }
+      
       if (!results["stripe"]) {
         results["stripe"] = { success: true, count: totalStripe };
       }
+      console.log(`✅ Stripe sync completed: ${totalStripe} transactions`);
     } catch (e) {
-      console.error("Stripe sync error:", e);
+      console.error("❌ Stripe sync error:", e);
       results["stripe"] = { success: false, count: 0, error: String(e) };
     }
 
     // ============ STRIPE SUBSCRIPTIONS ============
     try {
       await updateProgress("stripe-subscriptions", "Iniciando...");
+      console.log("🔄 Starting Stripe subscriptions sync...");
       const response = await invokeClient.functions.invoke('fetch-subscriptions');
+      console.log("📥 Subscriptions response:", { hasError: !!response.error, hasData: !!response.data });
       const respData = response.data as GenericSyncResponse | null;
-      if (response.error) throw response.error;
+      if (response.error) {
+        console.error("❌ Subscriptions invoke error:", response.error);
+        throw response.error;
+      }
       results["subscriptions"] = { success: true, count: respData?.synced ?? respData?.upserted ?? 0 };
       await updateProgress("stripe-subscriptions", `${results["subscriptions"].count} suscripciones`);
+      console.log(`✅ Subscriptions sync completed: ${results["subscriptions"].count}`);
     } catch (e) {
-      console.error("Subscriptions sync error:", e);
+      console.error("❌ Subscriptions sync error:", e);
       results["subscriptions"] = { success: false, count: 0, error: String(e) };
     }
 
@@ -385,12 +420,16 @@ Deno.serve(async (req: Request) => {
     // ============ PAYPAL TRANSACTIONS ============
     try {
       await updateProgress("paypal-transactions", "Iniciando...");
+      console.log("🔄 Starting PayPal transactions sync...");
       let totalPaypal = 0;
       let hasMore = true;
       let page = 1;
       let paypalSyncId: string | null = null;
+      const MAX_PAGES = 100; // Safety limit
       
-      while (hasMore && page <= 100) {
+      while (hasMore && page <= MAX_PAGES) {
+        console.log(`📄 PayPal page ${page}`);
+        
         const response = await invokeClient.functions.invoke('fetch-paypal', {
           body: {
             fetchAll: true,
@@ -401,25 +440,43 @@ Deno.serve(async (req: Request) => {
           }
         });
         
+        console.log(`📥 PayPal response:`, { 
+          hasError: !!response.error, 
+          hasData: !!response.data,
+          status: (response.data as PayPalSyncResponse)?.status 
+        });
+        
         const respData = response.data as PayPalSyncResponse | null;
-        if (response.error) throw response.error;
+        if (response.error) {
+          console.error("❌ PayPal invoke error:", response.error);
+          throw response.error;
+        }
         if (respData?.error === 'sync_already_running') {
+          console.warn("⚠️ PayPal sync already running");
           results["paypal"] = { success: false, count: 0, error: "sync_already_running" };
           break;
         }
         
-        totalPaypal += respData?.synced_transactions ?? 0;
+        const pageCount = respData?.synced_transactions ?? 0;
+        totalPaypal += pageCount;
         paypalSyncId = respData?.syncRunId ?? paypalSyncId;
         hasMore = respData?.hasMore === true;
         page = respData?.nextPage ?? page + 1;
         
+        console.log(`✅ PayPal page ${page - 1}: ${pageCount} tx, total: ${totalPaypal}, hasMore: ${hasMore}`);
         await updateProgress("paypal-transactions", `${totalPaypal} transacciones`);
       }
+      
+      if (page > MAX_PAGES) {
+        console.warn(`⚠️ PayPal sync reached max pages limit (${MAX_PAGES})`);
+      }
+      
       if (!results["paypal"]) {
         results["paypal"] = { success: true, count: totalPaypal };
       }
+      console.log(`✅ PayPal sync completed: ${totalPaypal} transactions`);
     } catch (e) {
-      console.error("PayPal sync error:", e);
+      console.error("❌ PayPal sync error:", e);
       results["paypal"] = { success: false, count: 0, error: String(e) };
     }
 
@@ -528,19 +585,25 @@ Deno.serve(async (req: Request) => {
       })
       .eq("id", syncRunId);
 
-    console.log(`✅ Sync completed: ${totalFetched} total records, ${failedSteps.length} failed steps in ${Date.now() - startTime}ms`);
+    const duration = Date.now() - startTime;
+    console.log(`✅ Sync completed: ${totalFetched} total records, ${failedSteps.length} failed steps in ${duration}ms`);
+    console.log("📊 Final results:", Object.keys(results));
+
+    const responseData = {
+      success: true,
+      status: finalStatus,
+      syncRunId,
+      mode: config.mode,
+      totalRecords: totalFetched,
+      results,
+      failedSteps: failedSteps.length > 0 ? failedSteps : undefined,
+      duration_ms: duration
+    };
+    
+    console.log("📤 Sending response:", { success: responseData.success, status: responseData.status, totalRecords: responseData.totalRecords });
 
     return new Response(
-      JSON.stringify({
-        success: true,
-        status: finalStatus,
-        syncRunId,
-        mode: config.mode,
-        totalRecords: totalFetched,
-        results,
-        failedSteps: failedSteps.length > 0 ? failedSteps : undefined,
-        duration_ms: Date.now() - startTime
-      }),
+      JSON.stringify(responseData),
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
 
