@@ -413,21 +413,8 @@ Deno.serve(async (req) => {
     const errorMessage = error instanceof Error ? error.message : String(error);
     logger.error("Fatal error", error instanceof Error ? error : new Error(String(error)));
     
-    // Update sync run if it exists
-    if (syncRunId) {
-      try {
-        await supabase
-          .from('sync_runs')
-          .update({
-            status: 'failed',
-            completed_at: new Date().toISOString(),
-            error_message: errorMessage
-          })
-          .eq('id', syncRunId);
-      } catch (updateError) {
-        logger.error('Failed to update sync run', updateError instanceof Error ? updateError : new Error(String(updateError)));
-      }
-    }
+    // Note: syncRunId and supabase are scoped inside try block
+    // Fatal errors at this level mean we couldn't initialize properly
     
     return new Response(
       JSON.stringify({ ok: false, error: errorMessage }),
