@@ -32,40 +32,88 @@ export function SourceAnalytics() {
   const fetchSourceMetrics = async () => {
     setLoading(true);
     try {
-      // Fetch source metrics directly from clients table since source_metrics RPC doesn't exist
-      const { data: clients, error } = await supabase
+      // Get all clients with acquisition_source
+      const { data: clients } = await supabase
         .from('clients')
-        .select('acquisition_source, lifecycle_stage, total_spend')
-        .not('acquisition_source', 'is', null);
-      
-      if (error) throw error;
+        .select('id, acquisition_source, lifecycle_stage, total_spend');
 
-      // Aggregate metrics by source
-      const sourceMap = new Map<string, { leads: number; trials: number; customers: number; totalSpend: number }>();
-      
-      for (const client of clients || []) {
-        const source = client.acquisition_source || 'unknown';
-        const existing = sourceMap.get(source) || { leads: 0, trials: 0, customers: 0, totalSpend: 0 };
-        
-        if (client.lifecycle_stage === 'LEAD') existing.leads++;
-        else if (client.lifecycle_stage === 'TRIAL') existing.trials++;
-        else if (client.lifecycle_stage === 'CUSTOMER') existing.customers++;
-        
-        existing.totalSpend += Number(client.total_spend ?? 0);
-        sourceMap.set(source, existing);
+      // Get transactions for revenue calculation (last 30 days)
+      // FIX: Use stripe_created_at for accurate date filtering and include both 'succeeded' and 'paid' statuses
+      const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+      const { data: transactions } = await supabase
+        .from('transactions')
+        .select('customer_email, amount, status, currency, stripe_created_at')
+        .in('status', ['succeeded', 'paid'])
+        .gte('stripe_created_at', thirtyDaysAgo);
+
+      if (!clients) {
+        setMetrics([]);
+        return;
       }
 
+      // Build email to source mapping
+      const { data: clientsWithEmail } = await supabase
+        .from('clients')
+        .select('email, acquisition_source');
+
+      const emailToSource: Record<string, string> = {};
+      clientsWithEmail?.forEach(c => {
+        if (c.email && c.acquisition_source) {
+          emailToSource[c.email.toLowerCase()] = c.acquisition_source;
+        }
+      });
+
+      // Aggregate by source
+      const sourceMap = new Map<string, {
+        leads: number;
+        trials: number;
+        customers: number;
+        revenue: number;
+        totalSpend: number;
+        customerCount: number;
+      }>();
+
+      clients.forEach(client => {
+        const source = client.acquisition_source || 'unknown';
+        if (!sourceMap.has(source)) {
+          sourceMap.set(source, { leads: 0, trials: 0, customers: 0, revenue: 0, totalSpend: 0, customerCount: 0 });
+        }
+        const data = sourceMap.get(source)!;
+        
+        if (client.lifecycle_stage === 'LEAD') data.leads++;
+        else if (client.lifecycle_stage === 'TRIAL') data.trials++;
+        else if (client.lifecycle_stage === 'CUSTOMER') {
+          data.customers++;
+          data.customerCount++;
+          data.totalSpend += client.total_spend || 0;
+        }
+      });
+
+      // Add transaction revenue
+      transactions?.forEach(tx => {
+        if (tx.customer_email) {
+          const source = emailToSource[tx.customer_email.toLowerCase()] || 'unknown';
+          if (!sourceMap.has(source)) {
+            sourceMap.set(source, { leads: 0, trials: 0, customers: 0, revenue: 0, totalSpend: 0, customerCount: 0 });
+          }
+          // Convert to USD (rough MXN conversion)
+          let amountUSD = (tx.amount || 0) / 100;
+          if (tx.currency === 'mxn') amountUSD = amountUSD / 17;
+          sourceMap.get(source)!.revenue += amountUSD;
+        }
+      });
+
+      // Convert to array and calculate derived metrics
       const result: SourceMetrics[] = Array.from(sourceMap.entries())
         .map(([source, data]) => {
           const totalPipeline = data.leads + data.trials + data.customers;
-          const customerCount = data.customers;
           return {
             source,
             leads: data.leads,
             trials: data.trials,
             customers: data.customers,
-            revenue: Math.round(data.totalSpend / 100),
-            ltv: customerCount > 0 ? Math.round(data.totalSpend / customerCount / 100) : 0,
+            revenue: Math.round(data.revenue),
+            ltv: data.customerCount > 0 ? Math.round(data.totalSpend / data.customerCount / 100) : 0,
             conversionRate: totalPipeline > 0 ? Math.round((data.customers / totalPipeline) * 100) : 0,
             trialToPaid: data.trials + data.customers > 0 
               ? Math.round((data.customers / (data.trials + data.customers)) * 100) 

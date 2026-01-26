@@ -9,12 +9,12 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { toast } from "sonner";
-import {
-  Shield,
-  AlertTriangle,
-  CheckCircle,
-  XCircle,
-  RefreshCw,
+import { 
+  Shield, 
+  AlertTriangle, 
+  CheckCircle, 
+  XCircle, 
+  RefreshCw, 
   Play,
   FileText,
   Database,
@@ -100,8 +100,6 @@ const getStatusBadge = (status: string) => {
 
 // Sync Health Panel Component
 function SyncHealthPanel() {
-  const queryClient = useQueryClient();
-
   const { data: syncRuns = [], isLoading } = useQuery({
     queryKey: ['sync-runs-health'],
     queryFn: async () => {
@@ -116,27 +114,6 @@ function SyncHealthPanel() {
     refetchInterval: 30000
   });
 
-  const resetStuckSyncs = useMutation({
-    mutationFn: async () => {
-      const { data, error } = await supabase.rpc('reset_stuck_syncs', { p_timeout_minutes: 15 });
-      if (error) throw error;
-      return data;
-    },
-    onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ['sync-runs-health'] });
-      const count = data?.[0]?.reset_count || 0;
-      if (count > 0) {
-        toast.success(`${count} sync(s) reseteados`);
-      } else {
-        toast.info('No hay syncs atascados');
-      }
-    },
-    onError: (error: unknown) => {
-      const message = error instanceof Error ? error.message : 'Error desconocido';
-      toast.error(`Error: ${message}`);
-    }
-  });
-
   const { data: webhookStats = [] } = useQuery({
     queryKey: ['webhook-stats'],
     queryFn: async () => {
@@ -146,7 +123,7 @@ function SyncHealthPanel() {
         .order('processed_at', { ascending: false })
         .limit(100);
       if (error) throw error;
-
+      
       const stats = new Map<string, { count: number; types: Set<string> }>();
       for (const e of data || []) {
         const existing = stats.get(e.source) || { count: 0, types: new Set() };
@@ -168,15 +145,6 @@ function SyncHealthPanel() {
     return acc;
   }, {} as Record<string, SyncRun[]>);
 
-  // Detect stuck syncs (running for more than 2 minutes)
-  const stuckSyncs = syncRuns.filter(run => {
-    if (run.status !== 'running' && run.status !== 'continuing') return false;
-    const startedAt = new Date(run.started_at);
-    const now = new Date();
-    const minutesRunning = (now.getTime() - startedAt.getTime()) / (1000 * 60);
-    return minutesRunning > 2;
-  });
-
   if (isLoading) {
     return <div className="flex items-center justify-center py-8"><Loader2 className="w-6 h-6 animate-spin" /></div>;
   }
@@ -184,37 +152,10 @@ function SyncHealthPanel() {
   return (
     <Card>
       <CardHeader className="p-4 md:p-6">
-        <div className="flex items-center justify-between">
-          <div>
-            <CardTitle className="text-base md:text-lg flex items-center gap-2">
-              Sync Health
-              {stuckSyncs.length > 0 && (
-                <Badge className="bg-yellow-500/20 text-yellow-400 text-[10px]">
-                  {stuckSyncs.length} atascado(s)
-                </Badge>
-              )}
-            </CardTitle>
-            <CardDescription className="text-xs md:text-sm">
-              Historial de sincronizaciones y webhooks
-            </CardDescription>
-          </div>
-          {stuckSyncs.length > 0 && (
-            <Button
-              onClick={() => resetStuckSyncs.mutate()}
-              disabled={resetStuckSyncs.isPending}
-              variant="destructive"
-              size="sm"
-              className="touch-feedback"
-            >
-              {resetStuckSyncs.isPending ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
-              ) : (
-                <XCircle className="w-4 h-4" />
-              )}
-              <span className="ml-2 hidden sm:inline">Reset</span>
-            </Button>
-          )}
-        </div>
+        <CardTitle className="text-base md:text-lg">Sync Health</CardTitle>
+        <CardDescription className="text-xs md:text-sm">
+          Historial de sincronizaciones y webhooks
+        </CardDescription>
       </CardHeader>
       <CardContent className="p-4 md:p-6 pt-0 md:pt-0 space-y-4 md:space-y-6">
         {/* Last Sync by Source - Cards */}
@@ -224,7 +165,7 @@ function SyncHealthPanel() {
             const lastRun = runs[0];
             const last7dRuns = runs.filter(r => new Date(r.started_at) > subDays(new Date(), 7));
             const totalInserted = last7dRuns.reduce((sum, r) => sum + (r.total_inserted || 0), 0);
-
+            
             return (
               <div key={source} className="p-3 rounded-lg border border-border/50 bg-muted/30 touch-feedback">
                 <div className="flex items-center justify-between mb-2">
@@ -370,7 +311,7 @@ export default function DiagnosticsPanel() {
     try {
       const endDate = new Date();
       let startDate: Date;
-
+      
       switch (reconcileRange) {
         case 'today':
           startDate = new Date();
@@ -392,7 +333,7 @@ export default function DiagnosticsPanel() {
       });
 
       queryClient.invalidateQueries({ queryKey: ['reconciliation-runs'] });
-
+      
       if (data.status === 'ok') {
         toast.success(`OK: diferencia ${data.difference_pct}%`);
       } else if (data.status === 'warning') {
@@ -489,12 +430,12 @@ Responde en español, de forma concisa.`;
             Reconciliación y calidad de datos
           </p>
         </div>
-        <Button
+        <Button 
           onClick={async () => {
             await refetchChecks();
             toast.success("Actualizado");
-          }}
-          variant="outline"
+          }} 
+          variant="outline" 
           size="sm"
           disabled={loadingChecks}
           className="self-start sm:self-auto touch-feedback"
@@ -744,8 +685,8 @@ Responde en español, de forma concisa.`;
             </CardHeader>
             <CardContent className="p-4 md:p-6 pt-0 md:pt-0 space-y-4">
               <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-4 p-3 md:p-4 rounded-lg bg-muted/50">
-                <Button
-                  onClick={() => rebuildMetrics.mutate()}
+                <Button 
+                  onClick={() => rebuildMetrics.mutate()} 
                   disabled={rebuildMetrics.isPending}
                   size="sm"
                   className="touch-feedback"
@@ -758,8 +699,8 @@ Responde en español, de forma concisa.`;
                   <span className="ml-2">Rebuild</span>
                 </Button>
 
-                <Button
-                  onClick={() => promoteStaging.mutate()}
+                <Button 
+                  onClick={() => promoteStaging.mutate()} 
                   disabled={promoteStaging.isPending}
                   variant="secondary"
                   size="sm"

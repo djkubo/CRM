@@ -15,11 +15,10 @@ interface AdminVerifyResult {
 }
 
 interface FetchInvoicesRequest {
+  mode?: 'full' | 'range' | 'recent';
   startDate?: string;
   endDate?: string;
-  fetchAll?: boolean;
   cursor?: string;
-  limit?: number;
   syncRunId?: string;
 }
 
@@ -30,7 +29,6 @@ interface FetchInvoicesResponse {
   hasMore: boolean;
   nextCursor: string | null;
   syncRunId: string | null;
-  duration_ms: number;
   error?: string;
   stats?: {
     draft: number;
@@ -90,12 +88,6 @@ interface StripeInvoice {
   charge: string | null;
   default_payment_method: string | { id: string } | null;
   last_finalization_error: { message: string; code: string } | null;
-  customer_details?: {
-    email?: string | null;
-    name?: string | null;
-    phone?: string | null;
-  };
-  metadata?: Record<string, string>;
   finalized_at: number | null;
   automatically_finalizes_at: number | null;
   status_transitions?: {
@@ -131,19 +123,19 @@ async function verifyAdmin(req: Request): Promise<AdminVerifyResult> {
 
   const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
   const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY')!;
-
+  
   const supabase = createClient(supabaseUrl, supabaseAnonKey, {
     global: { headers: { Authorization: authHeader } }
   });
 
   const { data: { user }, error: userError } = await supabase.auth.getUser();
-
+  
   if (userError || !user) {
     return { valid: false, error: 'Invalid or expired token' };
   }
 
   const { data: isAdmin, error: adminError } = await supabase.rpc('is_admin');
-
+  
   if (adminError || !isAdmin) {
     return { valid: false, error: 'User is not an admin' };
   }
@@ -247,7 +239,7 @@ async function enrichClientIfNeeded(
   stripeCustomerId: string | null
 ): Promise<void> {
   if (!clientId) return;
-
+  
   try {
     // Fetch current client data
     const { data: client, error: fetchError } = await supabase
@@ -255,17 +247,17 @@ async function enrichClientIfNeeded(
       .select('full_name, phone_e164, stripe_customer_id')
       .eq('id', clientId)
       .single();
-
+    
     if (fetchError || !client) return;
 
     // Build update object only with missing fields
     const updates: Record<string, unknown> = {};
-
+    
     // Enrich full_name if missing and we have it from Stripe
     if (!client.full_name && customerName) {
       updates.full_name = customerName;
     }
-
+    
     // Enrich phone_e164 if missing and we have it from Stripe
     if (!client.phone_e164 && customerPhone) {
       // Normalize phone to E.164 format
@@ -278,21 +270,21 @@ async function enrichClientIfNeeded(
         updates.phone = customerPhone; // Keep original format too
       }
     }
-
+    
     // Ensure stripe_customer_id is set
     if (!client.stripe_customer_id && stripeCustomerId) {
       updates.stripe_customer_id = stripeCustomerId;
     }
-
+    
     // Only update if there's something to update
     if (Object.keys(updates).length > 0) {
       updates.last_sync = new Date().toISOString();
-
+      
       const { error: updateError } = await supabase
         .from('clients')
         .update(updates)
         .eq('id', clientId);
-
+      
       if (updateError) {
         console.warn(`Failed to enrich client ${clientId}:`, updateError.message);
       } else {
@@ -355,8 +347,6 @@ Deno.serve(async (req) => {
     return new Response(null, { headers: corsHeaders });
   }
 
-  const startTime = Date.now();
-
   try {
     // SECURITY: Verify JWT + admin role
     const authCheck = await verifyAdmin(req);
@@ -380,32 +370,30 @@ Deno.serve(async (req) => {
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
     // Parse request
+    let mode: 'full' | 'range' | 'recent' = 'recent';
     let startDate: string | null = null;
     let endDate: string | null = null;
-    let fetchAll = false;
     let cursor: string | null = null;
     let syncRunId: string | null = null;
-    let limit = 100;
 
     try {
       const body: FetchInvoicesRequest = await req.json();
+      mode = body.mode || 'recent';
       cursor = body.cursor || null;
       syncRunId = body.syncRunId || null;
-      fetchAll = body.fetchAll === true;
-      limit = body.limit && body.limit > 0 ? Math.min(body.limit, 100) : 100;
-
+      
       if (body.startDate) startDate = body.startDate;
       if (body.endDate) endDate = body.endDate;
     } catch {
-      // Use defaults
+      // Default to recent mode
     }
 
-    console.log(`🧾 Starting Stripe Invoices fetch (fetchAll: ${fetchAll}, cursor: ${cursor})`);
+    console.log(`🧾 Starting Stripe Invoices fetch (mode: ${mode}, cursor: ${cursor})`);
 
     // Check for existing running sync (prevent duplicates)
     if (!syncRunId) {
       const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
-
+      
       const { data: existingSync } = await supabase
         .from('sync_runs')
         .select('id, started_at, total_fetched, checkpoint')
@@ -415,7 +403,7 @@ Deno.serve(async (req) => {
         .order('started_at', { ascending: false })
         .limit(1)
         .maybeSingle();
-
+      
       if (existingSync) {
         console.log('⚠️ Sync already running:', existingSync.id);
         return new Response(
@@ -428,14 +416,14 @@ Deno.serve(async (req) => {
           { headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
       }
-
+      
       // Create new sync run
       const { data: syncRun } = await supabase
         .from('sync_runs')
         .insert({
           source: 'stripe_invoices',
           status: 'running',
-          metadata: { fetchAll, startDate, endDate }
+          metadata: { mode, startDate, endDate }
         })
         .select('id')
         .single();
@@ -444,24 +432,26 @@ Deno.serve(async (req) => {
 
     // Build Stripe API URL - fetch ALL statuses
     const params = new URLSearchParams();
-    params.set('limit', String(limit));
+    params.set('limit', '100');
     params.set('expand[]', 'data.subscription');
     params.append('expand[]', 'data.lines.data.price');
     params.append('expand[]', 'data.customer');
 
-    // Date filters
-    if (!fetchAll && startDate) {
+    // Date filters for range mode
+    if (mode === 'range' && startDate) {
       params.set('created[gte]', String(Math.floor(new Date(startDate).getTime() / 1000)));
     }
-    if (!fetchAll && endDate) {
+    if (mode === 'range' && endDate) {
       params.set('created[lte]', String(Math.floor(new Date(endDate).getTime() / 1000)));
     }
 
-    // Default: last 90 days
-    if (!fetchAll && !startDate && !endDate) {
+    // Recent mode: last 90 days
+    if (mode === 'recent') {
       const ninetyDaysAgo = Math.floor(Date.now() / 1000) - (90 * 24 * 60 * 60);
       params.set('created[gte]', String(ninetyDaysAgo));
     }
+
+    // Full mode: no date filter, get everything
 
     // Cursor for pagination
     if (cursor) {
@@ -469,7 +459,7 @@ Deno.serve(async (req) => {
     }
 
     const stripeUrl = `https://api.stripe.com/v1/invoices?${params.toString()}`;
-
+    
     const response = await fetch(stripeUrl, {
       headers: {
         Authorization: `Bearer ${STRIPE_SECRET_KEY}`,
@@ -494,8 +484,7 @@ Deno.serve(async (req) => {
     let upsertedCount = 0;
     let errorCount = 0;
 
-    // Batch processing
-    const invoiceRecords = invoices.map(invoice => {
+    for (const invoice of invoices) {
       // Count by status
       if (invoice.status === 'draft') stats.draft++;
       else if (invoice.status === 'open') stats.open++;
@@ -505,28 +494,37 @@ Deno.serve(async (req) => {
 
       // Extract enriched plan info
       const { planName, planInterval, productName } = extractPlanInfo(invoice);
-
+      
       // Get customer info
       const customer = typeof invoice.customer === 'object' ? invoice.customer : null;
       const stripeCustomerId = typeof invoice.customer === 'string' ? invoice.customer : customer?.id || null;
       const customerEmail = invoice.customer_email || customer?.email || null;
       const customerName = invoice.customer_name || customer?.name || null;
       const customerPhone = customer?.phone || null;
-      const customerSnapshot = customer ? {
-        id: customer.id,
-        email: customer.email || null,
-        name: customer.name || null,
-        phone: customer.phone || null,
-      } : null;
-      const customerDetails = invoice.customer_details || null;
-      const invoiceMetadata = invoice.metadata || null;
 
-      // NOTE: We do NOT resolve client_id here anymore to save time.
-      // The 'harvest_recent_contacts' SQL function (run by sync-command-center)
-      // will handle linking invoices to clients in bulk.
+      // Resolve client_id via unify_identity (preferred) or fallback
+      const unifyResult = await resolveClientViaUnify(
+        supabase, 
+        stripeCustomerId, 
+        customerEmail, 
+        customerPhone,
+        customerName
+      );
+      
+      let clientId = unifyResult.clientId;
+      
+      // Fallback if unify_identity didn't work
+      if (!clientId) {
+        clientId = await resolveClientFallback(supabase, stripeCustomerId, customerEmail, customerPhone);
+      }
+      
+      // Enrich client data if we have new info from Stripe
+      if (clientId && (unifyResult.shouldEnrich || !unifyResult.clientId)) {
+        await enrichClientIfNeeded(supabase, clientId, customerName, customerPhone, stripeCustomerId);
+      }
 
       // Get subscription ID
-      const subscriptionId = invoice.subscription
+      const subscriptionId = invoice.subscription 
         ? (typeof invoice.subscription === 'object' ? invoice.subscription.id : invoice.subscription)
         : null;
 
@@ -551,8 +549,8 @@ Deno.serve(async (req) => {
         price_nickname: line.price?.nickname,
         unit_amount: line.price?.unit_amount,
         interval: line.price?.recurring?.interval,
-        product_name: line.price?.product && typeof line.price.product === 'object'
-          ? line.price.product.name
+        product_name: line.price?.product && typeof line.price.product === 'object' 
+          ? line.price.product.name 
           : null,
       })) || null;
 
@@ -560,19 +558,19 @@ Deno.serve(async (req) => {
       const paidAt = invoice.status_transitions?.paid_at
         ? new Date(invoice.status_transitions.paid_at * 1000).toISOString()
         : (invoice.status === 'paid' ? new Date().toISOString() : null);
-
+      
       const finalizedAt = invoice.status_transitions?.finalized_at
         ? new Date(invoice.status_transitions.finalized_at * 1000).toISOString()
         : (invoice.finalized_at ? new Date(invoice.finalized_at * 1000).toISOString() : null);
 
-      return {
+      const invoiceRecord = {
         stripe_invoice_id: invoice.id,
         invoice_number: invoice.number,
         customer_email: customerEmail?.toLowerCase() || null,
         customer_name: customerName,
         customer_phone: customerPhone,
         stripe_customer_id: stripeCustomerId,
-        // client_id: Link via Harvester SQL
+        client_id: clientId,
         amount_due: invoice.amount_due,
         amount_paid: invoice.amount_paid,
         amount_remaining: invoice.amount_remaining,
@@ -580,16 +578,16 @@ Deno.serve(async (req) => {
         total: invoice.total,
         currency: invoice.currency,
         status: invoice.status,
-        stripe_created_at: invoice.created
-          ? new Date(invoice.created * 1000).toISOString()
+        stripe_created_at: invoice.created 
+          ? new Date(invoice.created * 1000).toISOString() 
           : null,
         finalized_at: finalizedAt,
         paid_at: paidAt,
-        automatically_finalizes_at: invoice.automatically_finalizes_at
-          ? new Date(invoice.automatically_finalizes_at * 1000).toISOString()
+        automatically_finalizes_at: invoice.automatically_finalizes_at 
+          ? new Date(invoice.automatically_finalizes_at * 1000).toISOString() 
           : null,
-        period_end: invoice.period_end
-          ? new Date(invoice.period_end * 1000).toISOString()
+        period_end: invoice.period_end 
+          ? new Date(invoice.period_end * 1000).toISOString() 
           : null,
         next_payment_attempt: invoice.next_payment_attempt
           ? new Date(invoice.next_payment_attempt * 1000).toISOString()
@@ -612,47 +610,33 @@ Deno.serve(async (req) => {
         default_payment_method: defaultPaymentMethod,
         last_finalization_error: invoice.last_finalization_error?.message || null,
         lines: lineItems,
-        invoice_customer_snapshot: customerSnapshot || customerDetails,
-        invoice_metadata: invoiceMetadata,
         raw_data: invoice as unknown as Record<string, unknown>,
         updated_at: new Date().toISOString(),
       };
-    });
 
-    if (invoiceRecords.length > 0) {
-      const { error, count } = await supabase
+      const { error } = await supabase
         .from("invoices")
-        .upsert(invoiceRecords, {
+        .upsert(invoiceRecord, { 
           onConflict: "stripe_invoice_id",
-          ignoreDuplicates: false,
-          count: 'exact'
+          ignoreDuplicates: false 
         });
 
       if (error) {
-        console.error(`❌ Error bulk upserting invoices:`, error.message);
-        throw error;
+        console.error(`❌ Error upserting invoice ${invoice.id}:`, error.message);
+        errorCount++;
       } else {
-        upsertedCount = invoiceRecords.length; // or count if provided
+        upsertedCount++;
       }
     }
 
     // Update sync run
     if (syncRunId) {
-      const { data: currentRun } = await supabase
-        .from('sync_runs')
-        .select('total_fetched, total_inserted')
-        .eq('id', syncRunId)
-        .single();
-
-      const totalFetched = (currentRun?.total_fetched || 0) + invoices.length;
-      const totalInserted = (currentRun?.total_inserted || 0) + upsertedCount;
-
       await supabase
         .from('sync_runs')
         .update({
           status: hasMore ? 'continuing' : 'completed',
-          total_fetched: totalFetched,
-          total_inserted: totalInserted,
+          total_fetched: invoices.length,
+          total_inserted: upsertedCount,
           checkpoint: hasMore ? { cursor: nextCursor } : null,
           completed_at: hasMore ? null : new Date().toISOString(),
         })
@@ -670,7 +654,6 @@ Deno.serve(async (req) => {
       nextCursor,
       syncRunId,
       stats,
-      duration_ms: Date.now() - startTime,
     };
 
     return new Response(
@@ -680,9 +663,9 @@ Deno.serve(async (req) => {
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : "Unknown error";
     console.error("❌ Fatal error:", errorMessage);
-
+    
     return new Response(
-      JSON.stringify({ success: false, error: errorMessage, duration_ms: Date.now() - startTime }),
+      JSON.stringify({ success: false, error: errorMessage }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   }

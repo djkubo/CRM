@@ -4,11 +4,11 @@ import { useDailyKPIs, TimeFilter } from '@/hooks/useDailyKPIs';
 import { useMetrics } from '@/hooks/useMetrics';
 import { useInvoices } from '@/hooks/useInvoices';
 import { useSubscriptions } from '@/hooks/useSubscriptions';
-import {
-  DollarSign,
-  UserPlus,
-  RefreshCw,
-  ArrowRightCircle,
+import { 
+  DollarSign, 
+  UserPlus, 
+  RefreshCw, 
+  ArrowRightCircle, 
   AlertTriangle,
   XCircle,
   Loader2,
@@ -37,14 +37,14 @@ import { openWhatsApp, getRecoveryMessage } from './RecoveryTable';
 import type { RecoveryClient } from '@/lib/csvProcessor';
 import { invokeWithAdminKey } from '@/lib/adminApi';
 import { SyncResultsPanel } from './SyncResultsPanel';
-import type {
-  FetchStripeBody,
-  FetchStripeResponse,
-  FetchPayPalBody,
+import type { 
+  FetchStripeBody, 
+  FetchStripeResponse, 
+  FetchPayPalBody, 
   FetchPayPalResponse,
   FetchSubscriptionsResponse,
   FetchInvoicesBody,
-  FetchInvoicesResponse
+  FetchInvoicesResponse 
 } from '@/types/edgeFunctions';
 
 type SyncRange = 'today' | '7d' | 'month' | 'full';
@@ -58,35 +58,35 @@ const syncRangeLabels: Record<SyncRange, string> = {
 
 function getSyncDateRange(range: SyncRange): { startDate: Date; endDate: Date; fetchAll: boolean; maxPages: number } {
   const now = new Date();
-
+  
   switch (range) {
     case 'today':
-      return {
-        startDate: subDays(now, 1),
-        endDate: now,
+      return { 
+        startDate: subDays(now, 1), 
+        endDate: now, 
         fetchAll: true,
-        maxPages: 5 // Balanced: ~500 records, won't saturate cloud
+        maxPages: 5 
       };
     case '7d':
-      return {
-        startDate: subDays(now, 7),
-        endDate: now,
+      return { 
+        startDate: subDays(now, 7), 
+        endDate: now, 
         fetchAll: true,
-        maxPages: 10 // Optimal: ~1,000 records, good performance
+        maxPages: 20 
       };
     case 'month':
-      return {
-        startDate: subMonths(now, 1),
-        endDate: now,
+      return { 
+        startDate: subMonths(now, 1), 
+        endDate: now, 
         fetchAll: true,
-        maxPages: 15 // Balanced: ~1,500 records, safe for cloud
+        maxPages: 50 
       };
     case 'full':
-      return {
-        startDate: subYears(now, 3), // Fixed: match UI label "Todo (3 años)"
-        endDate: now,
+      return { 
+        startDate: subYears(now, 5), 
+        endDate: now, 
         fetchAll: true,
-        maxPages: 5 // Conservative: will use multiple iterations with chunking
+        maxPages: 500 // Allow up to 50k transactions
       };
   }
 }
@@ -117,129 +117,155 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
   const handleSyncAll = async (range: SyncRange = 'today') => {
     setIsSyncing(true);
     setSyncStatus(null);
-    setSyncProgress('Iniciando...');
-
-    // Configurar rango de fechas
+    setSyncProgress('');
+    
     const { startDate, endDate, fetchAll } = getSyncDateRange(range);
+    const results = { stripe: 0, paypal: 0, subs: 0, invoices: 0, errors: 0 };
 
     toast.info(`Sincronizando ${syncRangeLabels[range]}...`);
 
-    let totalRecords = 0; // Moved outside try-catch for error context
-
     try {
-      let currentStep = 'Iniciando';
-      let hasMore = true;
-      let iteration = 0;
-
-      // Estado inicial de sync params
-      // maxPages dinámico según el rango de fecha
-      // El loop del cliente se encargará de continuar si hay más datos
-      const { maxPages } = getSyncDateRange(range);
-      let syncParams: any = {
-        startDate: startDate.toISOString(),
-        endDate: endDate.toISOString(),
-        fetchAll,
-        limit: 50,
-        maxPages, // Dynamic based on sync range
-        includeContacts: true,
-      };
-
-      while (hasMore) {
-        iteration++;
-        const batchLabel = iteration > 1 ? ` - Lote ${iteration}` : '';
-        setSyncProgress(`Sincronizando${batchLabel}... ${totalRecords > 0 ? `(${totalRecords.toLocaleString()} registros)` : ''}`);
-
-        const response = await invokeWithAdminKey<any>('sync-command-center', syncParams);
-
-        if (!response?.success) {
-          throw new Error(response?.error || 'Error desconocido en sync');
-        }
-
-        const newRecords = response.totalRecords || 0;
-        totalRecords = newRecords;
-
-        // Log de progreso específico por fuente
-        if (response.results) {
-          const steps = Object.keys(response.results);
-          const lastStep = steps[steps.length - 1];
-          if (lastStep) currentStep = lastStep;
-
-          // Mostrar progreso de cada fuente con toasts informativos
-          if (response.results.stripe?.count) {
-            const stripeCount = response.results.stripe.count;
-            toast.info(`Stripe: ${stripeCount.toLocaleString()} transacciones`, { id: 'sync-stripe' });
+      // 1. Stripe - now runs entirely in background on backend
+      setSyncProgress('Stripe...');
+      try {
+        const stripeData = await invokeWithAdminKey<FetchStripeResponse, FetchStripeBody>(
+          'fetch-stripe', 
+          { 
+            fetchAll, 
+            startDate: startDate.toISOString(), 
+            endDate: endDate.toISOString()
           }
-          if (response.results.invoices?.count) {
-            const invoiceCount = response.results.invoices.count;
-            toast.info(`Facturas: ${invoiceCount.toLocaleString()}`, { id: 'sync-invoices' });
-          }
-          if (response.results.paypal?.count) {
-            const paypalCount = response.results.paypal.count;
-            toast.info(`PayPal: ${paypalCount.toLocaleString()} transacciones`, { id: 'sync-paypal' });
-          }
+        );
+        
+        if (!stripeData) {
+          toast.error('Error al iniciar sync de Stripe');
+          results.errors++;
+        } else if (stripeData.error === 'sync_already_running') {
+          toast.warning('Stripe sync ya está en progreso. Revisa el panel de sync.');
+        } else if (stripeData.status === 'running') {
+          toast.success('Stripe sync iniciado en segundo plano. Monitorea el progreso en el panel.');
+          results.stripe = 0; // Will update via realtime
+        } else if (stripeData.status === 'completed') {
+          results.stripe = stripeData.synced_transactions ?? 0;
+        } else if (stripeData.error) {
+          console.error('[Stripe] Error:', stripeData.error);
+          results.errors++;
         }
-
-        // Determinar si debemos continuar
-        if (response.status === 'continuing') {
-          console.log('Sync continuing...', response.continuingSteps);
-
-          // Actualizar params con la metadata retornada para la siguiente vuelta
-          const meta = response.metadata;
-          if (meta) {
-            syncParams = {
-              ...syncParams,
-              stripeCursor: meta.stripe_cursor,
-              stripeSyncRunId: meta.stripe_sync_run_id,
-              invoiceCursor: meta.invoice_cursor,
-              invoiceSyncRunId: meta.invoice_sync_run_id,
-              paypalCursor: meta.paypal_cursor,
-              paypalSyncRunId: meta.paypal_sync_run_id,
-              subscriptionsCursor: meta.subscriptions_cursor,
-              subscriptionsSyncRunId: meta.subscriptions_sync_run_id,
-            };
-          }
-          // Pequeña pausa para no saturar
-          await new Promise(r => setTimeout(r, 500));
-        } else {
-          hasMore = false;
-        }
-
-        // Safety break - balanced limit to prevent cloud saturation
-        if (iteration > 100) {
-          hasMore = false;
-          toast.warning('Límite de lotes alcanzado (100). La mayoría de datos ya fueron sincronizados.');
-        }
+      } catch (e) {
+        console.error('[Stripe] Error:', e);
+        results.errors++;
       }
 
-      setSyncStatus('ok');
-      setSyncProgress('');
-      toast.success(`✅ Completado: ${totalRecords} registros procesados`);
+      // 2. PayPal (with pagination loop)
+      setSyncProgress('PayPal...');
+      try {
+        let hasMore = true;
+        let page = 1;
+        let syncRunId: string | null = null;
+        let attempts = 0;
+        const maxAttempts = 100;
+        
+        while (hasMore && attempts < maxAttempts) {
+          attempts++;
+          const paypalData = await invokeWithAdminKey<FetchPayPalResponse, FetchPayPalBody>(
+            'fetch-paypal', 
+            { 
+              fetchAll, 
+              startDate: startDate.toISOString(), 
+              endDate: endDate.toISOString(),
+              page,
+              syncRunId
+            }
+          );
+          
+          if (paypalData?.error === 'sync_already_running') {
+            toast.warning('Ya hay un sync de PayPal en progreso');
+            hasMore = false;
+            break;
+          }
+          
+          results.paypal += paypalData?.synced_transactions ?? 0;
+          syncRunId = paypalData?.syncRunId ?? syncRunId;
+          hasMore = paypalData?.hasMore === true;
+          page = paypalData?.nextPage ?? page + 1;
+          
+          if (hasMore) {
+            setSyncProgress(`PayPal... ${results.paypal} tx`);
+          }
+        }
+      } catch (e) {
+        console.error('PayPal sync error:', e);
+        results.errors++;
+      }
 
+      // 3. Subscriptions
+      setSyncProgress('Suscripciones...');
+      try {
+        const subsData = await invokeWithAdminKey<FetchSubscriptionsResponse>('fetch-subscriptions', {});
+        results.subs = subsData?.synced ?? subsData?.upserted ?? 0;
+      } catch (e) {
+        console.error('Subscriptions sync error:', e);
+        results.errors++;
+      }
+
+      // 4. Invoices - with pagination
+      setSyncProgress('Facturas...');
+      try {
+        let invoicesCursor: string | null = null;
+        let invoicesSyncRunId: string | null = null;
+        let invoicesHasMore = true;
+        let invoicesAttempts = 0;
+        
+        while (invoicesHasMore && invoicesAttempts < 50) {
+          invoicesAttempts++;
+          const invoicesData = await invokeWithAdminKey<FetchInvoicesResponse, FetchInvoicesBody>('fetch-invoices', {
+            mode: 'recent',
+            cursor: invoicesCursor,
+            syncRunId: invoicesSyncRunId,
+          });
+          
+          if (!invoicesData || invoicesData.error) {
+            console.error('[Invoices] Error:', invoicesData?.error);
+            results.errors++;
+            break;
+          }
+          
+          results.invoices += invoicesData.upserted ?? invoicesData.synced ?? 0;
+          invoicesCursor = invoicesData.nextCursor;
+          invoicesSyncRunId = invoicesData.syncRunId;
+          invoicesHasMore = invoicesData.hasMore === true && !!invoicesCursor;
+          
+          if (invoicesHasMore) {
+            setSyncProgress(`Facturas... ${results.invoices}`);
+          }
+        }
+      } catch (e) {
+        console.error('Invoices sync error:', e);
+        results.errors++;
+      }
+
+      setSyncStatus(results.errors > 0 ? 'warning' : 'ok');
+      setSyncProgress('');
+
+      const totalTx = results.stripe + results.paypal;
+      toast.success(`✅ ${syncRangeLabels[range]}: ${totalTx} tx, ${results.subs} subs, ${results.invoices} facturas${results.errors > 0 ? ` (${results.errors} errores)` : ''}`);
+      
+      // Invalidate all queries
       queryClient.invalidateQueries({ queryKey: ['transactions'] });
       queryClient.invalidateQueries({ queryKey: ['clients'] });
       queryClient.invalidateQueries({ queryKey: ['subscriptions'] });
       queryClient.invalidateQueries({ queryKey: ['invoices'] });
       queryClient.invalidateQueries({ queryKey: ['metrics'] });
       queryClient.invalidateQueries({ queryKey: ['daily-kpis'] });
-
+      
       refetch();
-
     } catch (error) {
       console.error('Sync error:', error);
       setSyncStatus('warning');
       setSyncProgress('');
-      const msg = error instanceof Error ? error.message : 'Error desconocido';
-      const contextMsg = totalRecords > 0
-        ? `Error en sincronización (ya procesados: ${totalRecords.toLocaleString()}): ${msg}`
-        : `Error en sincronización: ${msg}`;
-      toast.error(contextMsg);
+      toast.error('Error en sincronización');
     } finally {
       setIsSyncing(false);
-      // Clean up sticky toasts
-      toast.dismiss('sync-stripe');
-      toast.dismiss('sync-invoices');
-      toast.dismiss('sync-paypal');
-      toast.dismiss('sync-unify');
     }
   };
 
@@ -260,7 +286,7 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
   const top10ExpiringTrials = useMemo(() => {
     const now = new Date();
     const in48h = addHours(now, 48);
-
+    
     return subscriptions
       .filter(s => {
         if (s.status !== 'trialing' || !s.trial_end) return false;
@@ -351,19 +377,20 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-4">
             <div className="flex items-center gap-2">
               <Zap className="h-5 w-5 text-primary" />
-              <h1 className="text-base md:text-lg font-semibold text-foreground">Command Center <span className="text-[10px] text-emerald-400 font-normal px-2 py-0.5 bg-emerald-500/10 rounded-full">v2.1 (Patch Activo)</span></h1>
+              <h1 className="text-base md:text-lg font-semibold text-foreground">Command Center</h1>
             </div>
-
+            
             {/* Time filter - scrollable on mobile */}
             <div className="flex rounded-lg border border-border/50 overflow-x-auto">
               {(['today', '7d', 'month', 'all'] as TimeFilter[]).map((f) => (
                 <button
                   key={f}
                   onClick={() => setFilter(f)}
-                  className={`px-3 md:px-4 py-2 text-xs md:text-sm font-medium transition-colors whitespace-nowrap touch-feedback ${filter === f
-                    ? 'bg-primary text-primary-foreground'
-                    : 'bg-card text-muted-foreground hover:text-foreground'
-                    }`}
+                  className={`px-3 md:px-4 py-2 text-xs md:text-sm font-medium transition-colors whitespace-nowrap touch-feedback ${
+                    filter === f
+                      ? 'bg-primary text-primary-foreground'
+                      : 'bg-card text-muted-foreground hover:text-foreground'
+                  }`}
                 >
                   {filterLabels[f]}
                 </button>
@@ -388,28 +415,14 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
 
             {/* Sync All Dropdown */}
             {isSyncing ? (
-              <>
-                <Button
-                  disabled
-                  size="sm"
-                  className="gap-2 bg-gradient-to-r from-purple-600 to-yellow-600 text-xs md:text-sm"
-                >
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  <span className="hidden sm:inline">{syncProgress || 'Syncing...'}</span>
-                </Button>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="h-9 px-2 text-red-400 hover:text-red-500 hover:bg-red-500/10"
-                  onClick={async () => {
-                    setIsSyncing(false);
-                    await supabase.rpc('reset_stuck_syncs', { p_timeout_minutes: 0 });
-                    window.location.reload();
-                  }}
-                >
-                  <XCircle className="h-4 w-4" />
-                </Button>
-              </>
+              <Button
+                disabled
+                size="sm"
+                className="gap-2 bg-gradient-to-r from-purple-600 to-yellow-600 text-xs md:text-sm"
+              >
+                <Loader2 className="h-4 w-4 animate-spin" />
+                <span className="hidden sm:inline">{syncProgress || 'Syncing...'}</span>
+              </Button>
             ) : (
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
@@ -602,25 +615,23 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
       </div>
 
       {/* Failure reasons inline */}
-      {
-        kpis.failureReasons.length > 0 && (
-          <div className="flex items-center gap-2 flex-wrap p-3 md:p-4 bg-card rounded-xl border border-border/50">
-            <span className="text-[10px] md:text-xs text-amber-400 flex items-center gap-1">
-              <AlertTriangle className="h-3 w-3" />
-              Razones:
-            </span>
-            {kpis.failureReasons.slice(0, 3).map((reason, i) => (
-              <Badge
-                key={i}
-                variant="outline"
-                className="text-[10px] md:text-xs border-amber-500/30 text-amber-400 bg-amber-500/10"
-              >
-                {reason.reason}: {reason.count}
-              </Badge>
-            ))}
-          </div>
-        )
-      }
-    </div >
+      {kpis.failureReasons.length > 0 && (
+        <div className="flex items-center gap-2 flex-wrap p-3 md:p-4 bg-card rounded-xl border border-border/50">
+          <span className="text-[10px] md:text-xs text-amber-400 flex items-center gap-1">
+            <AlertTriangle className="h-3 w-3" />
+            Razones:
+          </span>
+          {kpis.failureReasons.slice(0, 3).map((reason, i) => (
+            <Badge
+              key={i}
+              variant="outline"
+              className="text-[10px] md:text-xs border-amber-500/30 text-amber-400 bg-amber-500/10"
+            >
+              {reason.reason}: {reason.count}
+            </Badge>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }

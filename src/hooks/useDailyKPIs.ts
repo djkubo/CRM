@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { supabase } from '@/integrations/supabase/client';
-import { startOfDay, endOfDay, subDays, subMonths, subYears, format } from 'date-fns';
+import { startOfDay, endOfDay, subDays, subMonths, subYears } from 'date-fns';
 
 export type TimeFilter = 'today' | '7d' | 'month' | 'all';
 
@@ -36,7 +36,7 @@ const defaultKPIs: DailyKPIs = {
 
 function getDateRange(filter: TimeFilter): { start: string; end: string; rangeParam: string } {
   const now = new Date();
-
+  
   let startDate: Date;
   let endDate = endOfDay(now);
   let rangeParam: string = filter;
@@ -60,10 +60,10 @@ function getDateRange(filter: TimeFilter): { start: string; end: string; rangePa
       rangeParam = 'today';
   }
 
-  return {
-    start: startDate.toISOString(),
-    end: endDate.toISOString(),
-    rangeParam
+  return { 
+    start: startDate.toISOString(), 
+    end: endDate.toISOString(), 
+    rangeParam 
   };
 }
 
@@ -78,8 +78,8 @@ export function useDailyKPIs(filter: TimeFilter = 'today') {
 
     try {
       const { start, end, rangeParam } = getDateRange(filter);
-      const startDateOnly = format(new Date(start), 'yyyy-MM-dd');
-      const endDateOnly = format(new Date(end), 'yyyy-MM-dd');
+      const startDateOnly = start.split('T')[0];
+      const endDateOnly = end.split('T')[0];
 
       // Fetch each query separately with error handling
       let newCustomers: { new_customer_count: number; total_revenue: number; currency: string }[] = [];
@@ -122,49 +122,28 @@ export function useDailyKPIs(filter: TimeFilter = 'today') {
       const failedQueries = promises.filter(p => p.status === 'rejected').length;
       if (failedQueries > 0) setError(`${failedQueries} métricas no cargaron`);
 
-      const MXN_TO_USD = 0.05;
-
-      const sumByCurrency = <T extends { currency?: string | null }>(
-        rows: T[],
-        amountKey: keyof T,
-      ) => rows.reduce((sum, row) => {
-        const amount = Number(row[amountKey] ?? 0);
-        const currency = row.currency?.toLowerCase();
-
-        if (currency === 'mxn') {
-          return sum + amount * MXN_TO_USD;
-        }
-        return sum + amount;
-      }, 0);
-
-      const sumCounts = <T,>(rows: T[], countKey: keyof T) =>
-        rows.reduce((sum, row) => sum + Number(row[countKey] ?? 0), 0);
-
-      // Aggregate across currencies (fallback to USD conversion for MXN)
-      const totalNewCustomers = sumCounts(newCustomers, 'new_customer_count');
-      const totalNewRevenue = sumByCurrency(newCustomers, 'total_revenue');
-      const totalSalesCount = sumCounts(sales, 'transaction_count');
-      const totalSalesAmount = sumByCurrency(sales, 'total_amount');
-      const totalFailures = sumCounts(failed, 'failed_count');
-      const totalCancellations = sumCounts(cancellations, 'cancellation_count');
-      const totalCancellationRevenue = sumByCurrency(cancellations, 'lost_mrr');
+      // Aggregate - prioritize USD
+      const usdNew = newCustomers.find(r => r.currency?.toLowerCase() === 'usd') || { new_customer_count: 0, total_revenue: 0 };
+      const usdSales = sales.find(r => r.currency?.toLowerCase() === 'usd') || { total_amount: 0, transaction_count: 0 };
+      const usdFailed = failed.find(r => r.currency?.toLowerCase() === 'usd') || { failed_count: 0 };
+      const usdCancel = cancellations.find(r => r.currency?.toLowerCase() === 'usd') || { cancellation_count: 0, lost_mrr: 0 };
       const trialConv = trialConversions[0] || { conversion_count: 0, total_revenue: 0 };
 
-      const renewalsCount = Math.max(0, totalSalesCount - totalNewCustomers - trialConv.conversion_count);
-      const newRevenue = totalNewRevenue / 100;
+      const renewalsCount = Math.max(0, usdSales.transaction_count - usdNew.new_customer_count - trialConv.conversion_count);
+      const newRevenue = usdNew.total_revenue / 100;
       const conversionRevenue = trialConv.total_revenue / 100;
-      const renewalRevenue = Math.max(0, totalSalesAmount / 100 - newRevenue - conversionRevenue);
-      const cancellationRevenue = totalCancellationRevenue / 100;
+      const renewalRevenue = Math.max(0, usdSales.total_amount / 100 - newRevenue - conversionRevenue);
+      const cancellationRevenue = (usdCancel.lost_mrr || 0) / 100;
 
       setKPIs({
         registrationsToday: clientsCount,
         trialsStartedToday: trialsCount,
         trialConversionsToday: trialConv.conversion_count,
-        newPayersToday: totalNewCustomers,
+        newPayersToday: usdNew.new_customer_count,
         renewalsToday: renewalsCount,
-        failuresToday: totalFailures,
+        failuresToday: usdFailed.failed_count,
         failureReasons: [],
-        cancellationsToday: totalCancellations,
+        cancellationsToday: usdCancel.cancellation_count,
         newRevenue,
         conversionRevenue,
         renewalRevenue,
@@ -181,17 +160,17 @@ export function useDailyKPIs(filter: TimeFilter = 'today') {
 
   useEffect(() => {
     fetchKPIs();
-
-    // Subscribe to sync run completions instead of row-level inserts
-    const channel = supabase.channel('kpis-sync-runs')
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'sync_runs' }, (payload) => {
-        const status = (payload.new as { status?: string }).status;
-        if (status === 'completed' || status === 'completed_with_errors') {
-          fetchKPIs();
-        }
-      })
+    
+    // Subscribe to realtime changes on transactions, subscriptions, and invoices
+    const channel = supabase.channel('kpis-realtime')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'transactions' }, () => fetchKPIs())
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'transactions' }, () => fetchKPIs())
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'subscriptions' }, () => fetchKPIs())
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'subscriptions' }, () => fetchKPIs())
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'invoices' }, () => fetchKPIs())
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'invoices' }, () => fetchKPIs())
       .subscribe();
-
+      
     return () => { supabase.removeChannel(channel); };
   }, [fetchKPIs]);
 

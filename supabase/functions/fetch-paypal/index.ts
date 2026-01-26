@@ -152,13 +152,12 @@ async function fetchPayPalPage(
   accessToken: string,
   startDate: string,
   endDate: string,
-  page: number = 1,
-  pageSize: number = 100
+  page: number = 1
 ): Promise<PayPalPageResult> {
   const url = new URL("https://api-m.paypal.com/v1/reporting/transactions");
   url.searchParams.set("start_date", startDate);
   url.searchParams.set("end_date", endDate);
-  url.searchParams.set("page_size", String(pageSize));
+  url.searchParams.set("page_size", "100");
   url.searchParams.set("page", String(page));
   url.searchParams.set("fields", "transaction_info,payer_info,cart_info");
 
@@ -232,7 +231,6 @@ Deno.serve(async (req) => {
     let page = 1;
     let syncRunId: string | null = null;
     let cleanupStale = false;
-    let limit = 100;
 
     // Calculate safe date boundaries BEFORE processing request
     // PayPal API STRICTLY rejects future dates - must use past timestamp
@@ -247,11 +245,8 @@ Deno.serve(async (req) => {
       const body = await req.json();
       fetchAll = body.fetchAll === true;
       cleanupStale = body.cleanupStale === true;
-      page = body.cursor ? Number(body.cursor) : 1;
+      page = body.page || 1;
       syncRunId = body.syncRunId || null;
-      if (body.limit) {
-        limit = Math.min(Number(body.limit), 100);
-      }
       
       if (body.startDate) {
         let requestedStart = new Date(body.startDate);
@@ -392,7 +387,7 @@ Deno.serve(async (req) => {
     // Fetch transactions
     let result: PayPalPageResult;
     try {
-      result = await fetchPayPalPage(accessToken, startDate, endDate, page, limit);
+      result = await fetchPayPalPage(accessToken, startDate, endDate, page);
     } catch (error) {
       await supabase
         .from('sync_runs')
@@ -495,25 +490,14 @@ Deno.serve(async (req) => {
 
     // Check if more pages
     const hasMore = fetchAll && page < result.totalPages;
-    const nextCursor = hasMore ? String(page + 1) : null;
-    const responseHasMore = hasMore && !!nextCursor;
 
-    const { data: currentRun } = await supabase
-      .from('sync_runs')
-      .select('total_fetched, total_inserted')
-      .eq('id', syncRunId)
-      .single();
-
-    const totalFetched = (currentRun?.total_fetched || 0) + transactionsSaved;
-    const totalInserted = (currentRun?.total_inserted || 0) + transactionsSaved;
-
-    if (responseHasMore) {
+    if (hasMore) {
       await supabase
         .from('sync_runs')
         .update({
           status: 'continuing',
-          total_fetched: totalFetched,
-          total_inserted: totalInserted,
+          total_fetched: transactionsSaved,
+          total_inserted: transactionsSaved,
           checkpoint: { 
             page,
             totalPages: result.totalPages,
@@ -534,7 +518,7 @@ Deno.serve(async (req) => {
           hasMore: true,
           currentPage: page,
           totalPages: result.totalPages,
-          nextCursor,
+          nextPage: page + 1,
           duration_ms: Date.now() - startTime
         }),
         { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
@@ -547,8 +531,8 @@ Deno.serve(async (req) => {
       .update({
         status: 'completed',
         completed_at: new Date().toISOString(),
-        total_fetched: totalFetched,
-        total_inserted: totalInserted,
+        total_fetched: transactionsSaved,
+        total_inserted: transactionsSaved,
         checkpoint: null
       })
       .eq('id', syncRunId);
@@ -565,7 +549,6 @@ Deno.serve(async (req) => {
         paid_count: paidCount,
         failed_count: failedCount,
         hasMore: false,
-        nextCursor: null,
         duration_ms: Date.now() - startTime
       }),
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }

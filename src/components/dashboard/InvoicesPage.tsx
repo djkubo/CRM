@@ -272,7 +272,7 @@ export function InvoicesPage() {
                 <span className="ml-1.5">Sync</span>
               </Button>
               <Button
-                onClick={() => syncInvoicesFull({ fetchAll: true })}
+                onClick={() => syncInvoicesFull('full')}
                 disabled={syncInvoices.isPending || !!syncProgress}
                 variant="outline"
                 size="sm"

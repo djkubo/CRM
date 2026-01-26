@@ -7,7 +7,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { Progress } from '@/components/ui/progress';
 import { invokeWithAdminKey } from '@/lib/adminApi';
-import type {
+import type { 
   SyncResult,
   FetchStripeBody,
   FetchStripeResponse,
@@ -34,49 +34,6 @@ export function APISyncPanel() {
   const [invoicesProgress, setInvoicesProgress] = useState<{ current: number; total: number } | null>(null);
 
   // Helper to sync in chunks to avoid timeouts - now with per-service progress
-  const runPagedSync = async (
-    service: 'stripe' | 'paypal',
-    body: FetchStripeBody | FetchPayPalBody,
-  ) => {
-    let cursor: string | null = null;
-    let syncRunId: string | null = null;
-    let totalTransactions = 0;
-    let paidCount = 0;
-    let failedCount = 0;
-
-    while (true) {
-      if (service === 'stripe') {
-        const data = await invokeWithAdminKey<FetchStripeResponse, FetchStripeBody>('fetch-stripe', {
-          ...body,
-          cursor,
-          syncRunId,
-        });
-        if (!data?.success) break;
-        totalTransactions += data.synced_transactions ?? 0;
-        paidCount += data.paid_count ?? 0;
-        failedCount += data.failed_count ?? 0;
-        syncRunId = data.syncRunId ?? syncRunId;
-        cursor = data.nextCursor ?? null;
-        if (!data.hasMore || !cursor) break;
-      } else {
-        const data = await invokeWithAdminKey<FetchPayPalResponse, FetchPayPalBody>('fetch-paypal', {
-          ...body,
-          cursor,
-          syncRunId,
-        });
-        if (!data?.success) break;
-        totalTransactions += data.synced_transactions ?? 0;
-        paidCount += data.paid_count ?? 0;
-        failedCount += data.failed_count ?? 0;
-        syncRunId = data.syncRunId ?? syncRunId;
-        cursor = data.nextCursor ?? null;
-        if (!data.hasMore || !cursor) break;
-      }
-    }
-
-    return { synced_transactions: totalTransactions, paid_count: paidCount, failed_count: failedCount };
-  };
-
   const syncInChunks = async (
     service: 'stripe' | 'paypal',
     years: number,
@@ -85,70 +42,103 @@ export function APISyncPanel() {
   ): Promise<{ synced_transactions: number; synced_clients: number; paid_count: number; failed_count: number }> => {
     const now = new Date();
     const allResults = { synced_transactions: 0, synced_clients: 0, paid_count: 0, failed_count: 0 };
-
+    
     // Sync in 30-day chunks to avoid API limits and timeouts
     const totalChunks = Math.ceil(years * 12); // Monthly chunks
-
+    
     for (let i = 0; i < totalChunks; i++) {
       setProgress({ current: i + 1, total: totalChunks });
-
+      
       const endDate = new Date(now.getTime() - (i * 31 * 24 * 60 * 60 * 1000));
       const startDate = new Date(endDate.getTime() - (31 * 24 * 60 * 60 * 1000));
-
+      
       try {
-        const data = await runPagedSync(service, {
-          fetchAll: true,
-          startDate: startDate.toISOString(),
-          endDate: endDate.toISOString()
-        });
-        allResults.synced_transactions += data.synced_transactions;
-        allResults.paid_count += data.paid_count;
-        allResults.failed_count += data.failed_count;
+        if (service === 'stripe') {
+          const data = await invokeWithAdminKey<FetchStripeResponse, FetchStripeBody>(
+            'fetch-stripe',
+            { 
+              fetchAll: true,
+              startDate: startDate.toISOString(),
+              endDate: endDate.toISOString()
+            }
+          );
+          if (data?.success) {
+            allResults.synced_transactions += data.synced_transactions ?? 0;
+            allResults.paid_count += data.paid_count ?? 0;
+            allResults.failed_count += data.failed_count ?? 0;
+          }
+        } else {
+          const data = await invokeWithAdminKey<FetchPayPalResponse, FetchPayPalBody>(
+            'fetch-paypal',
+            { 
+              fetchAll: true,
+              startDate: startDate.toISOString(),
+              endDate: endDate.toISOString()
+            }
+          );
+          if (data?.success) {
+            allResults.synced_transactions += data.synced_transactions ?? 0;
+            allResults.paid_count += data.paid_count ?? 0;
+            allResults.failed_count += data.failed_count ?? 0;
+          }
+        }
       } catch (err) {
         console.error(`Chunk ${i + 1} failed:`, err);
         // Continue with next chunk
       }
     }
-
+    
     setProgress(null);
-    setResult({
-      success: true,
+    setResult({ 
+      success: true, 
       ...allResults,
-      message: `Sincronizado historial completo (${years} años)`
+      message: `Sincronizado historial completo (${years} años)` 
     });
-
+    
     return allResults;
   };
 
   const syncStripe = async (mode: 'last24h' | 'last31d' | 'all6months' | 'allHistory') => {
     setStripeSyncing(true);
     setStripeResult(null);
-
+    
     try {
       if (mode === 'last24h') {
         const now = new Date();
         const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+        
+        const data = await invokeWithAdminKey<FetchStripeResponse, FetchStripeBody>(
+          'fetch-stripe', 
+          { 
+            fetchAll: true,
+            startDate: yesterday.toISOString(),
+            endDate: now.toISOString()
+          }
+        );
 
-        const data = await runPagedSync('stripe', {
-          fetchAll: true,
-          startDate: yesterday.toISOString(),
-          endDate: now.toISOString()
-        });
-
-        setStripeResult({ success: true, ...data });
-        toast.success(`Stripe (24h): ${data.synced_transactions} transacciones sincronizadas`);
+        setStripeResult(data);
+        
+        if (data.success) {
+          toast.success(`Stripe (24h): ${data.synced_transactions ?? 0} transacciones sincronizadas`);
+        }
       } else if (mode === 'last31d') {
         const now = new Date();
         const startDate = new Date(now.getTime() - 31 * 24 * 60 * 60 * 1000);
+        
+        const data = await invokeWithAdminKey<FetchStripeResponse, FetchStripeBody>(
+          'fetch-stripe', 
+          { 
+            fetchAll: true,
+            startDate: startDate.toISOString(),
+            endDate: now.toISOString()
+          }
+        );
 
-        const data = await runPagedSync('stripe', {
-          fetchAll: true,
-          startDate: startDate.toISOString(),
-          endDate: now.toISOString()
-        });
-
-        setStripeResult({ success: true, ...data });
-        toast.success(`Stripe (31 días): ${data.synced_transactions} transacciones sincronizadas`);
+        setStripeResult(data);
+        
+        if (data.success) {
+          toast.success(`Stripe (31 días): ${data.synced_transactions ?? 0} transacciones sincronizadas`);
+        }
       } else if (mode === 'all6months') {
         const results = await syncInChunks('stripe', 0.5, setStripeResult, setStripeProgress);
         toast.success(`Stripe: ${results.synced_transactions} transacciones sincronizadas (6 meses)`);
@@ -157,7 +147,7 @@ export function APISyncPanel() {
         const results = await syncInChunks('stripe', 3, setStripeResult, setStripeProgress);
         toast.success(`Stripe: ${results.synced_transactions} transacciones sincronizadas (historial completo)`);
       }
-
+      
       // Refresh all data
       queryClient.invalidateQueries({ queryKey: ['transactions'] });
       queryClient.invalidateQueries({ queryKey: ['clients'] });
@@ -176,32 +166,44 @@ export function APISyncPanel() {
   const syncPayPal = async (mode: 'last24h' | 'last31d' | 'all6months' | 'allHistory') => {
     setPaypalSyncing(true);
     setPaypalResult(null);
-
+    
     try {
       if (mode === 'last24h') {
         const now = new Date();
         const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+        
+        const data = await invokeWithAdminKey<FetchPayPalResponse, FetchPayPalBody>(
+          'fetch-paypal', 
+          { 
+            fetchAll: true,
+            startDate: yesterday.toISOString(),
+            endDate: now.toISOString()
+          }
+        );
 
-        const data = await runPagedSync('paypal', {
-          fetchAll: true,
-          startDate: yesterday.toISOString(),
-          endDate: now.toISOString()
-        });
-
-        setPaypalResult({ success: true, ...data });
-        toast.success(`PayPal (24h): ${data.synced_transactions} transacciones sincronizadas`);
+        setPaypalResult(data);
+        
+        if (data.success) {
+          toast.success(`PayPal (24h): ${data.synced_transactions ?? 0} transacciones sincronizadas`);
+        }
       } else if (mode === 'last31d') {
         const now = new Date();
         const startDate = new Date(now.getTime() - 31 * 24 * 60 * 60 * 1000);
+        
+        const data = await invokeWithAdminKey<FetchPayPalResponse, FetchPayPalBody>(
+          'fetch-paypal', 
+          { 
+            fetchAll: true,
+            startDate: startDate.toISOString(),
+            endDate: now.toISOString()
+          }
+        );
 
-        const data = await runPagedSync('paypal', {
-          fetchAll: true,
-          startDate: startDate.toISOString(),
-          endDate: now.toISOString()
-        });
-
-        setPaypalResult({ success: true, ...data });
-        toast.success(`PayPal (31 días): ${data.synced_transactions} transacciones sincronizadas`);
+        setPaypalResult(data);
+        
+        if (data.success) {
+          toast.success(`PayPal (31 días): ${data.synced_transactions ?? 0} transacciones sincronizadas`);
+        }
       } else if (mode === 'all6months') {
         const results = await syncInChunks('paypal', 0.5, setPaypalResult, setPaypalProgress);
         toast.success(`PayPal: ${results.synced_transactions} transacciones sincronizadas (6 meses)`);
@@ -210,7 +212,7 @@ export function APISyncPanel() {
         const results = await syncInChunks('paypal', 2.5, setPaypalResult, setPaypalProgress);
         toast.success(`PayPal: ${results.synced_transactions} transacciones sincronizadas (historial completo)`);
       }
-
+      
       // Refresh all data
       queryClient.invalidateQueries({ queryKey: ['transactions'] });
       queryClient.invalidateQueries({ queryKey: ['clients'] });
@@ -248,7 +250,7 @@ export function APISyncPanel() {
   const syncManyChat = async () => {
     setManychatSyncing(true);
     setManychatResult(null);
-
+    
     try {
       let totalProcessed = 0;
       let totalInserted = 0;
@@ -260,7 +262,7 @@ export function APISyncPanel() {
       // Paginated sync loop
       while (hasMore) {
         const data = await invokeWithAdminKey<StandardSyncResponse>(
-          'sync-manychat',
+          'sync-manychat', 
           { dry_run: false, cursor, syncRunId }
         );
 
@@ -272,7 +274,7 @@ export function APISyncPanel() {
         totalProcessed += data.processed ?? 0;
         totalInserted += data.stats?.total_inserted ?? 0;
         totalUpdated += data.stats?.total_updated ?? 0;
-
+        
         hasMore = data.hasMore ?? false;
         cursor = data.nextCursor ? parseInt(data.nextCursor) : undefined;
       }
@@ -283,9 +285,9 @@ export function APISyncPanel() {
         total_inserted: totalInserted,
         total_updated: totalUpdated,
       });
-
+      
       toast.success(`ManyChat: ${totalProcessed} contactos sincronizados (${totalInserted} nuevos, ${totalUpdated} actualizados)`);
-
+      
       queryClient.invalidateQueries({ queryKey: ['clients'] });
       queryClient.invalidateQueries({ queryKey: ['clients-count'] });
     } catch (error) {
@@ -300,7 +302,7 @@ export function APISyncPanel() {
   const syncGHL = async () => {
     setGhlSyncing(true);
     setGhlResult(null);
-
+    
     try {
       let totalProcessed = 0;
       let hasMore = true;
@@ -311,9 +313,9 @@ export function APISyncPanel() {
       // Paginated sync loop - handles 150k+ contacts
       while (hasMore) {
         page++;
-
+        
         const data = await invokeWithAdminKey<StandardSyncResponse>(
-          'sync-ghl',
+          'sync-ghl', 
           { dry_run: false, offset, syncRunId }
         );
 
@@ -329,7 +331,7 @@ export function APISyncPanel() {
 
         syncRunId = data.syncRunId;
         totalProcessed += data.processed ?? 0;
-
+        
         hasMore = data.hasMore ?? false;
         offset = data.nextCursor ? parseInt(data.nextCursor) : undefined;
 
@@ -350,9 +352,9 @@ export function APISyncPanel() {
         total_fetched: totalProcessed,
         message: `${totalProcessed} contactos sincronizados`
       });
-
+      
       toast.success(`GoHighLevel: ${totalProcessed} contactos sincronizados`, { id: 'ghl-progress' });
-
+      
       queryClient.invalidateQueries({ queryKey: ['clients'] });
       queryClient.invalidateQueries({ queryKey: ['clients-count'] });
     } catch (error) {
@@ -367,7 +369,7 @@ export function APISyncPanel() {
   const syncInvoices = async (mode: 'recent' | 'full') => {
     setInvoicesSyncing(true);
     setInvoicesResult(null);
-
+    
     try {
       let hasMore = true;
       let cursor: string | null = null;
@@ -375,16 +377,11 @@ export function APISyncPanel() {
       let totalUpserted = 0;
       let page = 0;
       const stats = { draft: 0, open: 0, paid: 0, void: 0, uncollectible: 0 };
-      const endDate = new Date().toISOString();
-      const startDate = mode === 'recent'
-        ? new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
-        : undefined;
-      const fetchAll = mode === 'full';
 
       while (hasMore) {
         page++;
         setInvoicesProgress({ current: page, total: 0 }); // Unknown total
-
+        
         const data = await invokeWithAdminKey<{
           success: boolean;
           synced: number;
@@ -393,11 +390,8 @@ export function APISyncPanel() {
           nextCursor: string | null;
           stats?: typeof stats;
         }>('fetch-invoices', {
-          fetchAll,
-          startDate,
-          endDate,
+          mode,
           cursor,
-          limit: 25, // Reduce batch size to avoid timeouts
         });
 
         if (!data.success) {
@@ -406,7 +400,7 @@ export function APISyncPanel() {
 
         totalSynced += data.synced || 0;
         totalUpserted += data.upserted || 0;
-
+        
         if (data.stats) {
           stats.draft += data.stats.draft || 0;
           stats.open += data.stats.open || 0;
@@ -417,7 +411,7 @@ export function APISyncPanel() {
 
         hasMore = data.hasMore && !!data.nextCursor;
         cursor = data.nextCursor;
-
+        
         // Safety: limit to 50 pages (5000 invoices per sync)
         if (page >= 50) {
           console.log('Reached page limit, stopping');
@@ -431,23 +425,15 @@ export function APISyncPanel() {
         total_inserted: totalUpserted,
         message: `${totalUpserted} facturas sincronizadas (${stats.paid} pagadas, ${stats.open} abiertas, ${stats.draft} borradores)`
       });
-
+      
       toast.success(`Facturas: ${totalUpserted} sincronizadas (${stats.paid} pagadas, ${stats.open} abiertas)`);
-
+      
       queryClient.invalidateQueries({ queryKey: ['invoices'] });
       queryClient.invalidateQueries({ queryKey: ['pending-invoices'] });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Error desconocido';
       setInvoicesResult({ success: false, error: errorMessage });
       toast.error(`Error sincronizando facturas: ${errorMessage}`);
-
-      // Auto-cleanup stuck sync on error
-      try {
-        await invokeWithAdminKey('reset_stuck_syncs', { p_timeout_minutes: 0 });
-        console.log('Cleaned up stuck sync after error');
-      } catch (cleanupError) {
-        console.error('Failed to cleanup stuck sync:', cleanupError);
-      }
     } finally {
       setInvoicesSyncing(false);
       setInvoicesProgress(null);
@@ -484,8 +470,8 @@ export function APISyncPanel() {
               <Loader2 className="h-4 w-4 animate-spin" />
               <span>Stripe: Mes {stripeProgress.current}/{stripeProgress.total}</span>
             </div>
-            <Progress
-              value={(stripeProgress.current / stripeProgress.total) * 100}
+            <Progress 
+              value={(stripeProgress.current / stripeProgress.total) * 100} 
               className="h-2"
             />
             <p className="text-xs text-gray-400">
@@ -501,8 +487,8 @@ export function APISyncPanel() {
               <Loader2 className="h-4 w-4 animate-spin" />
               <span>PayPal: Mes {paypalProgress.current}/{paypalProgress.total}</span>
             </div>
-            <Progress
-              value={(paypalProgress.current / paypalProgress.total) * 100}
+            <Progress 
+              value={(paypalProgress.current / paypalProgress.total) * 100} 
               className="h-2"
             />
             <p className="text-xs text-gray-400">
@@ -521,7 +507,7 @@ export function APISyncPanel() {
               <div>
                 <h4 className="font-medium text-white">Stripe</h4>
                 <p className="text-xs text-gray-400">
-                  {stripeResult?.success
+                  {stripeResult?.success 
                     ? `${stripeResult.synced_transactions} transacciones (${stripeResult.paid_count} pagos, ${stripeResult.failed_count} fallidos)`
                     : 'Sincroniza desde Stripe API'
                   }
@@ -538,7 +524,7 @@ export function APISyncPanel() {
               </Badge>
             )}
           </div>
-
+          
           <div className="grid grid-cols-2 gap-2">
             <Button
               variant="outline"
@@ -592,7 +578,7 @@ export function APISyncPanel() {
               <div>
                 <h4 className="font-medium text-white">PayPal</h4>
                 <p className="text-xs text-gray-400">
-                  {paypalResult?.success
+                  {paypalResult?.success 
                     ? `${paypalResult.synced_transactions} transacciones (${paypalResult.paid_count} pagos, ${paypalResult.failed_count} fallidos)`
                     : 'Sincroniza desde PayPal API'
                   }
@@ -609,7 +595,7 @@ export function APISyncPanel() {
               </Badge>
             )}
           </div>
-
+          
           <div className="grid grid-cols-2 gap-2">
             <Button
               variant="outline"
@@ -663,7 +649,7 @@ export function APISyncPanel() {
               <div>
                 <h4 className="font-medium text-white">Facturas Stripe</h4>
                 <p className="text-xs text-gray-400">
-                  {invoicesResult?.success
+                  {invoicesResult?.success 
                     ? invoicesResult.message
                     : 'Sincroniza todas las facturas (draft, open, paid, void)'
                   }
@@ -680,36 +666,14 @@ export function APISyncPanel() {
               </Badge>
             )}
           </div>
-
+          
           {invoicesProgress && (
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2 text-xs text-cyan-400">
-                <Loader2 className="h-3 w-3 animate-spin" />
-                <span>Página {invoicesProgress.current}...</span>
-              </div>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-6 w-6 text-red-400 hover:text-red-300 hover:bg-red-500/10"
-                title="Cancelar Sincronización"
-                onClick={async (e) => {
-                  e.stopPropagation();
-                  try {
-                    toast.info('Deteniendo sincronización...');
-                    setInvoicesSyncing(false); // Stop local loading
-                    await invokeWithAdminKey('reset_stuck_syncs', { p_timeout_minutes: 0 });
-                    toast.success('Sincronización cancelada');
-                  } catch (err) {
-                    console.error('Error stopping sync:', err);
-                    toast.error('Error al cancelar');
-                  }
-                }}
-              >
-                <div className="h-3 w-3 rounded-sm bg-current" />
-              </Button>
+            <div className="flex items-center gap-2 text-xs text-cyan-400">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              <span>Página {invoicesProgress.current}...</span>
             </div>
           )}
-
+          
           <div className="grid grid-cols-2 gap-2">
             <Button
               variant="outline"
@@ -731,7 +695,7 @@ export function APISyncPanel() {
               Todo Historial
             </Button>
           </div>
-
+          
           <p className="text-xs text-gray-500">
             📄 Sincroniza facturas con status, paid_at, raw_data y client_id vinculado
           </p>
@@ -746,7 +710,7 @@ export function APISyncPanel() {
               <div>
                 <h4 className="font-medium text-white">ManyChat</h4>
                 <p className="text-xs text-gray-400">
-                  {manychatResult?.success
+                  {manychatResult?.success 
                     ? `${manychatResult.total_fetched} contactos (${manychatResult.total_inserted} nuevos, ${manychatResult.total_updated} actualizados)`
                     : 'Sincroniza todos tus suscriptores de ManyChat'
                   }
@@ -763,7 +727,7 @@ export function APISyncPanel() {
               </Badge>
             )}
           </div>
-
+          
           <Button
             onClick={syncManyChat}
             disabled={manychatSyncing}
@@ -781,7 +745,7 @@ export function APISyncPanel() {
               </>
             )}
           </Button>
-
+          
           <p className="text-xs text-gray-500">
             📱 Importa suscriptores de Instagram, Messenger y WhatsApp. Unifica por email/phone.
           </p>
@@ -797,7 +761,7 @@ export function APISyncPanel() {
               <div>
                 <h4 className="font-medium text-white">GoHighLevel</h4>
                 <p className="text-xs text-gray-400">
-                  {ghlResult?.success
+                  {ghlResult?.success 
                     ? (ghlResult.message || `${ghlResult.total_fetched?.toLocaleString() || 0} contactos (${ghlResult.total_inserted?.toLocaleString() || 0} nuevos, ${ghlResult.total_updated?.toLocaleString() || 0} actualizados)`)
                     : ghlResult?.error
                       ? ghlResult.error
@@ -816,7 +780,7 @@ export function APISyncPanel() {
               </Badge>
             )}
           </div>
-
+          
           <Button
             onClick={syncGHL}
             disabled={ghlSyncing}
@@ -834,14 +798,14 @@ export function APISyncPanel() {
               </>
             )}
           </Button>
-
+          
           <p className="text-xs text-gray-500">
             📋 Importa contactos de tu CRM GoHighLevel. Unifica por email/phone.
           </p>
         </div>
 
         {/* Sync All Button */}
-        <Button
+        <Button 
           onClick={syncAllHistory}
           disabled={stripeSyncing || paypalSyncing}
           className="w-full bg-gradient-to-r from-purple-600 to-yellow-600 hover:from-purple-700 hover:to-yellow-700"

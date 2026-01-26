@@ -54,14 +54,6 @@ serve(async (req) => {
 
     console.log("✅ User authenticated:", user.email);
 
-    const { data: isAdmin, error: adminError } = await supabase.rpc('is_admin');
-    if (adminError || !isAdmin) {
-      return new Response(
-        JSON.stringify({ error: "Forbidden" }),
-        { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
     const { stripe_invoice_id } = await req.json();
 
     if (!stripe_invoice_id) {
@@ -95,8 +87,7 @@ serve(async (req) => {
 
     if (finalizedInvoice.status === "open") {
       console.log("💰 Attempting to pay invoice...");
-      const idempotencyKey = `force-charge:${stripe_invoice_id}`;
-      const paidInvoice = await stripe.invoices.pay(stripe_invoice_id, undefined, { idempotencyKey });
+      const paidInvoice = await stripe.invoices.pay(stripe_invoice_id);
       console.log("✅ Payment attempted, status:", paidInvoice.status);
 
       const serviceClient = createClient(
@@ -111,17 +102,6 @@ serve(async (req) => {
           updated_at: new Date().toISOString()
         })
         .eq("stripe_invoice_id", stripe_invoice_id);
-
-      await serviceClient
-        .from("recovery_attempts")
-        .insert({
-          stripe_invoice_id,
-          status: paidInvoice.status === 'paid' ? 'succeeded' : 'failed',
-          idempotency_key: idempotencyKey,
-          amount: paidInvoice.amount_due,
-          currency: paidInvoice.currency,
-          attempted_by: user.email ?? 'unknown',
-        });
 
       return new Response(
         JSON.stringify({ 

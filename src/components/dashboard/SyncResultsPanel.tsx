@@ -1,11 +1,11 @@
 import { useState, useEffect } from "react";
 import { supabase } from "@/integrations/supabase/client";
-import {
-  CheckCircle,
-  XCircle,
-  Clock,
-  Loader2,
-  ChevronDown,
+import { 
+  CheckCircle, 
+  XCircle, 
+  Clock, 
+  Loader2, 
+  ChevronDown, 
   ChevronUp,
   RefreshCw,
   CreditCard,
@@ -13,8 +13,6 @@ import {
   Users
 } from "lucide-react";
 import { formatDistanceToNow, format } from "date-fns";
-import { useQueryClient } from '@tanstack/react-query';
-import { toast } from 'sonner';
 import { es } from "date-fns/locale";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -56,7 +54,7 @@ export function SyncResultsPanel() {
       .select("*")
       .in("status", ["running", "continuing"])
       .order("started_at", { ascending: false });
-
+    
     setActiveSyncs((active || []) as SyncRun[]);
 
     // Recent completed/failed syncs (last hour)
@@ -97,10 +95,10 @@ export function SyncResultsPanel() {
   }, []);
 
   const getSourceConfig = (source: string) => {
-    return SOURCE_CONFIG[source] || {
-      label: source,
-      icon: RefreshCw,
-      color: "text-muted-foreground"
+    return SOURCE_CONFIG[source] || { 
+      label: source, 
+      icon: RefreshCw, 
+      color: "text-muted-foreground" 
     };
   };
 
@@ -138,17 +136,17 @@ export function SyncResultsPanel() {
   };
 
   const getProgressPercent = (sync: SyncRun): number => {
-    const checkpoint = (typeof sync.checkpoint === 'object' && sync.checkpoint !== null)
-      ? sync.checkpoint as Record<string, unknown>
+    const checkpoint = (typeof sync.checkpoint === 'object' && sync.checkpoint !== null) 
+      ? sync.checkpoint as Record<string, unknown> 
       : null;
-
+    
     // If we have runningTotal, estimate based on typical patterns
     const runningTotal = checkpoint?.runningTotal as number || sync.total_fetched || 0;
-
+    
     // Estimate progress - cap at 95% until actually complete
     if (sync.status === 'completed') return 100;
     if (runningTotal === 0) return 5;
-
+    
     // Rough estimate: assume ~1000 transactions max for most syncs
     const estimated = Math.min(95, Math.round((runningTotal / 1000) * 100));
     return Math.max(estimated, 10);
@@ -166,8 +164,9 @@ export function SyncResultsPanel() {
 
   const hasAnySyncs = activeSyncs.length > 0 || recentRuns.length > 0;
 
-  // Always show panel
-  // if (!hasAnySyncs) return null;
+  if (!hasAnySyncs) {
+    return null;
+  }
 
   return (
     <div className="bg-card rounded-xl border border-border/50 overflow-hidden">
@@ -181,39 +180,11 @@ export function SyncResultsPanel() {
           <span className="text-sm font-medium text-foreground">
             Estado de Sincronización
           </span>
-          <div className="flex items-center gap-2">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={async (e) => {
-                e.stopPropagation();
-                setActiveSyncs([]); // Limpiar UI inmediatamente
-                toast.loading('Limpiando procesos...', { id: 'reset-toast' });
-
-                const { error } = await supabase.rpc('reset_stuck_syncs', { p_timeout_minutes: 0 });
-
-                if (!error) {
-                  toast.success('Sistema reiniciado. Recargando...', { id: 'reset-toast' });
-                  setTimeout(() => {
-                    window.location.reload();
-                  }, 1000);
-                } else {
-                  toast.error('Error: ' + error.message, { id: 'reset-toast' });
-                  fetchRuns();
-                }
-              }}
-              className="h-6 px-2 text-xs text-red-400 hover:text-red-300 hover:bg-red-500/10 gap-1 mr-2"
-            >
-              <XCircle className="h-3 w-3" />
-              {activeSyncs.length > 0 ? "Forzar Detención" : "Limpiar Estado"}
-            </Button>
-
-            {activeSyncs.length > 0 && (
-              <Badge variant="outline" className="bg-blue-500/10 text-blue-400 border-blue-500/30 text-xs">
-                {activeSyncs.length} activo{activeSyncs.length > 1 ? 's' : ''}
-              </Badge>
-            )}
-          </div>
+          {activeSyncs.length > 0 && (
+            <Badge variant="outline" className="bg-blue-500/10 text-blue-400 border-blue-500/30 text-xs">
+              {activeSyncs.length} activo{activeSyncs.length > 1 ? 's' : ''}
+            </Badge>
+          )}
         </div>
         {isExpanded ? (
           <ChevronUp className="h-4 w-4 text-muted-foreground" />
@@ -232,7 +203,7 @@ export function SyncResultsPanel() {
                 const config = getSourceConfig(sync.source);
                 const Icon = config.icon;
                 const progress = getProgressPercent(sync);
-
+                
                 return (
                   <div key={sync.id} className="space-y-2">
                     <div className="flex items-center justify-between">
@@ -261,7 +232,7 @@ export function SyncResultsPanel() {
               {recentRuns.map((sync) => {
                 const config = getSourceConfig(sync.source);
                 const Icon = config.icon;
-
+                
                 return (
                   <div key={sync.id} className="px-4 py-3 flex items-center justify-between gap-4">
                     <div className="flex items-center gap-3 min-w-0 flex-1">
@@ -275,7 +246,7 @@ export function SyncResultsPanel() {
                         </p>
                       </div>
                     </div>
-
+                    
                     <div className="flex items-center gap-3 flex-shrink-0">
                       <div className="text-right">
                         <p className="text-sm font-medium">
@@ -301,8 +272,7 @@ export function SyncResultsPanel() {
             </div>
           ))}
         </div>
-      )
-      }
-    </div >
+      )}
+    </div>
   );
 }

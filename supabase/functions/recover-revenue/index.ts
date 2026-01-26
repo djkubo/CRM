@@ -80,14 +80,10 @@ interface ProcessResult {
   skipped_cents: number;
 }
 
-// deno-lint-ignore no-explicit-any
 async function processInvoice(
   stripe: Stripe,
   invoice: Stripe.Invoice,
-  result: ProcessResult,
-  supabaseService: any,
-  syncRunId: string,
-  attemptedBy: string
+  result: ProcessResult
 ): Promise<boolean> {
   const customerEmail = typeof invoice.customer === "object" 
     ? (invoice.customer as Stripe.Customer)?.email 
@@ -98,43 +94,8 @@ async function processInvoice(
 
   console.log(`💳 Processing invoice ${invoice.id} - $${(invoice.amount_due / 100).toFixed(2)}`);
 
-  const { data: invoiceRecord } = await supabaseService
-    .from('invoices')
-    .select('id')
-    .eq('stripe_invoice_id', invoice.id)
-    .maybeSingle();
-
-  const existingSuccess = await supabaseService
-    .from('recovery_attempts')
-    .select('id')
-    .eq('stripe_invoice_id', invoice.id)
-    .eq('status', 'succeeded')
-    .maybeSingle();
-
-  if (existingSuccess.data) {
-    result.skipped.push({
-      invoice_id: invoice.id,
-      customer_email: customerEmail,
-      amount_due: invoice.amount_due,
-      currency: invoice.currency,
-      reason: 'Ya recuperada previamente',
-    });
-    result.skipped_cents += invoice.amount_due;
-    return true;
-  }
-
   if (SKIP_INVOICE_STATUSES.includes(invoice.status!)) {
     console.log(`🚫 SKIPPING: Invoice ${invoice.id} is ${invoice.status}`);
-    await supabaseService.from('recovery_attempts').insert({
-      invoice_id: invoiceRecord?.id ?? null,
-      stripe_invoice_id: invoice.id,
-      status: 'skipped',
-      error_message: `Invoice is ${invoice.status}`,
-      amount: invoice.amount_due,
-      currency: invoice.currency,
-      attempted_by: attemptedBy,
-      sync_run_id: syncRunId,
-    });
     result.skipped.push({
       invoice_id: invoice.id,
       customer_email: customerEmail,
@@ -151,16 +112,6 @@ async function processInvoice(
     
     if (SKIP_SUBSCRIPTION_STATUSES.includes(subscription.status)) {
       console.log(`🚫 SKIPPING: Subscription ${subscription.id} is ${subscription.status}`);
-      await supabaseService.from('recovery_attempts').insert({
-        invoice_id: invoiceRecord?.id ?? null,
-        stripe_invoice_id: invoice.id,
-        status: 'skipped',
-        error_message: `Subscription is ${subscription.status}`,
-        amount: invoice.amount_due,
-        currency: invoice.currency,
-        attempted_by: attemptedBy,
-        sync_run_id: syncRunId,
-      });
       result.skipped.push({
         invoice_id: invoice.id,
         customer_email: customerEmail,
@@ -196,28 +147,10 @@ async function processInvoice(
   try {
     await sleep(API_DELAY_MS);
     console.log(`💰 Attempting to pay with default payment method...`);
-    const idempotencyKey = `${syncRunId}:${invoice.id}:default`;
-    const { data: attempt } = await supabaseService.from('recovery_attempts').insert({
-      invoice_id: invoiceRecord?.id ?? null,
-      stripe_invoice_id: invoice.id,
-      status: 'started',
-      idempotency_key: idempotencyKey,
-      amount: invoice.amount_due,
-      currency: invoice.currency,
-      attempted_by: attemptedBy,
-      sync_run_id: syncRunId,
-    }).select('id').single();
-
-    const paidInvoice = await stripe.invoices.pay(invoice.id, undefined, { idempotencyKey });
+    const paidInvoice = await stripe.invoices.pay(invoice.id);
     
     if (paidInvoice.status === "paid") {
       console.log(`✅ SUCCESS with default payment method!`);
-      if (attempt?.id) {
-        await supabaseService.from('recovery_attempts').update({
-          status: 'succeeded',
-          updated_at: new Date().toISOString(),
-        }).eq('id', attempt.id);
-      }
       result.succeeded.push({
         invoice_id: invoice.id,
         customer_email: customerEmail,
@@ -231,16 +164,6 @@ async function processInvoice(
   } catch (error: unknown) {
     cardsTried++;
     lastError = error instanceof Error ? error.message : "Unknown error";
-    await supabaseService.from('recovery_attempts').insert({
-      invoice_id: invoiceRecord?.id ?? null,
-      stripe_invoice_id: invoice.id,
-      status: 'failed',
-      error_message: lastError,
-      amount: invoice.amount_due,
-      currency: invoice.currency,
-      attempted_by: attemptedBy,
-      sync_run_id: syncRunId,
-    });
     console.log(`❌ Default payment failed: ${lastError}`);
   }
 
@@ -260,28 +183,10 @@ async function processInvoice(
         });
         
         await sleep(API_DELAY_MS);
-        const idempotencyKey = `${syncRunId}:${invoice.id}:${pm.id}`;
-        const { data: attempt } = await supabaseService.from('recovery_attempts').insert({
-          invoice_id: invoiceRecord?.id ?? null,
-          stripe_invoice_id: invoice.id,
-          status: 'started',
-          idempotency_key: idempotencyKey,
-          amount: invoice.amount_due,
-          currency: invoice.currency,
-          attempted_by: attemptedBy,
-          sync_run_id: syncRunId,
-        }).select('id').single();
-
-        const paidInvoice = await stripe.invoices.pay(invoice.id, undefined, { idempotencyKey });
+        const paidInvoice = await stripe.invoices.pay(invoice.id);
         
         if (paidInvoice.status === "paid") {
           console.log(`✅ SUCCESS with ${pm.card?.brand} ****${pm.card?.last4}!`);
-          if (attempt?.id) {
-            await supabaseService.from('recovery_attempts').update({
-              status: 'succeeded',
-              updated_at: new Date().toISOString(),
-            }).eq('id', attempt.id);
-          }
           result.succeeded.push({
             invoice_id: invoice.id,
             customer_email: customerEmail,
@@ -295,16 +200,6 @@ async function processInvoice(
       } catch (error: unknown) {
         cardsTried++;
         lastError = error instanceof Error ? error.message : "Unknown error";
-        await supabaseService.from('recovery_attempts').insert({
-          invoice_id: invoiceRecord?.id ?? null,
-          stripe_invoice_id: invoice.id,
-          status: 'failed',
-          error_message: lastError,
-          amount: invoice.amount_due,
-          currency: invoice.currency,
-          attempted_by: attemptedBy,
-          sync_run_id: syncRunId,
-        });
         console.log(`❌ Card ${pm.card?.last4} failed: ${lastError}`);
       }
     }
@@ -425,14 +320,6 @@ serve(async (req: Request) => {
 
     console.log(`✅ User authenticated: ${user.email}`);
 
-    const { data: isAdmin, error: adminError } = await supabaseUser.rpc('is_admin');
-    if (adminError || !isAdmin) {
-      return new Response(
-        JSON.stringify({ ok: false, error: "User is not an admin" }),
-        { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
     const supabaseService = createClient(
       Deno.env.get("SUPABASE_URL")!,
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
@@ -547,7 +434,7 @@ serve(async (req: Request) => {
     let lastProcessedId: string | undefined;
 
     for (const invoice of invoicesToProcess) {
-      await processInvoice(stripe, invoice, result, supabaseService, syncRunId, user.email ?? 'unknown');
+      await processInvoice(stripe, invoice, result);
       lastProcessedId = invoice.id;
     }
 
