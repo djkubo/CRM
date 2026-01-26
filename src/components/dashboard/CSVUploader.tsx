@@ -366,7 +366,7 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
             
             const response = await invokeWithAdminKey<{ ok?: boolean; success?: boolean; result?: any; error?: string }>(
               'process-csv-bulk',
-              { csvText: text, filename: file.name, type: 'stripe_payments' }
+              { csvText: text, csvType: 'stripe_payments', filename: file.name }
             );
 
             // Handle both response formats: { ok: true, result } or { success: false, error }
@@ -444,7 +444,7 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
 
             const response = await invokeWithAdminKey<{ ok?: boolean; success?: boolean; result?: any; error?: string }>(
               'process-csv-bulk',
-              { csvText: text, filename: file.name, type: 'stripe_customers' }
+              { csvText: text, csvType: 'stripe_customers', filename: file.name }
             );
 
             // Handle both response formats: { ok: true, result } or { success: false, error }
@@ -521,7 +521,7 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
 
               const response = await invokeWithAdminKey<{ ok?: boolean; success?: boolean; result?: any; error?: string }>(
                 'process-csv-bulk',
-                { csvText: text, filename: file.name, type: 'paypal' }
+                { csvText: text, csvType: 'paypal', filename: file.name }
               );
 
               // Handle both response formats: { ok: true, result } or { success: false, error }

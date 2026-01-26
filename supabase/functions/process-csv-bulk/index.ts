@@ -215,7 +215,7 @@ async function processGHL(
   const emailContacts = contacts.filter(c => c.email);
   const uniqueEmails = [...new Set(emailContacts.map(c => c.email!))];
   const existingByEmail = new Map<string, { tags?: string[]; full_name?: string }>();
-  const BATCH_SIZE = 1000;
+  const BATCH_SIZE = 500; // Reduced to avoid timeouts
 
   for (let i = 0; i < uniqueEmails.length; i += BATCH_SIZE) {
     const batch = uniqueEmails.slice(i, i + BATCH_SIZE);
@@ -255,14 +255,36 @@ async function processGHL(
     else result.created++;
   }
 
-  // Execute upserts
+  // Execute upserts with progress logging and delays
+  const totalBatches = Math.ceil(toUpsert.length / BATCH_SIZE);
   for (let i = 0; i < toUpsert.length; i += BATCH_SIZE) {
     const batch = toUpsert.slice(i, i + BATCH_SIZE);
-    const { error } = await supabase.from('clients').upsert(batch, { onConflict: 'email' });
-    if (error) result.errors.push(`Upsert batch ${Math.floor(i / BATCH_SIZE) + 1}: ${error.message}`);
+    const batchNum = Math.floor(i / BATCH_SIZE) + 1;
     
-    if (i % 10000 === 0 && i > 0) {
-      logger.info('GHL upsert progress', { processed: i, total: toUpsert.length });
+    const { error } = await supabase.from('clients').upsert(batch, { onConflict: 'email' });
+    if (error) {
+      result.errors.push(`Upsert batch ${batchNum}/${totalBatches}: ${error.message}`);
+    } else {
+      if (existingByEmail.has(batch[0]?.email as string)) {
+        result.updated += batch.length;
+      } else {
+        result.created += batch.length;
+      }
+    }
+    
+    // Log progress every 10 batches
+    if (batchNum % 10 === 0 || batchNum === 1) {
+      logger.info('GHL upsert progress', { 
+        batch: batchNum, 
+        total: totalBatches, 
+        processed: i + batch.length, 
+        totalRecords: toUpsert.length 
+      });
+    }
+    
+    // Small delay every 50 batches to avoid overwhelming DB
+    if (batchNum % 50 === 0 && i + BATCH_SIZE < toUpsert.length) {
+      await new Promise(resolve => setTimeout(resolve, 100));
     }
   }
 
@@ -367,21 +389,35 @@ async function processStripePayments(
     });
   }
 
-  // Upsert transactions
+  // Upsert transactions with progress logging
+  const totalTxBatches = Math.ceil(transactions.length / BATCH_SIZE);
   for (let i = 0; i < transactions.length; i += BATCH_SIZE) {
     const batch = transactions.slice(i, i + BATCH_SIZE);
+    const batchNum = Math.floor(i / BATCH_SIZE) + 1;
+    
     const { error } = await supabase
       .from('transactions')
       .upsert(batch, { onConflict: 'payment_key' });
     
     if (error) {
-      result.errors.push(`Transaction batch ${Math.floor(i / BATCH_SIZE) + 1}: ${error.message}`);
+      result.errors.push(`Transaction batch ${batchNum}/${totalTxBatches}: ${error.message}`);
     } else {
       result.created += batch.length;
     }
 
-    if (i % 5000 === 0 && i > 0) {
-      logger.info('Stripe payments upsert progress', { processed: i, total: transactions.length });
+    // Log progress every 10 batches
+    if (batchNum % 10 === 0 || batchNum === 1) {
+      logger.info('Stripe payments upsert progress', { 
+        batch: batchNum, 
+        total: totalTxBatches, 
+        processed: i + batch.length, 
+        totalRecords: transactions.length 
+      });
+    }
+    
+    // Small delay every 50 batches
+    if (batchNum % 50 === 0 && i + BATCH_SIZE < transactions.length) {
+      await new Promise(resolve => setTimeout(resolve, 100));
     }
   }
 
@@ -500,16 +536,34 @@ async function processPayPal(
     });
   }
 
+  const totalPayPalBatches = Math.ceil(txRecords.length / BATCH_SIZE);
   for (let i = 0; i < txRecords.length; i += BATCH_SIZE) {
     const batch = txRecords.slice(i, i + BATCH_SIZE);
+    const batchNum = Math.floor(i / BATCH_SIZE) + 1;
+    
     const { error } = await supabase
       .from('transactions')
       .upsert(batch, { onConflict: 'payment_key' });
     
     if (error) {
-      result.errors.push(`PayPal batch ${Math.floor(i / BATCH_SIZE) + 1}: ${error.message}`);
+      result.errors.push(`PayPal batch ${batchNum}/${totalPayPalBatches}: ${error.message}`);
     } else {
       result.created += batch.length;
+    }
+    
+    // Log progress every 10 batches
+    if (batchNum % 10 === 0 || batchNum === 1) {
+      logger.info('PayPal upsert progress', { 
+        batch: batchNum, 
+        total: totalPayPalBatches, 
+        processed: i + batch.length, 
+        totalRecords: txRecords.length 
+      });
+    }
+    
+    // Small delay every 50 batches
+    if (batchNum % 50 === 0 && i + BATCH_SIZE < txRecords.length) {
+      await new Promise(resolve => setTimeout(resolve, 100));
     }
   }
 
@@ -620,14 +674,27 @@ async function processStripeCustomers(
     });
   }
 
+  const totalCustomerBatches = Math.ceil(clientRecords.length / BATCH_SIZE);
   for (let i = 0; i < clientRecords.length; i += BATCH_SIZE) {
     const batch = clientRecords.slice(i, i + BATCH_SIZE);
+    const batchNum = Math.floor(i / BATCH_SIZE) + 1;
+    
     const { error } = await supabase.from('clients').upsert(batch, { onConflict: 'email' });
     
     if (error) {
-      result.errors.push(`Customer batch ${Math.floor(i / BATCH_SIZE) + 1}: ${error.message}`);
+      result.errors.push(`Customer batch ${batchNum}/${totalCustomerBatches}: ${error.message}`);
     } else {
-      result.created += batch.length;
+      result.updated += batch.length; // These are updates, not new clients
+    }
+    
+    // Log progress every 10 batches
+    if (batchNum % 10 === 0 || batchNum === 1) {
+      logger.info('Stripe customers upsert progress', { 
+        batch: batchNum, 
+        total: totalCustomerBatches, 
+        processed: i + batch.length, 
+        totalRecords: clientRecords.length 
+      });
     }
   }
 
@@ -640,6 +707,10 @@ Deno.serve(async (req) => {
     return new Response(null, { headers: corsHeaders });
   }
 
+  const startTime = Date.now();
+  const requestId = crypto.randomUUID().slice(0, 8);
+  logger.info(`[${requestId}] Starting CSV bulk processing`);
+
   try {
     const authCheck = await verifyAdmin(req);
     if (!authCheck.valid) {
@@ -649,7 +720,7 @@ Deno.serve(async (req) => {
       );
     }
 
-    const { csvText, csvType: requestedType } = await req.json() as { csvText: string; csvType?: CSVType };
+    const { csvText, csvType: requestedType, filename } = await req.json() as { csvText: string; csvType?: CSVType; filename?: string };
 
     if (!csvText || typeof csvText !== 'string') {
       return new Response(
@@ -658,7 +729,12 @@ Deno.serve(async (req) => {
       );
     }
 
-    logger.info('Starting CSV bulk processing', { csvLength: csvText.length, requestedType });
+    logger.info(`[${requestId}] Starting CSV bulk processing`, { 
+      csvLength: csvText.length, 
+      requestedType, 
+      filename: filename || 'unknown',
+      estimatedLines: csvText.split('\n').length 
+    });
 
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
     const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
@@ -708,7 +784,12 @@ Deno.serve(async (req) => {
         );
     }
 
-    logger.info('Processing complete', result);
+    const duration = Date.now() - startTime;
+    logger.info(`[${requestId}] Processing complete`, { 
+      ...result, 
+      duration_ms: duration,
+      duration_seconds: Math.round(duration / 1000)
+    });
 
     return new Response(
       JSON.stringify({ ok: true, result }),
@@ -716,11 +797,18 @@ Deno.serve(async (req) => {
     );
 
   } catch (error) {
-    logger.error('Fatal error', error instanceof Error ? error : new Error(String(error)));
+    const duration = Date.now() - startTime;
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    const isTimeout = errorMessage.includes('timeout') || errorMessage.includes('connection') || duration > 50000;
+    
+    logger.error(`[${requestId}] Fatal error after ${duration}ms`, error instanceof Error ? error : new Error(String(error)));
+    
     return new Response(
       JSON.stringify({ 
         ok: false, 
-        error: error instanceof Error ? error.message : 'Unknown error' 
+        error: isTimeout 
+          ? `Procesamiento interrumpido después de ${Math.round(duration/1000)}s. El archivo es muy grande. Intenta dividirlo en partes más pequeñas o procesa archivos menores a 50MB.`
+          : errorMessage
       }),
       { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
