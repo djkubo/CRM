@@ -1,40 +1,66 @@
-// Edge Function para procesar CSVs masivos de cualquier tipo
-// Soporta: GHL, Stripe Payments, Stripe Customers, PayPal, Subscriptions, Web Users
+// Edge Function: process-csv-bulk
+// Universal CSV processor for GHL, Stripe Payments, Stripe Customers, PayPal
+// Handles 200k+ records server-side without browser timeout limits
 
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3';
+import { createClient, SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3';
 import { createLogger, LogLevel } from '../_shared/logger.ts';
+
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+};
 
 const logger = createLogger('process-csv-bulk', LogLevel.INFO);
 
+type CSVType = 'ghl' | 'stripe_payments' | 'stripe_customers' | 'paypal' | 'subscriptions' | 'auto';
+
+// deno-lint-ignore no-explicit-any
+type AnySupabaseClient = SupabaseClient<any, any, any>;
+
 interface ProcessingResult {
-  ok: boolean;
-  result?: {
-    type: string;
-    clientsCreated: number;
-    clientsUpdated: number;
-    transactionsCreated?: number;
-    subscriptionsCreated?: number;
-    errors: string[];
-  };
-  error?: string;
+  csvType: string;
+  totalRows: number;
+  created: number;
+  updated: number;
+  skipped: number;
+  errors: string[];
+  duration: number;
 }
 
-// Normalize phone to E.164
-function normalizePhone(phone: string | null | undefined): string | null {
+async function verifyAdmin(req: Request): Promise<{ valid: boolean; userId?: string; error?: string }> {
+  const authHeader = req.headers.get('Authorization');
+  if (!authHeader?.startsWith('Bearer ')) {
+    return { valid: false, error: 'Missing Authorization header' };
+  }
+
+  const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+  const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY')!;
+
+  const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+    global: { headers: { Authorization: authHeader } }
+  });
+
+  const { data: { user }, error: userError } = await supabase.auth.getUser();
+  if (userError || !user) {
+    return { valid: false, error: 'Invalid token' };
+  }
+
+  // deno-lint-ignore no-explicit-any
+  const { data: isAdmin, error: adminError } = await (supabase as any).rpc('is_admin');
+  if (adminError || !isAdmin) {
+    return { valid: false, error: 'Not authorized as admin' };
+  }
+
+  return { valid: true, userId: user.id };
+}
+
+function normalizePhone(phone: string): string | null {
   if (!phone) return null;
   const cleaned = phone.replace(/[^\d+]/g, '');
   if (!cleaned || cleaned.length < 10) return null;
   return cleaned.startsWith('+') ? cleaned : `+${cleaned}`;
 }
 
-// Normalize email
-function normalizeEmail(email: string | null | undefined): string | null {
-  if (!email) return null;
-  const normalized = email.toLowerCase().trim();
-  return normalized.includes('@') ? normalized : null;
-}
-
-// Parse CSV line (handles quoted fields)
 function parseCSVLine(line: string): string[] {
   const result: string[] = [];
   let current = '';
@@ -42,6 +68,7 @@ function parseCSVLine(line: string): string[] {
   
   for (let i = 0; i < line.length; i++) {
     const char = line[i];
+    
     if (char === '"') {
       if (inQuotes && line[i + 1] === '"') {
         current += '"';
@@ -56,479 +83,645 @@ function parseCSVLine(line: string): string[] {
       current += char;
     }
   }
+  
   result.push(current.trim());
   return result;
 }
 
-// Process GHL CSV
-async function processGHL(supabase: any, csvText: string): Promise<ProcessingResult['result']> {
-  const lines = csvText.split('\n').filter(l => l.trim());
-  if (lines.length < 2) {
-    return { type: 'ghl', clientsCreated: 0, clientsUpdated: 0, errors: ['CSV vacío'] };
-  }
+function normalizeAmount(value: string): number {
+  if (!value) return 0;
+  const cleaned = value.replace(/[^0-9.-]/g, '');
+  const num = parseFloat(cleaned);
+  return isNaN(num) ? 0 : Math.round(num * 100); // Convert to cents
+}
 
-  const headers = parseCSVLine(lines[0]).map(h => h.toLowerCase().replace(/"/g, '').trim());
+function detectCSVType(headers: string[]): CSVType {
+  const normalized = headers.map(h => h.toLowerCase().trim());
+  
+  // GHL: Has "contact id" or specific GHL fields
+  if (normalized.some(h => h.includes('contact id') || h === 'ghl_contact_id')) {
+    return 'ghl';
+  }
+  
+  // Stripe Payments: Has payment_intent or id with amount
+  if (normalized.includes('id') && normalized.includes('amount') && 
+      (normalized.includes('payment_intent') || normalized.includes('customer') || normalized.includes('status'))) {
+    return 'stripe_payments';
+  }
+  
+  // Stripe Customers: Has customer_id or stripe_customer_id
+  if (normalized.some(h => h.includes('customer_id') || h === 'customer') && 
+      normalized.includes('email') && !normalized.includes('amount')) {
+    return 'stripe_customers';
+  }
+  
+  // PayPal: Has "Nombre" or Spanish PayPal fields, or "Transaction ID"
+  if (normalized.some(h => h === 'nombre' || h === 'transaction id' || h.includes('correo electrónico'))) {
+    return 'paypal';
+  }
+  
+  // Subscriptions: Has subscription_id and plan
+  if (normalized.some(h => h.includes('subscription')) && normalized.some(h => h.includes('plan'))) {
+    return 'subscriptions';
+  }
+  
+  return 'auto';
+}
+
+async function processGHL(
+  lines: string[],
+  headers: string[],
+  supabase: AnySupabaseClient
+): Promise<ProcessingResult> {
+  const startTime = Date.now();
+  const result: ProcessingResult = {
+    csvType: 'ghl',
+    totalRows: 0,
+    created: 0,
+    updated: 0,
+    skipped: 0,
+    errors: [],
+    duration: 0
+  };
+
+  // Find column indices
   const contactIdIdx = headers.findIndex(h => h.includes('contact id') || h === 'id');
   const emailIdx = headers.findIndex(h => h === 'email');
   const phoneIdx = headers.findIndex(h => h === 'phone');
   const firstNameIdx = headers.findIndex(h => h.includes('first name') || h === 'firstname');
   const lastNameIdx = headers.findIndex(h => h.includes('last name') || h === 'lastname');
   const tagsIdx = headers.findIndex(h => h === 'tags' || h === 'tag');
+  const sourceIdx = headers.findIndex(h => h === 'source');
+  const createdIdx = headers.findIndex(h => h.includes('created') || h === 'datecreated');
 
   if (contactIdIdx === -1) {
-    return { type: 'ghl', clientsCreated: 0, clientsUpdated: 0, errors: ['No se encontró columna Contact Id'] };
+    result.errors.push('Missing Contact Id column');
+    return result;
   }
 
-  const contacts: any[] = [];
-  const BATCH_SIZE = 1000;
+  interface GHLContact {
+    ghlContactId: string;
+    email: string | null;
+    phone: string | null;
+    fullName: string | null;
+    tags: string[];
+    source: string | null;
+    dateCreated: string | null;
+  }
 
+  const contacts: GHLContact[] = [];
+
+  // Parse all rows
   for (let i = 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line.trim()) continue;
+
     try {
-      const values = parseCSVLine(lines[i]);
-      const ghlContactId = values[contactIdIdx]?.replace(/"/g, '').trim() || '';
+      const values = parseCSVLine(line);
+      const ghlContactId = values[contactIdIdx]?.replace(/"/g, '').trim();
       if (!ghlContactId) continue;
 
-      const email = normalizeEmail(emailIdx >= 0 ? values[emailIdx]?.replace(/"/g, '').trim() : '');
-      const phone = normalizePhone(phoneIdx >= 0 ? values[phoneIdx]?.replace(/"/g, '').trim() : '');
-      if (!email && !phone) continue;
+      let email = emailIdx >= 0 ? values[emailIdx]?.replace(/"/g, '').trim().toLowerCase() : '';
+      if (email && !email.includes('@')) email = '';
+
+      const rawPhone = phoneIdx >= 0 ? values[phoneIdx]?.replace(/"/g, '').trim() : '';
+      const phone = normalizePhone(rawPhone);
+
+      if (!email && !phone) {
+        result.skipped++;
+        continue;
+      }
 
       const firstName = firstNameIdx >= 0 ? values[firstNameIdx]?.replace(/"/g, '').trim() : '';
       const lastName = lastNameIdx >= 0 ? values[lastNameIdx]?.replace(/"/g, '').trim() : '';
-      const fullName = firstName || lastName ? `${firstName} ${lastName}`.trim() : '';
+      const fullName = [firstName, lastName].filter(Boolean).join(' ') || null;
+
       const rawTags = tagsIdx >= 0 ? values[tagsIdx]?.replace(/"/g, '').trim() : '';
-      const tags = rawTags ? rawTags.split(',').map(t => t.trim()).filter(t => t) : [];
+      const tags = rawTags ? rawTags.split(',').map(t => t.trim()).filter(Boolean) : [];
 
-      contacts.push({
-        ghl_contact_id: ghlContactId,
-        email,
-        phone,
-        full_name: fullName || null,
-        tags: tags.length > 0 ? tags : null,
-        acquisition_source: 'ghl',
-        lifecycle_stage: 'LEAD',
-        last_sync: new Date().toISOString()
-      });
+      const source = sourceIdx >= 0 ? values[sourceIdx]?.replace(/"/g, '').trim() : null;
+      const dateCreated = createdIdx >= 0 ? values[createdIdx]?.replace(/"/g, '').trim() : null;
 
-      if (i % 10000 === 0) {
-        logger.info(`Parseados: ${i}/${lines.length - 1} líneas`);
-      }
-    } catch (error) {
-      logger.error(`Error en línea ${i + 1}`, error);
+      contacts.push({ ghlContactId, email: email || null, phone, fullName, tags, source, dateCreated });
+      result.totalRows++;
+    } catch (err) {
+      result.errors.push(`Row ${i + 1}: ${err instanceof Error ? err.message : 'Parse error'}`);
     }
   }
 
-  logger.info(`${contacts.length} contactos parseados`);
+  logger.info('GHL contacts parsed', { total: contacts.length });
 
-  // Load existing by email
+  // Load existing clients
   const emailContacts = contacts.filter(c => c.email);
-  const uniqueEmails = [...new Set(emailContacts.map(c => c.email))];
-  const existingByEmail = new Map();
+  const uniqueEmails = [...new Set(emailContacts.map(c => c.email!))];
+  const existingByEmail = new Map<string, { tags?: string[]; full_name?: string }>();
+  const BATCH_SIZE = 1000;
 
   for (let i = 0; i < uniqueEmails.length; i += BATCH_SIZE) {
     const batch = uniqueEmails.slice(i, i + BATCH_SIZE);
-    const { data } = await supabase.from('clients').select('email').in('email', batch);
-    data?.forEach((c: any) => existingByEmail.set(c.email, c));
+    const { data } = await supabase.from('clients').select('email, tags, full_name').in('email', batch);
+    data?.forEach(c => existingByEmail.set(c.email, c));
   }
 
   // Prepare upserts
-  const toUpsert: any[] = [];
-  let created = 0;
-  let updated = 0;
+  const toUpsert: Record<string, unknown>[] = [];
 
-  for (const contact of emailContacts) {
-    if (existingByEmail.has(contact.email)) {
-      updated++;
-    } else {
-      created++;
+  for (const contact of contacts) {
+    if (!contact.email) continue;
+
+    const existing = existingByEmail.get(contact.email);
+    const record: Record<string, unknown> = {
+      email: contact.email,
+      ghl_contact_id: contact.ghlContactId,
+      last_sync: new Date().toISOString()
+    };
+
+    if (!existing?.full_name && contact.fullName) record.full_name = contact.fullName;
+    if (contact.phone) record.phone = contact.phone;
+    if (contact.tags.length > 0) {
+      record.tags = [...new Set([...(existing?.tags || []), ...contact.tags])];
     }
-    toUpsert.push(contact);
-  }
+    record.acquisition_source = 'ghl';
+    record.lifecycle_stage = 'LEAD';
 
-  // Process phone-only
-  const phoneOnlyContacts = contacts.filter(c => !c.email && c.phone);
-  const uniquePhones = [...new Set(phoneOnlyContacts.map(c => c.phone))];
-  const existingByPhone = new Map();
-
-  for (let i = 0; i < uniquePhones.length; i += BATCH_SIZE) {
-    const batch = uniquePhones.slice(i, i + BATCH_SIZE);
-    const { data } = await supabase.from('clients').select('id,email,phone').in('phone', batch);
-    data?.forEach((c: any) => {
-      if (c.phone) existingByPhone.set(c.phone, c);
-    });
-  }
-
-  for (const contact of phoneOnlyContacts) {
-    const existing = existingByPhone.get(contact.phone);
-    if (existing) {
-      updated++;
-      toUpsert.push({ ...contact, email: existing.email || undefined });
-    } else {
-      created++;
-      toUpsert.push(contact);
+    if (contact.dateCreated) {
+      try {
+        record.first_seen_at = new Date(contact.dateCreated).toISOString();
+      } catch { /* invalid date */ }
     }
+
+    toUpsert.push(record);
+    if (existing) result.updated++;
+    else result.created++;
   }
 
   // Execute upserts
-  logger.info(`Insertando/Actualizando ${toUpsert.length} contactos...`);
   for (let i = 0; i < toUpsert.length; i += BATCH_SIZE) {
     const batch = toUpsert.slice(i, i + BATCH_SIZE);
     const { error } = await supabase.from('clients').upsert(batch, { onConflict: 'email' });
-    if (error) {
-      logger.error(`Error en batch ${Math.floor(i / BATCH_SIZE) + 1}`, error);
+    if (error) result.errors.push(`Upsert batch ${Math.floor(i / BATCH_SIZE) + 1}: ${error.message}`);
+    
+    if (i % 10000 === 0 && i > 0) {
+      logger.info('GHL upsert progress', { processed: i, total: toUpsert.length });
     }
   }
 
-  return { type: 'ghl', clientsCreated: created, clientsUpdated: updated, errors: [] };
+  result.duration = Date.now() - startTime;
+  return result;
 }
 
-// Process Stripe Payments CSV
-async function processStripePayments(supabase: any, csvText: string): Promise<ProcessingResult['result']> {
-  const lines = csvText.split('\n').filter(l => l.trim());
-  if (lines.length < 2) {
-    return { type: 'stripe_payments', clientsCreated: 0, clientsUpdated: 0, transactionsCreated: 0, errors: ['CSV vacío'] };
+async function processStripePayments(
+  lines: string[],
+  headers: string[],
+  supabase: AnySupabaseClient
+): Promise<ProcessingResult> {
+  const startTime = Date.now();
+  const result: ProcessingResult = {
+    csvType: 'stripe_payments',
+    totalRows: 0,
+    created: 0,
+    updated: 0,
+    skipped: 0,
+    errors: [],
+    duration: 0
+  };
+
+  // Find column indices - support multiple formats
+  const idIdx = headers.findIndex(h => h === 'id');
+  const amountIdx = headers.findIndex(h => h === 'amount');
+  const currencyIdx = headers.findIndex(h => h === 'currency');
+  const statusIdx = headers.findIndex(h => h === 'status');
+  const customerIdx = headers.findIndex(h => h === 'customer' || h === 'customer_id');
+  const emailIdx = headers.findIndex(h => h === 'customer_email' || h === 'email');
+  const createdIdx = headers.findIndex(h => h === 'created' || h === 'created_at');
+  const paymentIntentIdx = headers.findIndex(h => h === 'payment_intent');
+
+  if (idIdx === -1 || amountIdx === -1) {
+    result.errors.push('Missing required columns: id, amount');
+    return result;
   }
 
-  const headers = parseCSVLine(lines[0]).map(h => h.toLowerCase().replace(/"/g, '').trim());
-  const idIdx = headers.findIndex(h => h === 'id');
-  const emailIdx = headers.findIndex(h => h.includes('customer email') || h === 'email');
-  const amountIdx = headers.findIndex(h => h === 'amount');
-  const statusIdx = headers.findIndex(h => h === 'status');
-  const currencyIdx = headers.findIndex(h => h === 'currency');
-  const createdAtIdx = headers.findIndex(h => h.includes('created'));
+  interface Payment {
+    id: string;
+    amount: number;
+    currency: string;
+    status: string;
+    customerEmail: string | null;
+    customerId: string | null;
+    created: string | null;
+    paymentIntent: string | null;
+    rawData: Record<string, string>;
+  }
 
-  const transactions: any[] = [];
-  const clients = new Map();
-  const BATCH_SIZE = 1000;
+  const payments: Payment[] = [];
 
   for (let i = 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line.trim()) continue;
+
     try {
-      const values = parseCSVLine(lines[i]);
-      const id = values[idIdx]?.replace(/"/g, '').trim() || '';
+      const values = parseCSVLine(line);
+      const id = values[idIdx]?.replace(/"/g, '').trim();
       if (!id) continue;
 
-      const email = normalizeEmail(emailIdx >= 0 ? values[emailIdx]?.replace(/"/g, '').trim() : '');
-      const amountStr = amountIdx >= 0 ? values[amountIdx]?.replace(/"/g, '').trim() : '0';
-      const amount = Math.round(parseFloat(amountStr) * 100);
-      const status = (statusIdx >= 0 ? values[statusIdx]?.replace(/"/g, '').trim() : '').toLowerCase();
-      const currency = (currencyIdx >= 0 ? values[currencyIdx]?.replace(/"/g, '').trim() : 'usd').toLowerCase();
-      const createdAt = createdAtIdx >= 0 ? values[createdAtIdx]?.replace(/"/g, '').trim() : '';
-
-      if (!email || amount <= 0) continue;
-
-      transactions.push({
-        customer_email: email,
-        amount,
-        status: status === 'paid' || status === 'succeeded' ? 'paid' : status,
-        source: 'stripe',
-        payment_key: id,
-        external_transaction_id: id,
-        stripe_payment_intent_id: id,
-        currency,
-        created_at: createdAt ? new Date(createdAt).toISOString() : new Date().toISOString()
+      const rawData: Record<string, string> = {};
+      headers.forEach((h, idx) => {
+        if (values[idx]) rawData[h] = values[idx].replace(/"/g, '').trim();
       });
 
-      if (!clients.has(email)) {
-        clients.set(email, {
-          email,
-          stripe_customer_id: id,
-          lifecycle_stage: status === 'paid' || status === 'succeeded' ? 'CUSTOMER' : 'LEAD',
-          last_sync: new Date().toISOString()
-        });
-      }
-    } catch (error) {
-      logger.error(`Error en línea ${i + 1}`, error);
+      const amount = normalizeAmount(values[amountIdx] || '0');
+      const currency = currencyIdx >= 0 ? values[currencyIdx]?.replace(/"/g, '').trim().toLowerCase() || 'usd' : 'usd';
+      const status = statusIdx >= 0 ? values[statusIdx]?.replace(/"/g, '').trim() || 'succeeded' : 'succeeded';
+      const customerEmail = emailIdx >= 0 ? values[emailIdx]?.replace(/"/g, '').trim().toLowerCase() || null : null;
+      const customerId = customerIdx >= 0 ? values[customerIdx]?.replace(/"/g, '').trim() || null : null;
+      const created = createdIdx >= 0 ? values[createdIdx]?.replace(/"/g, '').trim() || null : null;
+      const paymentIntent = paymentIntentIdx >= 0 ? values[paymentIntentIdx]?.replace(/"/g, '').trim() || null : null;
+
+      payments.push({ id, amount, currency, status, customerEmail, customerId, created, paymentIntent, rawData });
+      result.totalRows++;
+    } catch (err) {
+      result.errors.push(`Row ${i + 1}: ${err instanceof Error ? err.message : 'Parse error'}`);
     }
   }
 
-  // Upsert clients
-  const clientsArray = Array.from(clients.values());
-  for (let i = 0; i < clientsArray.length; i += BATCH_SIZE) {
-    const batch = clientsArray.slice(i, i + BATCH_SIZE);
-    await supabase.from('clients').upsert(batch, { onConflict: 'email' });
+  logger.info('Stripe payments parsed', { total: payments.length });
+
+  // Prepare transaction inserts
+  const BATCH_SIZE = 500;
+  const transactions: Record<string, unknown>[] = [];
+
+  for (const payment of payments) {
+    const paymentKey = payment.id;
+    
+    transactions.push({
+      stripe_payment_intent_id: payment.paymentIntent || payment.id,
+      payment_key: paymentKey,
+      amount: payment.amount,
+      currency: payment.currency,
+      status: payment.status,
+      customer_email: payment.customerEmail,
+      stripe_customer_id: payment.customerId,
+      stripe_created_at: payment.created ? new Date(payment.created).toISOString() : null,
+      source: 'stripe',
+      raw_data: payment.rawData
+    });
   }
 
-  // Insert transactions
-  let txCreated = 0;
+  // Upsert transactions
   for (let i = 0; i < transactions.length; i += BATCH_SIZE) {
     const batch = transactions.slice(i, i + BATCH_SIZE);
-    const { error } = await supabase.from('transactions').upsert(batch, { 
-      onConflict: 'source,payment_key',
-      ignoreDuplicates: false 
-    });
-    if (!error) txCreated += batch.length;
-  }
+    const { error } = await supabase
+      .from('transactions')
+      .upsert(batch, { onConflict: 'payment_key' });
+    
+    if (error) {
+      result.errors.push(`Transaction batch ${Math.floor(i / BATCH_SIZE) + 1}: ${error.message}`);
+    } else {
+      result.created += batch.length;
+    }
 
-  return { 
-    type: 'stripe_payments', 
-    clientsCreated: clients.size, 
-    clientsUpdated: 0, 
-    transactionsCreated: txCreated, 
-    errors: [] 
-  };
-}
-
-// Process Stripe Customers CSV (LTV)
-async function processStripeCustomers(supabase: any, csvText: string): Promise<ProcessingResult['result']> {
-  const lines = csvText.split('\n').filter(l => l.trim());
-  if (lines.length < 2) {
-    return { type: 'stripe_customers', clientsCreated: 0, clientsUpdated: 0, errors: ['CSV vacío'] };
-  }
-
-  const headers = parseCSVLine(lines[0]).map(h => h.toLowerCase().replace(/"/g, '').trim());
-  const emailIdx = headers.findIndex(h => h === 'email');
-  const totalSpendIdx = headers.findIndex(h => h.includes('total spend') || h === 'total_spend');
-  const delinquentIdx = headers.findIndex(h => h === 'delinquent');
-  const idIdx = headers.findIndex(h => h === 'id');
-
-  const toUpdate: any[] = [];
-  const BATCH_SIZE = 1000;
-
-  for (let i = 1; i < lines.length; i++) {
-    try {
-      const values = parseCSVLine(lines[i]);
-      const email = normalizeEmail(emailIdx >= 0 ? values[emailIdx]?.replace(/"/g, '').trim() : '');
-      if (!email) continue;
-
-      const totalSpendStr = totalSpendIdx >= 0 ? values[totalSpendIdx]?.replace(/"/g, '').trim() : '0';
-      const totalSpend = Math.round(parseFloat(totalSpendStr) * 100);
-      const isDelinquent = (delinquentIdx >= 0 ? values[delinquentIdx]?.replace(/"/g, '').trim() : 'false').toLowerCase() === 'true';
-
-      toUpdate.push({
-        email,
-        total_spend: totalSpend,
-        is_delinquent: isDelinquent,
-        stripe_customer_id: idIdx >= 0 ? values[idIdx]?.replace(/"/g, '').trim() : null,
-        last_sync: new Date().toISOString()
-      });
-    } catch (error) {
-      logger.error(`Error en línea ${i + 1}`, error);
+    if (i % 5000 === 0 && i > 0) {
+      logger.info('Stripe payments upsert progress', { processed: i, total: transactions.length });
     }
   }
 
-  let updated = 0;
-  for (let i = 0; i < toUpdate.length; i += BATCH_SIZE) {
-    const batch = toUpdate.slice(i, i + BATCH_SIZE);
-    const { error } = await supabase.from('clients').upsert(batch, { onConflict: 'email' });
-    if (!error) updated += batch.length;
+  // Update clients lifecycle_stage to CUSTOMER for those with payments
+  const customerEmails = [...new Set(payments.filter(p => p.customerEmail).map(p => p.customerEmail!))];
+  
+  for (let i = 0; i < customerEmails.length; i += BATCH_SIZE) {
+    const batch = customerEmails.slice(i, i + BATCH_SIZE);
+    await supabase
+      .from('clients')
+      .update({ lifecycle_stage: 'CUSTOMER', payment_status: 'active' })
+      .in('email', batch);
   }
 
-  return { type: 'stripe_customers', clientsCreated: 0, clientsUpdated: updated, errors: [] };
+  result.duration = Date.now() - startTime;
+  return result;
 }
 
-// Process PayPal CSV
-async function processPayPal(supabase: any, csvText: string): Promise<ProcessingResult['result']> {
-  const lines = csvText.split('\n').filter(l => l.trim());
-  if (lines.length < 2) {
-    return { type: 'paypal', clientsCreated: 0, clientsUpdated: 0, transactionsCreated: 0, errors: ['CSV vacío'] };
-  }
+async function processPayPal(
+  lines: string[],
+  headers: string[],
+  supabase: AnySupabaseClient
+): Promise<ProcessingResult> {
+  const startTime = Date.now();
+  const result: ProcessingResult = {
+    csvType: 'paypal',
+    totalRows: 0,
+    created: 0,
+    updated: 0,
+    skipped: 0,
+    errors: [],
+    duration: 0
+  };
 
-  const headers = parseCSVLine(lines[0]).map(h => h.toLowerCase().replace(/"/g, '').trim());
-  const transactionIdIdx = headers.findIndex(h => h.includes('transacción') || h.includes('transaction id'));
-  const emailIdx = headers.findIndex(h => h.includes('correo') || h.includes('email'));
-  const grossIdx = headers.findIndex(h => h === 'bruto' || h === 'gross');
-  const netIdx = headers.findIndex(h => h === 'neto' || h === 'net');
+  // PayPal Spanish headers mapping
+  const nameIdx = headers.findIndex(h => h === 'nombre' || h === 'name');
+  const emailIdx = headers.findIndex(h => h.includes('correo') || h === 'email' || h.includes('from email'));
+  const amountIdx = headers.findIndex(h => h === 'bruto' || h === 'gross' || h === 'amount');
+  const currencyIdx = headers.findIndex(h => h === 'divisa' || h === 'currency');
   const statusIdx = headers.findIndex(h => h === 'estado' || h === 'status');
+  const transactionIdx = headers.findIndex(h => h.includes('transaction id') || h === 'id de transacción');
   const dateIdx = headers.findIndex(h => h === 'fecha' || h === 'date');
+  const typeIdx = headers.findIndex(h => h === 'tipo' || h === 'type');
 
-  const transactions: any[] = [];
-  const clients = new Map();
-  const BATCH_SIZE = 1000;
+  interface PayPalTx {
+    transactionId: string;
+    name: string | null;
+    email: string | null;
+    amount: number;
+    currency: string;
+    status: string;
+    date: string | null;
+    type: string | null;
+    rawData: Record<string, string>;
+  }
+
+  const transactions: PayPalTx[] = [];
 
   for (let i = 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line.trim()) continue;
+
     try {
-      const values = parseCSVLine(lines[i]);
-      const transactionId = values[transactionIdIdx]?.replace(/"/g, '').trim() || '';
-      if (!transactionId) continue;
-
-      const email = normalizeEmail(emailIdx >= 0 ? values[emailIdx]?.replace(/"/g, '').trim() : '');
-      const grossStr = grossIdx >= 0 ? values[grossIdx]?.replace(/"/g, '').trim() : '0';
-      const netStr = netIdx >= 0 ? values[netIdx]?.replace(/"/g, '').trim() : grossStr;
-      const gross = parseFloat(grossStr);
-      const net = parseFloat(netStr);
-      const status = (statusIdx >= 0 ? values[statusIdx]?.replace(/"/g, '').trim() : '').toLowerCase();
-      const dateTime = dateIdx >= 0 ? values[dateIdx]?.replace(/"/g, '').trim() : '';
-
-      if (!email || gross <= 0) continue;
-
-      transactions.push({
-        customer_email: email,
-        amount: Math.round(net * 100),
-        status: status.includes('complet') || status === 'completed' ? 'paid' : 'pending',
-        source: 'paypal',
-        payment_key: transactionId,
-        external_transaction_id: transactionId,
-        paypal_transaction_id: transactionId,
-        currency: 'usd',
-        created_at: dateTime ? new Date(dateTime).toISOString() : new Date().toISOString()
+      const values = parseCSVLine(line);
+      
+      const rawData: Record<string, string> = {};
+      headers.forEach((h, idx) => {
+        if (values[idx]) rawData[h] = values[idx].replace(/"/g, '').trim();
       });
 
-      if (!clients.has(email)) {
-        clients.set(email, {
-          email,
-          paypal_customer_id: transactionId,
-          lifecycle_stage: 'CUSTOMER',
-          last_sync: new Date().toISOString()
-        });
+      const transactionId = transactionIdx >= 0 ? values[transactionIdx]?.replace(/"/g, '').trim() : null;
+      if (!transactionId) {
+        result.skipped++;
+        continue;
       }
-    } catch (error) {
-      logger.error(`Error en línea ${i + 1}`, error);
+
+      const name = nameIdx >= 0 ? values[nameIdx]?.replace(/"/g, '').trim() || null : null;
+      const email = emailIdx >= 0 ? values[emailIdx]?.replace(/"/g, '').trim().toLowerCase() || null : null;
+      const amount = normalizeAmount(values[amountIdx] || '0');
+      const currency = currencyIdx >= 0 ? values[currencyIdx]?.replace(/"/g, '').trim().toLowerCase() || 'usd' : 'usd';
+      const status = statusIdx >= 0 ? values[statusIdx]?.replace(/"/g, '').trim() || 'completed' : 'completed';
+      const date = dateIdx >= 0 ? values[dateIdx]?.replace(/"/g, '').trim() || null : null;
+      const type = typeIdx >= 0 ? values[typeIdx]?.replace(/"/g, '').trim() || null : null;
+
+      // Skip non-payment types
+      if (type && (type.toLowerCase().includes('retiro') || type.toLowerCase().includes('withdrawal'))) {
+        result.skipped++;
+        continue;
+      }
+
+      transactions.push({ transactionId, name, email, amount, currency, status, date, type, rawData });
+      result.totalRows++;
+    } catch (err) {
+      result.errors.push(`Row ${i + 1}: ${err instanceof Error ? err.message : 'Parse error'}`);
     }
   }
 
-  // Upsert clients
-  const clientsArray = Array.from(clients.values());
-  for (let i = 0; i < clientsArray.length; i += BATCH_SIZE) {
-    const batch = clientsArray.slice(i, i + BATCH_SIZE);
+  logger.info('PayPal transactions parsed', { total: transactions.length });
+
+  const BATCH_SIZE = 500;
+  const txRecords: Record<string, unknown>[] = [];
+
+  for (const tx of transactions) {
+    txRecords.push({
+      stripe_payment_intent_id: `paypal_${tx.transactionId}`,
+      payment_key: tx.transactionId,
+      external_transaction_id: tx.transactionId,
+      amount: tx.amount,
+      currency: tx.currency,
+      status: tx.status === 'Completado' || tx.status === 'completed' ? 'succeeded' : tx.status.toLowerCase(),
+      customer_email: tx.email,
+      stripe_created_at: tx.date ? new Date(tx.date).toISOString() : null,
+      source: 'paypal',
+      payment_type: tx.type,
+      raw_data: tx.rawData
+    });
+  }
+
+  for (let i = 0; i < txRecords.length; i += BATCH_SIZE) {
+    const batch = txRecords.slice(i, i + BATCH_SIZE);
+    const { error } = await supabase
+      .from('transactions')
+      .upsert(batch, { onConflict: 'payment_key' });
+    
+    if (error) {
+      result.errors.push(`PayPal batch ${Math.floor(i / BATCH_SIZE) + 1}: ${error.message}`);
+    } else {
+      result.created += batch.length;
+    }
+  }
+
+  // Create/update clients for PayPal customers
+  const customerEmails = [...new Set(transactions.filter(t => t.email).map(t => t.email!))];
+  const existingEmails = new Set<string>();
+
+  for (let i = 0; i < customerEmails.length; i += BATCH_SIZE) {
+    const batch = customerEmails.slice(i, i + BATCH_SIZE);
+    const { data } = await supabase.from('clients').select('email').in('email', batch);
+    data?.forEach(c => existingEmails.add(c.email));
+  }
+
+  const newClients: Record<string, unknown>[] = [];
+  for (const tx of transactions) {
+    if (tx.email && !existingEmails.has(tx.email)) {
+      newClients.push({
+        email: tx.email,
+        full_name: tx.name,
+        lifecycle_stage: 'CUSTOMER',
+        acquisition_source: 'paypal',
+        payment_status: 'active'
+      });
+      existingEmails.add(tx.email);
+    }
+  }
+
+  for (let i = 0; i < newClients.length; i += BATCH_SIZE) {
+    const batch = newClients.slice(i, i + BATCH_SIZE);
     await supabase.from('clients').upsert(batch, { onConflict: 'email' });
   }
 
-  // Insert transactions
-  let txCreated = 0;
-  for (let i = 0; i < transactions.length; i += BATCH_SIZE) {
-    const batch = transactions.slice(i, i + BATCH_SIZE);
-    const { error } = await supabase.from('transactions').upsert(batch, { 
-      onConflict: 'source,payment_key',
-      ignoreDuplicates: false 
-    });
-    if (!error) txCreated += batch.length;
-  }
-
-  return { 
-    type: 'paypal', 
-    clientsCreated: clients.size, 
-    clientsUpdated: 0, 
-    transactionsCreated: txCreated, 
-    errors: [] 
-  };
+  result.duration = Date.now() - startTime;
+  return result;
 }
 
-// Detect CSV type from content
-function detectCSVType(csvText: string, filename: string): string {
-  const firstLine = csvText.split('\n')[0]?.toLowerCase() || '';
-  const lowerFilename = filename.toLowerCase();
+async function processStripeCustomers(
+  lines: string[],
+  headers: string[],
+  supabase: AnySupabaseClient
+): Promise<ProcessingResult> {
+  const startTime = Date.now();
+  const result: ProcessingResult = {
+    csvType: 'stripe_customers',
+    totalRows: 0,
+    created: 0,
+    updated: 0,
+    skipped: 0,
+    errors: [],
+    duration: 0
+  };
 
-  if (firstLine.includes('contact id') || firstLine.includes('contactid') || 
-      lowerFilename.includes('ghl') || lowerFilename.includes('gohighlevel') || 
-      lowerFilename.includes('export_contacts')) {
-    return 'ghl';
-  }
-  if (firstLine.includes('total spend') || firstLine.includes('total_spend') || 
-      firstLine.includes('delinquent') || lowerFilename.includes('unified_customer')) {
-    return 'stripe_customers';
-  }
-  if (firstLine.includes('amount refunded') || firstLine.includes('amount_refunded') ||
-      firstLine.includes('payment method type') || lowerFilename.includes('pagos') ||
-      lowerFilename.includes('unified_payment')) {
-    return 'stripe_payments';
-  }
-  if (firstLine.includes('correo electrónico del remitente') || 
-      firstLine.includes('from email address') || firstLine.includes('bruto') ||
-      lowerFilename.includes('download') || lowerFilename.includes('paypal')) {
-    return 'paypal';
-  }
-  if (firstLine.includes('plan name') || firstLine.includes('plan_name') ||
-      firstLine.includes('expires at') || lowerFilename.includes('subscription')) {
-    return 'subscriptions';
-  }
-  if (firstLine.includes('email') && (firstLine.includes('nombre') || firstLine.includes('name')) &&
-      !firstLine.includes('amount') && !firstLine.includes('payment')) {
-    return 'web';
+  const emailIdx = headers.findIndex(h => h === 'email');
+  const customerIdIdx = headers.findIndex(h => h === 'customer' || h === 'customer_id' || h === 'id');
+  const nameIdx = headers.findIndex(h => h === 'name' || h === 'customer_name');
+  const ltvIdx = headers.findIndex(h => h === 'ltv' || h === 'lifetime_value' || h === 'total_spend');
+
+  if (emailIdx === -1) {
+    result.errors.push('Missing email column');
+    return result;
   }
 
-  return 'unknown';
+  interface Customer {
+    email: string;
+    customerId: string | null;
+    name: string | null;
+    ltv: number;
+  }
+
+  const customers: Customer[] = [];
+
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line.trim()) continue;
+
+    try {
+      const values = parseCSVLine(line);
+      const email = values[emailIdx]?.replace(/"/g, '').trim().toLowerCase();
+      if (!email || !email.includes('@')) {
+        result.skipped++;
+        continue;
+      }
+
+      const customerId = customerIdIdx >= 0 ? values[customerIdIdx]?.replace(/"/g, '').trim() || null : null;
+      const name = nameIdx >= 0 ? values[nameIdx]?.replace(/"/g, '').trim() || null : null;
+      const ltv = ltvIdx >= 0 ? normalizeAmount(values[ltvIdx] || '0') : 0;
+
+      customers.push({ email, customerId, name, ltv });
+      result.totalRows++;
+    } catch (err) {
+      result.errors.push(`Row ${i + 1}: ${err instanceof Error ? err.message : 'Parse error'}`);
+    }
+  }
+
+  logger.info('Stripe customers parsed', { total: customers.length });
+
+  const BATCH_SIZE = 500;
+  const clientRecords: Record<string, unknown>[] = [];
+
+  for (const customer of customers) {
+    clientRecords.push({
+      email: customer.email,
+      stripe_customer_id: customer.customerId,
+      full_name: customer.name,
+      total_spend: customer.ltv,
+      lifecycle_stage: customer.ltv > 0 ? 'CUSTOMER' : 'LEAD',
+      payment_status: customer.ltv > 0 ? 'active' : null
+    });
+  }
+
+  for (let i = 0; i < clientRecords.length; i += BATCH_SIZE) {
+    const batch = clientRecords.slice(i, i + BATCH_SIZE);
+    const { error } = await supabase.from('clients').upsert(batch, { onConflict: 'email' });
+    
+    if (error) {
+      result.errors.push(`Customer batch ${Math.floor(i / BATCH_SIZE) + 1}: ${error.message}`);
+    } else {
+      result.created += batch.length;
+    }
+  }
+
+  result.duration = Date.now() - startTime;
+  return result;
 }
 
 Deno.serve(async (req) => {
-  const corsHeaders = {
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-  };
-
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
   }
 
   try {
-    // Verify admin authentication
-    const authHeader = req.headers.get('Authorization');
-    if (!authHeader?.startsWith('Bearer ')) {
+    const authCheck = await verifyAdmin(req);
+    if (!authCheck.valid) {
       return new Response(
-        JSON.stringify({ ok: false, error: 'Unauthorized' }),
+        JSON.stringify({ ok: false, error: authCheck.error }),
         { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
-    const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY')!;
-    const supabaseAuth = createClient(supabaseUrl, supabaseAnonKey, {
-      global: { headers: { Authorization: authHeader } }
-    });
+    const { csvText, csvType: requestedType } = await req.json() as { csvText: string; csvType?: CSVType };
 
-    const token = authHeader.replace('Bearer ', '');
-    const { data: userData, error: userError } = await supabaseAuth.auth.getUser(token);
-
-    if (userError || !userData?.user) {
+    if (!csvText || typeof csvText !== 'string') {
       return new Response(
-        JSON.stringify({ ok: false, error: 'Unauthorized' }),
-        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
-    }
-
-    // Verify admin via RPC
-    const { data: isAdmin, error: adminError } = await supabaseAuth.rpc('is_admin');
-    if (adminError || !isAdmin) {
-      return new Response(
-        JSON.stringify({ ok: false, error: 'Forbidden: Admin access required' }),
-        { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
-    }
-
-    const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-    const supabase = createClient(supabaseUrl, supabaseServiceKey);
-
-    const { csvText, filename, type } = await req.json();
-
-    if (!csvText) {
-      return new Response(
-        JSON.stringify({ ok: false, error: 'Missing csvText' }),
+        JSON.stringify({ ok: false, error: 'csvText is required' }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    // Detect type if not provided
-    const detectedType = type || detectCSVType(csvText, filename || '');
-    logger.info(`Processing CSV type: ${detectedType}`);
+    logger.info('Starting CSV bulk processing', { csvLength: csvText.length, requestedType });
 
-    let result: ProcessingResult['result'];
+    const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+    const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+    const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    switch (detectedType) {
+    // Remove BOM and normalize line endings
+    const cleanCsv = csvText.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    const lines = cleanCsv.split('\n').filter(line => line.trim());
+
+    if (lines.length < 2) {
+      return new Response(
+        JSON.stringify({ ok: false, error: 'CSV must have at least a header and one data row' }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // Parse headers
+    const headerLine = lines[0];
+    const headers = parseCSVLine(headerLine).map(h => h.toLowerCase().replace(/"/g, '').trim());
+
+    logger.info('CSV headers parsed', { headerCount: headers.length, sampleHeaders: headers.slice(0, 5) });
+
+    // Detect or use requested type
+    const csvType = requestedType && requestedType !== 'auto' ? requestedType : detectCSVType(headers);
+
+    logger.info('Processing as type', { csvType });
+
+    let result: ProcessingResult;
+
+    switch (csvType) {
       case 'ghl':
-        result = await processGHL(supabase, csvText);
+        result = await processGHL(lines, headers, supabase);
         break;
       case 'stripe_payments':
-        result = await processStripePayments(supabase, csvText);
+        result = await processStripePayments(lines, headers, supabase);
         break;
       case 'stripe_customers':
-        result = await processStripeCustomers(supabase, csvText);
+        result = await processStripeCustomers(lines, headers, supabase);
         break;
       case 'paypal':
-        result = await processPayPal(supabase, csvText);
+        result = await processPayPal(lines, headers, supabase);
         break;
       default:
         return new Response(
-          JSON.stringify({ ok: false, error: `Unsupported CSV type: ${detectedType}` }),
+          JSON.stringify({ ok: false, error: `Unknown CSV type. Detected headers: ${headers.slice(0, 10).join(', ')}` }),
           { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         );
     }
+
+    logger.info('Processing complete', result);
 
     return new Response(
       JSON.stringify({ ok: true, result }),
       { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
+
   } catch (error) {
-    logger.error('Error processing CSV', error);
+    logger.error('Fatal error', error instanceof Error ? error : new Error(String(error)));
     return new Response(
-      JSON.stringify({ ok: false, error: error.message }),
+      JSON.stringify({ 
+        ok: false, 
+        error: error instanceof Error ? error.message : 'Unknown error' 
+      }),
       { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
   }

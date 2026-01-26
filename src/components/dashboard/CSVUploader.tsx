@@ -379,18 +379,21 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
             }
 
             const result = response.result;
+            const processingResult: ProcessingResult = {
+              clientsCreated: result.clientsCreated || result.created || 0,
+              clientsUpdated: result.clientsUpdated || result.updated || 0,
+              transactionsCreated: result.transactionsCreated || result.created || 0,
+              transactionsSkipped: result.transactionsSkipped || result.skipped || 0,
+              errors: result.errors || []
+            };
             setFiles(prev => prev.map((f, idx) => 
               idx === originalIndex ? { 
                 ...f, 
-                status: 'done', 
-                result: {
-                  clientsCreated: result.clientsCreated || 0,
-                  clientsUpdated: result.clientsUpdated || 0,
-                  transactionsCreated: result.transactionsCreated || 0
-                },
+                status: 'done' as const, 
+                result: processingResult,
                 stripePaymentsStats: {
                   totalAmount: 0,
-                  uniqueCustomers: result.clientsCreated || 0,
+                  uniqueCustomers: result.clientsCreated || result.created || 0,
                   refundedCount: 0
                 }
               } : f
@@ -452,14 +455,21 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
             }
 
             const result = response.result;
+            const customerResult: StripeCustomerResult = {
+              clientsCreated: result.clientsCreated || result.created || 0,
+              clientsUpdated: result.clientsUpdated || result.updated || 0,
+              transactionsCreated: 0,
+              transactionsSkipped: result.transactionsSkipped || result.skipped || 0,
+              errors: result.errors || [],
+              totalLTV: 0,
+              delinquentCount: 0,
+              duplicatesResolved: 0
+            };
             setFiles(prev => prev.map((f, idx) => 
               idx === originalIndex ? {
                 ...f,
-                status: 'done',
-                result: {
-                  clientsUpdated: result.clientsUpdated || 0,
-                  duplicatesResolved: 0
-                },
+                status: 'done' as const,
+                result: customerResult,
                 duplicatesResolved: 0
               } : f
             ));
@@ -520,15 +530,18 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
               }
 
               const paypalResult = response.result;
+              const processingResult: ProcessingResult = {
+                clientsCreated: paypalResult.clientsCreated || paypalResult.created || 0,
+                clientsUpdated: paypalResult.clientsUpdated || paypalResult.updated || 0,
+                transactionsCreated: paypalResult.transactionsCreated || paypalResult.created || 0,
+                transactionsSkipped: paypalResult.transactionsSkipped || paypalResult.skipped || 0,
+                errors: paypalResult.errors || []
+              };
               setFiles(prev => prev.map((f, idx) => 
                 idx === originalIndex ? {
                   ...f,
-                  status: 'done',
-                  result: {
-                    clientsCreated: paypalResult.clientsCreated || 0,
-                    clientsUpdated: paypalResult.clientsUpdated || 0,
-                    transactionsCreated: paypalResult.transactionsCreated || 0
-                  }
+                  status: 'done' as const,
+                  result: processingResult
                 } : f
               ));
               toast.success(
