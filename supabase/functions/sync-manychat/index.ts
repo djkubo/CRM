@@ -163,67 +163,67 @@ Deno.serve(async (req) => {
               }
             );
 
-        if (!searchResponse.ok) {
-          const status = searchResponse.status;
-          if (status === 404 || status === 400) {
-            totalSkipped++;
-            continue;
-          }
-          logger.warn('Search error for email', { email, status });
-          totalSkipped++;
-          continue;
-        }
+            if (!searchResponse.ok) {
+              const status = searchResponse.status;
+              if (status === 404 || status === 400) {
+                totalSkipped++;
+                return; // Skip this email
+              }
+              logger.warn('Search error for email', { email, status });
+              totalSkipped++;
+              return; // Skip this email
+            }
 
-        const searchData = await searchResponse.json();
+            const searchData = await searchResponse.json();
 
-        if (searchData.status !== 'success' || !searchData.data) {
-          totalSkipped++;
-          continue;
-        }
+            if (searchData.status !== 'success' || !searchData.data) {
+              totalSkipped++;
+              return; // Skip this email
+            }
 
-        const subscriber = searchData.data;
-        totalFetched++; // Increment fetched count when we find a subscriber
-        logger.info('Found subscriber', { subscriberId: subscriber.id, email });
+            const subscriber = searchData.data;
+            totalFetched++; // Increment fetched count when we find a subscriber
+            logger.info('Found subscriber', { subscriberId: subscriber.id, email });
 
-        if (!dryRun) {
-          await supabase
-            .from('manychat_contacts_raw')
-            .upsert({
-              subscriber_id: subscriber.id,
-              payload: subscriber,
-              sync_run_id: syncRunId,
-              fetched_at: new Date().toISOString()
-            }, { onConflict: 'subscriber_id' });
-        }
+            if (!dryRun) {
+              await supabase
+                .from('manychat_contacts_raw')
+                .upsert({
+                  subscriber_id: subscriber.id,
+                  payload: subscriber,
+                  sync_run_id: syncRunId,
+                  fetched_at: new Date().toISOString()
+                }, { onConflict: 'subscriber_id' });
+            }
 
-        const subEmail = subscriber.email || email;
-        const phone = subscriber.phone || subscriber.whatsapp_phone || null;
-        const fullName = [subscriber.first_name, subscriber.last_name].filter(Boolean).join(' ') || subscriber.name || null;
-        const tags = (subscriber.tags || []).map((t: any) => t.name || t);
-        const waOptIn = subscriber.optin_whatsapp === true;
-        const smsOptIn = subscriber.optin_sms === true;
-        const emailOptIn = subscriber.optin_email !== false;
+            const subEmail = subscriber.email || email;
+            const phone = subscriber.phone || subscriber.whatsapp_phone || null;
+            const fullName = [subscriber.first_name, subscriber.last_name].filter(Boolean).join(' ') || subscriber.name || null;
+            const tags = (subscriber.tags || []).map((t: any) => t.name || t);
+            const waOptIn = subscriber.optin_whatsapp === true;
+            const smsOptIn = subscriber.optin_sms === true;
+            const emailOptIn = subscriber.optin_email !== false;
 
-        const { data: mergeResult, error: mergeError } = await supabase.rpc('merge_contact', {
-          p_source: 'manychat',
-          p_external_id: subscriber.id,
-          p_email: subEmail,
-          p_phone: phone,
-          p_full_name: fullName,
-          p_tags: tags,
-          p_wa_opt_in: waOptIn,
-          p_sms_opt_in: smsOptIn,
-          p_email_opt_in: emailOptIn,
-          p_extra_data: subscriber,
-          p_dry_run: dryRun,
-          p_sync_run_id: syncRunId
-        });
+            const { data: mergeResult, error: mergeError } = await supabase.rpc('merge_contact', {
+              p_source: 'manychat',
+              p_external_id: subscriber.id,
+              p_email: subEmail,
+              p_phone: phone,
+              p_full_name: fullName,
+              p_tags: tags,
+              p_wa_opt_in: waOptIn,
+              p_sms_opt_in: smsOptIn,
+              p_email_opt_in: emailOptIn,
+              p_extra_data: subscriber,
+              p_dry_run: dryRun,
+              p_sync_run_id: syncRunId
+            });
 
-        if (mergeError) {
-          logger.error('Merge error for subscriber', mergeError, { subscriberId: subscriber.id });
-          totalSkipped++;
-          continue;
-        }
+            if (mergeError) {
+              logger.error('Merge error for subscriber', mergeError, { subscriberId: subscriber.id });
+              totalSkipped++;
+              return; // Skip this email
+            }
 
             const action = mergeResult?.action || 'none';
             if (action === 'inserted') totalInserted++;
