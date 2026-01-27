@@ -125,10 +125,11 @@ export function APISyncPanel() {
     return allResults;
   };
 
-  // Polling ref to allow cleanup
+  // Polling refs to allow cleanup
   const stripePollingRef = useRef<number | null>(null);
+  const invoicesPollingRef = useRef<number | null>(null);
 
-  // Poll sync_runs for progress updates
+  // Poll sync_runs for progress updates (Stripe)
   const pollSyncProgress = useCallback(async (syncRunId: string, source: 'stripe') => {
     // Clear any existing polling
     if (stripePollingRef.current) {
@@ -175,6 +176,63 @@ export function APISyncPanel() {
         }
       } catch (err) {
         console.error('Poll error:', err);
+      }
+    };
+    
+    poll();
+  }, [queryClient]);
+
+  // Poll sync_runs for invoices progress updates
+  const pollInvoiceProgress = useCallback(async (syncRunId: string) => {
+    // Clear any existing polling
+    if (invoicesPollingRef.current) {
+      clearTimeout(invoicesPollingRef.current);
+    }
+
+    const poll = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('sync_runs')
+          .select('status, total_fetched, total_inserted, metadata')
+          .eq('id', syncRunId)
+          .single();
+        
+        if (error || !data) {
+          console.error('Invoice polling error:', error);
+          return;
+        }
+        
+        if (data.status === 'running' || data.status === 'continuing') {
+          setInvoicesProgress({ current: data.total_fetched || 0, total: 0 });
+          toast.info(`Facturas: ${(data.total_fetched || 0).toLocaleString()} sincronizadas...`, { 
+            id: 'invoices-sync' 
+          });
+          invoicesPollingRef.current = window.setTimeout(poll, 3000);
+        } else if (data.status === 'completed') {
+          setInvoicesProgress(null);
+          const metadata = data.metadata as { stats?: { paid?: number; open?: number; draft?: number } } | null;
+          const stats = metadata?.stats || { paid: 0, open: 0, draft: 0 };
+          
+          setInvoicesResult({ 
+            success: true, 
+            synced_transactions: data.total_inserted ?? 0,
+            total_inserted: data.total_inserted ?? 0,
+            message: `${data.total_inserted} facturas sincronizadas (${stats.paid || 0} pagadas, ${stats.open || 0} abiertas)`
+          });
+          toast.success(`Facturas: ${(data.total_inserted ?? 0).toLocaleString()} sincronizadas`, {
+            id: 'invoices-sync'
+          });
+          queryClient.invalidateQueries({ queryKey: ['invoices'] });
+          queryClient.invalidateQueries({ queryKey: ['pending-invoices'] });
+          setInvoicesSyncing(false);
+        } else if (data.status === 'error' || data.status === 'cancelled') {
+          setInvoicesProgress(null);
+          setInvoicesResult({ success: false, error: 'Sync failed or cancelled' });
+          toast.error('Facturas: Sincronización falló', { id: 'invoices-sync' });
+          setInvoicesSyncing(false);
+        }
+      } catch (err) {
+        console.error('Invoice poll error:', err);
       }
     };
     
@@ -476,83 +534,45 @@ export function APISyncPanel() {
   const syncInvoices = async (mode: 'recent' | 'full') => {
     setInvoicesSyncing(true);
     setInvoicesResult(null);
+    setInvoicesProgress(null);
     
     try {
-      let hasMore = true;
-      let cursor: string | null = null;
-      let syncRunId: string | null = null; // Track sync run ID across pages
-      let totalSynced = 0;
-      let totalUpserted = 0;
-      let page = 0;
-      const stats = { draft: 0, open: 0, paid: 0, void: 0, uncollectible: 0 };
+      // ONE single call with fetchAll=true - backend handles all pagination in background
+      const data = await invokeWithAdminKey<{
+        success: boolean;
+        synced: number;
+        upserted: number;
+        hasMore: boolean;
+        nextCursor: string | null;
+        syncRunId: string | null;
+        status?: 'running' | 'completed' | 'error';
+        stats?: { draft: number; open: number; paid: number; void: number; uncollectible: number };
+        error?: string;
+      }>('fetch-invoices', {
+        mode,
+        fetchAll: true, // NEW: Process all pages in background
+      });
 
-      while (hasMore) {
-        page++;
-        setInvoicesProgress({ current: page, total: 0 }); // Unknown total
-        
-        const data = await invokeWithAdminKey<{
-          success: boolean;
-          synced: number;
-          upserted: number;
-          hasMore: boolean;
-          nextCursor: string | null;
-          syncRunId: string | null;
-          stats?: typeof stats;
-          error?: string;
-        }>('fetch-invoices', {
-          mode,
-          cursor,
-          syncRunId, // Pass syncRunId to continue existing sync
-        });
-
-        if (!data.success) {
-          throw new Error(data.error || 'Fetch invoices failed');
-        }
-
-        // Save syncRunId from first page
-        if (data.syncRunId && !syncRunId) {
-          syncRunId = data.syncRunId;
-        }
-
-        totalSynced += data.synced || 0;
-        totalUpserted += data.upserted || 0;
-        
-        if (data.stats) {
-          stats.draft += data.stats.draft || 0;
-          stats.open += data.stats.open || 0;
-          stats.paid += data.stats.paid || 0;
-          stats.void += data.stats.void || 0;
-          stats.uncollectible += data.stats.uncollectible || 0;
-        }
-
-        hasMore = data.hasMore && !!data.nextCursor;
-        cursor = data.nextCursor;
-        
-        // Progress toast every 5 pages
-        if (page % 5 === 0) {
-          toast.info(`Facturas: Página ${page} - ${totalUpserted} sincronizadas...`, { id: 'invoices-progress' });
-        }
-
-        // Small delay between pages to avoid rate limits
-        if (hasMore) {
-          await new Promise(r => setTimeout(r, 200));
-        }
-        
-        // Safety: limit to 1000 pages (100,000 invoices max)
-        if (page >= 1000) {
-          console.log('Reached page limit (100k invoices), stopping');
-          break;
-        }
+      if (!data.success && data.error) {
+        throw new Error(data.error);
       }
 
-      setInvoicesResult({
-        success: true,
-        synced_transactions: totalSynced,
-        total_inserted: totalUpserted,
-        message: `${totalUpserted} facturas sincronizadas (${stats.paid} pagadas, ${stats.open} abiertas, ${stats.draft} borradores)`
-      });
-      
-      toast.success(`Facturas: ${totalUpserted} sincronizadas (${stats.paid} pagadas, ${stats.open} abiertas)`, { id: 'invoices-progress' });
+      // Check if it's running in background
+      if (data.status === 'running' && data.syncRunId) {
+        toast.info('Facturas: Sincronización iniciada en background...', { id: 'invoices-sync' });
+        pollInvoiceProgress(data.syncRunId);
+        // Don't setInvoicesSyncing(false) - polling will handle it
+        return;
+      } else if (data.success) {
+        // Immediate completion (unlikely for large datasets)
+        setInvoicesResult({
+          success: true,
+          synced_transactions: data.upserted || 0,
+          total_inserted: data.upserted || 0,
+          message: `${data.upserted} facturas sincronizadas`
+        });
+        toast.success(`Facturas: ${data.upserted} sincronizadas`, { id: 'invoices-sync' });
+      }
       
       queryClient.invalidateQueries({ queryKey: ['invoices'] });
       queryClient.invalidateQueries({ queryKey: ['pending-invoices'] });
@@ -560,10 +580,10 @@ export function APISyncPanel() {
       const errorMessage = error instanceof Error ? error.message : 'Error desconocido';
       setInvoicesResult({ success: false, error: errorMessage });
       toast.error(`Error sincronizando facturas: ${errorMessage}`);
-    } finally {
       setInvoicesSyncing(false);
       setInvoicesProgress(null);
     }
+    // Note: Don't set syncing=false in finally - polling handles it for background mode
   };
 
   const syncAllHistory = async () => {

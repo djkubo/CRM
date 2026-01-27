@@ -1,5 +1,8 @@
 import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 
+// Declare EdgeRuntime for background processing
+declare const EdgeRuntime: { waitUntil: (promise: Promise<unknown>) => void };
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
@@ -20,6 +23,7 @@ interface FetchInvoicesRequest {
   endDate?: string;
   cursor?: string;
   syncRunId?: string;
+  fetchAll?: boolean; // NEW: Process all pages in background
 }
 
 interface FetchInvoicesResponse {
@@ -29,6 +33,7 @@ interface FetchInvoicesResponse {
   hasMore: boolean;
   nextCursor: string | null;
   syncRunId: string | null;
+  status?: 'running' | 'completed' | 'error';
   error?: string;
   stats?: {
     draft: number;
@@ -145,6 +150,8 @@ async function verifyAdmin(req: Request): Promise<AdminVerifyResult> {
 
 // ============= HELPERS =============
 
+const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
 function extractPlanInfo(invoice: StripeInvoice): { planName: string | null; planInterval: string | null; productName: string | null } {
   let planName: string | null = null;
   let planInterval: string | null = null;
@@ -193,15 +200,6 @@ function extractPlanInfo(invoice: StripeInvoice): { planName: string | null; pla
 
 // ============= BATCH CLIENT RESOLUTION =============
 
-interface ClientLookupResult {
-  stripeCustomerId: string;
-  clientId: string | null;
-}
-
-/**
- * Batch resolve client IDs for multiple Stripe customer IDs
- * This is MUCH faster than individual queries - 1 query instead of 100
- */
 async function batchResolveClients(
   supabase: SupabaseClient,
   stripeCustomerIds: string[]
@@ -211,7 +209,6 @@ async function batchResolveClients(
 
   const clientMap = new Map<string, string>();
 
-  // Single query to get all client mappings by stripe_customer_id
   const { data: clients, error } = await supabase
     .from('clients')
     .select('id, stripe_customer_id')
@@ -232,9 +229,6 @@ async function batchResolveClients(
   return clientMap;
 }
 
-/**
- * Secondary batch lookup by email for invoices without stripe_customer_id match
- */
 async function batchResolveClientsByEmail(
   supabase: SupabaseClient,
   emails: string[]
@@ -262,6 +256,300 @@ async function batchResolveClientsByEmail(
 
   console.log(`📧 Resolved ${clientMap.size}/${uniqueEmails.length} clients via email`);
   return clientMap;
+}
+
+// ============= INVOICE RECORD MAPPING =============
+
+function mapInvoiceToRecord(
+  invoice: StripeInvoice,
+  clientsByStripeId: Map<string, string>,
+  clientsByEmail: Map<string, string>
+) {
+  const customer = typeof invoice.customer === 'object' ? invoice.customer : null;
+  const stripeCustomerId = typeof invoice.customer === 'string' ? invoice.customer : customer?.id || null;
+  const customerEmail = invoice.customer_email || customer?.email || null;
+  const customerName = invoice.customer_name || customer?.name || null;
+  const customerPhone = customer?.phone || null;
+
+  // Resolve client_id: first by stripe_customer_id, then by email
+  let clientId: string | null = null;
+  if (stripeCustomerId && clientsByStripeId.has(stripeCustomerId)) {
+    clientId = clientsByStripeId.get(stripeCustomerId)!;
+  } else if (customerEmail && clientsByEmail.has(customerEmail.toLowerCase())) {
+    clientId = clientsByEmail.get(customerEmail.toLowerCase())!;
+  }
+
+  const { planName, planInterval, productName } = extractPlanInfo(invoice);
+  
+  const subscriptionId = invoice.subscription 
+    ? (typeof invoice.subscription === 'object' ? invoice.subscription.id : invoice.subscription)
+    : null;
+
+  const paymentIntentId = invoice.payment_intent
+    ? (typeof invoice.payment_intent === 'object' ? invoice.payment_intent.id : invoice.payment_intent)
+    : null;
+
+  const defaultPaymentMethod = invoice.default_payment_method
+    ? (typeof invoice.default_payment_method === 'object' ? invoice.default_payment_method.id : invoice.default_payment_method)
+    : null;
+
+  const lineItems = invoice.lines?.data?.map(line => ({
+    id: line.id,
+    amount: line.amount,
+    currency: line.currency,
+    description: line.description,
+    quantity: line.quantity,
+    price_id: line.price?.id,
+    price_nickname: line.price?.nickname,
+    unit_amount: line.price?.unit_amount,
+    interval: line.price?.recurring?.interval,
+    product_name: line.price?.product && typeof line.price.product === 'object' 
+      ? line.price.product.name 
+      : null,
+  })) || null;
+
+  const paidAt = invoice.status_transitions?.paid_at
+    ? new Date(invoice.status_transitions.paid_at * 1000).toISOString()
+    : (invoice.status === 'paid' ? new Date().toISOString() : null);
+    
+  const finalizedAt = invoice.status_transitions?.finalized_at
+    ? new Date(invoice.status_transitions.finalized_at * 1000).toISOString()
+    : (invoice.finalized_at ? new Date(invoice.finalized_at * 1000).toISOString() : null);
+
+  return {
+    stripe_invoice_id: invoice.id,
+    invoice_number: invoice.number,
+    customer_email: customerEmail?.toLowerCase() || null,
+    customer_name: customerName,
+    customer_phone: customerPhone,
+    stripe_customer_id: stripeCustomerId,
+    client_id: clientId,
+    amount_due: invoice.amount_due,
+    amount_paid: invoice.amount_paid,
+    amount_remaining: invoice.amount_remaining,
+    subtotal: invoice.subtotal,
+    total: invoice.total,
+    currency: invoice.currency,
+    status: invoice.status,
+    stripe_created_at: invoice.created 
+      ? new Date(invoice.created * 1000).toISOString() 
+      : null,
+    finalized_at: finalizedAt,
+    paid_at: paidAt,
+    automatically_finalizes_at: invoice.automatically_finalizes_at 
+      ? new Date(invoice.automatically_finalizes_at * 1000).toISOString() 
+      : null,
+    period_end: invoice.period_end 
+      ? new Date(invoice.period_end * 1000).toISOString() 
+      : null,
+    next_payment_attempt: invoice.next_payment_attempt
+      ? new Date(invoice.next_payment_attempt * 1000).toISOString()
+      : null,
+    due_date: invoice.due_date
+      ? new Date(invoice.due_date * 1000).toISOString()
+      : null,
+    hosted_invoice_url: invoice.hosted_invoice_url,
+    pdf_url: invoice.invoice_pdf,
+    subscription_id: subscriptionId,
+    plan_name: planName,
+    plan_interval: planInterval,
+    product_name: productName,
+    attempt_count: invoice.attempt_count || 0,
+    billing_reason: invoice.billing_reason,
+    collection_method: invoice.collection_method,
+    description: invoice.description,
+    payment_intent_id: paymentIntentId,
+    charge_id: invoice.charge,
+    default_payment_method: defaultPaymentMethod,
+    last_finalization_error: invoice.last_finalization_error?.message || null,
+    lines: lineItems,
+    raw_data: invoice as unknown as Record<string, unknown>,
+    updated_at: new Date().toISOString(),
+  };
+}
+
+// ============= SINGLE PAGE FETCH =============
+
+interface FetchPageResult {
+  invoices: StripeInvoice[];
+  hasMore: boolean;
+  nextCursor: string | null;
+}
+
+async function fetchSinglePage(
+  stripeSecretKey: string,
+  mode: string,
+  startDate: string | null,
+  endDate: string | null,
+  cursor: string | null
+): Promise<FetchPageResult> {
+  const params = new URLSearchParams();
+  params.set('limit', '100');
+  params.set('expand[]', 'data.subscription');
+  params.append('expand[]', 'data.lines.data.price');
+  params.append('expand[]', 'data.customer');
+
+  if (mode === 'range' && startDate) {
+    params.set('created[gte]', String(Math.floor(new Date(startDate).getTime() / 1000)));
+  }
+  if (mode === 'range' && endDate) {
+    params.set('created[lte]', String(Math.floor(new Date(endDate).getTime() / 1000)));
+  }
+  if (mode === 'recent') {
+    const ninetyDaysAgo = Math.floor(Date.now() / 1000) - (90 * 24 * 60 * 60);
+    params.set('created[gte]', String(ninetyDaysAgo));
+  }
+  // For 'full' mode, no date filter = all invoices
+  if (cursor) {
+    params.set('starting_after', cursor);
+  }
+
+  const stripeUrl = `https://api.stripe.com/v1/invoices?${params.toString()}`;
+  
+  const response = await fetch(stripeUrl, {
+    headers: {
+      Authorization: `Bearer ${stripeSecretKey}`,
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+  });
+
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`Stripe API error: ${error}`);
+  }
+
+  const stripeData = await response.json();
+  const invoices: StripeInvoice[] = stripeData.data || [];
+  const hasMore = stripeData.has_more || false;
+  const nextCursor = hasMore && invoices.length > 0 ? invoices[invoices.length - 1].id : null;
+
+  return { invoices, hasMore, nextCursor };
+}
+
+// ============= BATCH UPSERT =============
+
+async function batchUpsertInvoices(
+  supabase: SupabaseClient,
+  invoices: StripeInvoice[],
+  clientsByStripeId: Map<string, string>,
+  clientsByEmail: Map<string, string>
+): Promise<number> {
+  if (invoices.length === 0) return 0;
+
+  const invoiceRecords = invoices.map(inv => 
+    mapInvoiceToRecord(inv, clientsByStripeId, clientsByEmail)
+  );
+
+  const { error: upsertError, count } = await supabase
+    .from("invoices")
+    .upsert(invoiceRecords, { 
+      onConflict: "stripe_invoice_id",
+      ignoreDuplicates: false,
+      count: 'exact'
+    });
+
+  if (upsertError) {
+    console.error(`❌ Batch upsert error:`, upsertError.message);
+    return 0;
+  }
+
+  return count || invoiceRecords.length;
+}
+
+// ============= BACKGROUND FULL SYNC =============
+
+async function runFullInvoiceSync(
+  supabase: SupabaseClient,
+  stripeSecretKey: string,
+  syncRunId: string,
+  mode: string,
+  startDate: string | null,
+  endDate: string | null
+) {
+  console.log(`🚀 [Background] Starting full invoice sync: mode=${mode}, syncRunId=${syncRunId}`);
+  
+  let cursor: string | null = null;
+  let hasMore = true;
+  let pageCount = 0;
+  let totalFetched = 0;
+  let totalInserted = 0;
+  const stats = { draft: 0, open: 0, paid: 0, void: 0, uncollectible: 0 };
+  
+  try {
+    while (hasMore && pageCount < 500) {
+      pageCount++;
+      const pageStart = Date.now();
+      
+      // Fetch page from Stripe
+      const result = await fetchSinglePage(stripeSecretKey, mode, startDate, endDate, cursor);
+      const invoices = result.invoices;
+      
+      console.log(`📄 [Background] Page ${pageCount}: ${invoices.length} invoices in ${Date.now() - pageStart}ms`);
+      
+      // Count stats
+      for (const inv of invoices) {
+        if (inv.status === 'draft') stats.draft++;
+        else if (inv.status === 'open') stats.open++;
+        else if (inv.status === 'paid') stats.paid++;
+        else if (inv.status === 'void') stats.void++;
+        else if (inv.status === 'uncollectible') stats.uncollectible++;
+      }
+      
+      // Batch resolve clients
+      const stripeCustomerIds: string[] = [];
+      const emails: string[] = [];
+      
+      for (const invoice of invoices) {
+        const customer = typeof invoice.customer === 'object' ? invoice.customer : null;
+        const stripeCustomerId = typeof invoice.customer === 'string' ? invoice.customer : customer?.id || null;
+        const customerEmail = invoice.customer_email || customer?.email || null;
+        
+        if (stripeCustomerId) stripeCustomerIds.push(stripeCustomerId);
+        if (customerEmail) emails.push(customerEmail);
+      }
+      
+      const clientsByStripeId = await batchResolveClients(supabase, stripeCustomerIds);
+      const clientsByEmail = await batchResolveClientsByEmail(supabase, emails);
+      
+      // Batch upsert
+      const upserted = await batchUpsertInvoices(supabase, invoices, clientsByStripeId, clientsByEmail);
+      
+      totalFetched += invoices.length;
+      totalInserted += upserted;
+      cursor = result.nextCursor;
+      hasMore = result.hasMore && cursor !== null;
+      
+      // Update progress in sync_runs
+      await supabase.from('sync_runs').update({
+        status: hasMore ? 'running' : 'completed',
+        total_fetched: totalFetched,
+        total_inserted: totalInserted,
+        checkpoint: hasMore ? { cursor } : null,
+        completed_at: hasMore ? null : new Date().toISOString(),
+        metadata: { mode, startDate, endDate, stats, pageCount }
+      }).eq('id', syncRunId);
+      
+      console.log(`📈 [Background] Progress: ${totalFetched} fetched, ${totalInserted} inserted`);
+      
+      // Rate limit delay between pages
+      if (hasMore) await delay(100);
+    }
+    
+    console.log(`✅ [Background] Sync complete: ${totalFetched} fetched, ${totalInserted} inserted in ${pageCount} pages`);
+    console.log(`📊 [Background] Stats: draft=${stats.draft} open=${stats.open} paid=${stats.paid} void=${stats.void} uncollectible=${stats.uncollectible}`);
+    
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    console.error(`❌ [Background] Sync error:`, errorMessage);
+    
+    await supabase.from('sync_runs').update({
+      status: 'error',
+      error_message: errorMessage,
+      completed_at: new Date().toISOString(),
+      total_fetched: totalFetched,
+      total_inserted: totalInserted,
+    }).eq('id', syncRunId);
+  }
 }
 
 // ============= MAIN HANDLER =============
@@ -299,12 +587,14 @@ Deno.serve(async (req) => {
     let endDate: string | null = null;
     let cursor: string | null = null;
     let syncRunId: string | null = null;
+    let fetchAll = false;
 
     try {
       const body: FetchInvoicesRequest = await req.json();
       mode = body.mode || 'recent';
       cursor = body.cursor || null;
       syncRunId = body.syncRunId || null;
+      fetchAll = body.fetchAll === true;
       
       if (body.startDate) startDate = body.startDate;
       if (body.endDate) endDate = body.endDate;
@@ -312,120 +602,105 @@ Deno.serve(async (req) => {
       // Default to recent mode
     }
 
-    console.log(`🧾 fetch-invoices: mode=${mode}, cursor=${cursor ? cursor.slice(0, 10) + '...' : 'null'}, syncRunId=${syncRunId || 'new'}`);
+    console.log(`🧾 fetch-invoices: mode=${mode}, fetchAll=${fetchAll}, cursor=${cursor ? cursor.slice(0, 10) + '...' : 'null'}, syncRunId=${syncRunId || 'new'}`);
 
-    // SKIP duplicate check if we already have a syncRunId (continuing pagination)
-    if (!syncRunId) {
-      const oneMinuteAgo = new Date(Date.now() - 60 * 1000).toISOString();
-      
-      const { data: existingSync } = await supabase
-        .from('sync_runs')
-        .select('id, started_at, total_fetched, checkpoint')
-        .eq('source', 'stripe_invoices')
-        .eq('status', 'running')
-        .gte('started_at', oneMinuteAgo)
-        .order('started_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      
-      if (existingSync) {
-        console.log('⚠️ Sync already running (last 60s):', existingSync.id);
-        return new Response(
-          JSON.stringify({
-            success: false,
-            error: 'sync_already_running',
-            existingSyncId: existingSync.id,
-            syncRunId: existingSync.id,
-            message: 'A sync is already in progress. Please wait.',
-          }),
-          { headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      }
-      
-      // Cancel any old stuck syncs before creating new one
-      await supabase
-        .from('sync_runs')
-        .update({ 
-          status: 'cancelled', 
-          completed_at: new Date().toISOString(),
-          error_message: 'Cancelled by new sync request' 
-        })
-        .eq('source', 'stripe_invoices')
-        .in('status', ['running', 'continuing'])
-        .lt('started_at', oneMinuteAgo);
-      
-      // Create new sync run
-      const { data: syncRun } = await supabase
-        .from('sync_runs')
-        .insert({
-          source: 'stripe_invoices',
-          status: 'running',
-          total_fetched: 0,
-          total_inserted: 0,
-          metadata: { mode, startDate, endDate }
-        })
-        .select('id')
-        .single();
-      syncRunId = syncRun?.id || null;
-      
-      console.log('🆕 Created new sync run:', syncRunId);
-    } else {
-      // Just log that we're continuing - no need to update status here
-      console.log('📎 Continuing sync run:', syncRunId);
-    }
-
-    // Build Stripe API URL
-    const params = new URLSearchParams();
-    params.set('limit', '100');
-    params.set('expand[]', 'data.subscription');
-    params.append('expand[]', 'data.lines.data.price');
-    params.append('expand[]', 'data.customer');
-
-    if (mode === 'range' && startDate) {
-      params.set('created[gte]', String(Math.floor(new Date(startDate).getTime() / 1000)));
-    }
-    if (mode === 'range' && endDate) {
-      params.set('created[lte]', String(Math.floor(new Date(endDate).getTime() / 1000)));
-    }
-    if (mode === 'recent') {
-      const ninetyDaysAgo = Math.floor(Date.now() / 1000) - (90 * 24 * 60 * 60);
-      params.set('created[gte]', String(ninetyDaysAgo));
-    }
-    if (cursor) {
-      params.set('starting_after', cursor);
-    }
-
-    const stripeUrl = `https://api.stripe.com/v1/invoices?${params.toString()}`;
+    // Check for existing running sync (avoid duplicates)
+    const oneMinuteAgo = new Date(Date.now() - 60 * 1000).toISOString();
     
-    console.log('🌐 Fetching from Stripe...');
+    const { data: existingSync } = await supabase
+      .from('sync_runs')
+      .select('id, started_at, total_fetched, checkpoint')
+      .eq('source', 'stripe_invoices')
+      .in('status', ['running', 'continuing'])
+      .gte('started_at', oneMinuteAgo)
+      .order('started_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    
+    if (existingSync && !syncRunId) {
+      console.log('⚠️ Sync already running (last 60s):', existingSync.id);
+      return new Response(
+        JSON.stringify({
+          success: true,
+          status: 'running',
+          syncRunId: existingSync.id,
+          synced: existingSync.total_fetched || 0,
+          upserted: 0,
+          hasMore: true,
+          nextCursor: null,
+          message: 'Sync already in progress',
+        }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+    
+    // Cancel any old stuck syncs before creating new one
+    await supabase
+      .from('sync_runs')
+      .update({ 
+        status: 'cancelled', 
+        completed_at: new Date().toISOString(),
+        error_message: 'Cancelled by new sync request' 
+      })
+      .eq('source', 'stripe_invoices')
+      .in('status', ['running', 'continuing'])
+      .lt('started_at', oneMinuteAgo);
+    
+    // Create new sync run
+    const { data: syncRun } = await supabase
+      .from('sync_runs')
+      .insert({
+        source: 'stripe_invoices',
+        status: 'running',
+        total_fetched: 0,
+        total_inserted: 0,
+        metadata: { mode, startDate, endDate, fetchAll }
+      })
+      .select('id')
+      .single();
+    syncRunId = syncRun?.id || null;
+    
+    console.log('🆕 Created new sync run:', syncRunId);
+
+    // ============= BACKGROUND MODE (fetchAll=true) =============
+    if (fetchAll && syncRunId) {
+      console.log('🚀 Starting background processing with EdgeRuntime.waitUntil()');
+      
+      EdgeRuntime.waitUntil(
+        runFullInvoiceSync(supabase, STRIPE_SECRET_KEY, syncRunId, mode, startDate, endDate)
+      );
+      
+      // Return immediately with running status
+      return new Response(
+        JSON.stringify({
+          success: true,
+          status: 'running',
+          syncRunId,
+          synced: 0,
+          upserted: 0,
+          hasMore: true,
+          nextCursor: null,
+          message: 'Sync started in background'
+        }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    // ============= SINGLE PAGE MODE (original behavior) =============
+    console.log('🌐 Fetching single page from Stripe...');
     const fetchStart = Date.now();
     
-    const response = await fetch(stripeUrl, {
-      headers: {
-        Authorization: `Bearer ${STRIPE_SECRET_KEY}`,
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-    });
-
-    if (!response.ok) {
-      const error = await response.text();
-      throw new Error(`Stripe API error: ${error}`);
-    }
-
-    const stripeData = await response.json();
-    const invoices: StripeInvoice[] = stripeData.data || [];
-    const hasMore = stripeData.has_more || false;
-    const nextCursor = hasMore && invoices.length > 0 ? invoices[invoices.length - 1].id : null;
+    const result = await fetchSinglePage(STRIPE_SECRET_KEY, mode, startDate, endDate, cursor);
+    const invoices = result.invoices;
+    const hasMore = result.hasMore;
+    const nextCursor = result.nextCursor;
 
     console.log(`📄 Fetched ${invoices.length} invoices in ${Date.now() - fetchStart}ms, hasMore: ${hasMore}`);
 
-    // ============= BATCH PROCESSING (FAST) =============
-    const processStart = Date.now();
-    
     // Stats counters
     const stats = { draft: 0, open: 0, paid: 0, void: 0, uncollectible: 0 };
 
-    // Step 1: Collect all stripe_customer_ids and emails for batch lookup
+    // Collect all stripe_customer_ids and emails for batch lookup
     const stripeCustomerIds: string[] = [];
     const emails: string[] = [];
     
@@ -445,140 +720,15 @@ Deno.serve(async (req) => {
       else if (invoice.status === 'uncollectible') stats.uncollectible++;
     }
 
-    // Step 2: Batch resolve clients (2 queries total instead of 200+)
+    // Batch resolve clients
     const clientsByStripeId = await batchResolveClients(supabase, stripeCustomerIds);
     const clientsByEmail = await batchResolveClientsByEmail(supabase, emails);
 
-    // Step 3: Map all invoices to records (in memory, no queries)
-    const invoiceRecords = invoices.map(invoice => {
-      const customer = typeof invoice.customer === 'object' ? invoice.customer : null;
-      const stripeCustomerId = typeof invoice.customer === 'string' ? invoice.customer : customer?.id || null;
-      const customerEmail = invoice.customer_email || customer?.email || null;
-      const customerName = invoice.customer_name || customer?.name || null;
-      const customerPhone = customer?.phone || null;
+    // Batch upsert
+    const upsertedCount = await batchUpsertInvoices(supabase, invoices, clientsByStripeId, clientsByEmail);
 
-      // Resolve client_id: first by stripe_customer_id, then by email
-      let clientId: string | null = null;
-      if (stripeCustomerId && clientsByStripeId.has(stripeCustomerId)) {
-        clientId = clientsByStripeId.get(stripeCustomerId)!;
-      } else if (customerEmail && clientsByEmail.has(customerEmail.toLowerCase())) {
-        clientId = clientsByEmail.get(customerEmail.toLowerCase())!;
-      }
-
-      const { planName, planInterval, productName } = extractPlanInfo(invoice);
-      
-      const subscriptionId = invoice.subscription 
-        ? (typeof invoice.subscription === 'object' ? invoice.subscription.id : invoice.subscription)
-        : null;
-
-      const paymentIntentId = invoice.payment_intent
-        ? (typeof invoice.payment_intent === 'object' ? invoice.payment_intent.id : invoice.payment_intent)
-        : null;
-
-      const defaultPaymentMethod = invoice.default_payment_method
-        ? (typeof invoice.default_payment_method === 'object' ? invoice.default_payment_method.id : invoice.default_payment_method)
-        : null;
-
-      const lineItems = invoice.lines?.data?.map(line => ({
-        id: line.id,
-        amount: line.amount,
-        currency: line.currency,
-        description: line.description,
-        quantity: line.quantity,
-        price_id: line.price?.id,
-        price_nickname: line.price?.nickname,
-        unit_amount: line.price?.unit_amount,
-        interval: line.price?.recurring?.interval,
-        product_name: line.price?.product && typeof line.price.product === 'object' 
-          ? line.price.product.name 
-          : null,
-      })) || null;
-
-      const paidAt = invoice.status_transitions?.paid_at
-        ? new Date(invoice.status_transitions.paid_at * 1000).toISOString()
-        : (invoice.status === 'paid' ? new Date().toISOString() : null);
-      
-      const finalizedAt = invoice.status_transitions?.finalized_at
-        ? new Date(invoice.status_transitions.finalized_at * 1000).toISOString()
-        : (invoice.finalized_at ? new Date(invoice.finalized_at * 1000).toISOString() : null);
-
-      return {
-        stripe_invoice_id: invoice.id,
-        invoice_number: invoice.number,
-        customer_email: customerEmail?.toLowerCase() || null,
-        customer_name: customerName,
-        customer_phone: customerPhone,
-        stripe_customer_id: stripeCustomerId,
-        client_id: clientId,
-        amount_due: invoice.amount_due,
-        amount_paid: invoice.amount_paid,
-        amount_remaining: invoice.amount_remaining,
-        subtotal: invoice.subtotal,
-        total: invoice.total,
-        currency: invoice.currency,
-        status: invoice.status,
-        stripe_created_at: invoice.created 
-          ? new Date(invoice.created * 1000).toISOString() 
-          : null,
-        finalized_at: finalizedAt,
-        paid_at: paidAt,
-        automatically_finalizes_at: invoice.automatically_finalizes_at 
-          ? new Date(invoice.automatically_finalizes_at * 1000).toISOString() 
-          : null,
-        period_end: invoice.period_end 
-          ? new Date(invoice.period_end * 1000).toISOString() 
-          : null,
-        next_payment_attempt: invoice.next_payment_attempt
-          ? new Date(invoice.next_payment_attempt * 1000).toISOString()
-          : null,
-        due_date: invoice.due_date
-          ? new Date(invoice.due_date * 1000).toISOString()
-          : null,
-        hosted_invoice_url: invoice.hosted_invoice_url,
-        pdf_url: invoice.invoice_pdf,
-        subscription_id: subscriptionId,
-        plan_name: planName,
-        plan_interval: planInterval,
-        product_name: productName,
-        attempt_count: invoice.attempt_count || 0,
-        billing_reason: invoice.billing_reason,
-        collection_method: invoice.collection_method,
-        description: invoice.description,
-        payment_intent_id: paymentIntentId,
-        charge_id: invoice.charge,
-        default_payment_method: defaultPaymentMethod,
-        last_finalization_error: invoice.last_finalization_error?.message || null,
-        lines: lineItems,
-        raw_data: invoice as unknown as Record<string, unknown>,
-        updated_at: new Date().toISOString(),
-      };
-    });
-
-    // Step 4: Single BATCH UPSERT (1 query instead of 100)
-    console.log(`💾 Batch upserting ${invoiceRecords.length} invoices...`);
-    const upsertStart = Date.now();
-    
-    const { error: upsertError, count } = await supabase
-      .from("invoices")
-      .upsert(invoiceRecords, { 
-        onConflict: "stripe_invoice_id",
-        ignoreDuplicates: false,
-        count: 'exact'
-      });
-
-    const upsertedCount = upsertError ? 0 : (count || invoiceRecords.length);
-    
-    if (upsertError) {
-      console.error(`❌ Batch upsert error:`, upsertError.message);
-    } else {
-      console.log(`✅ Batch upsert complete: ${upsertedCount} records in ${Date.now() - upsertStart}ms`);
-    }
-
-    console.log(`⏱️ Total processing: ${Date.now() - processStart}ms`);
-
-    // Step 5: Update sync run with INCREMENTAL counters
+    // Update sync run with incremental counters
     if (syncRunId) {
-      // First, read current counters
       const { data: currentRun } = await supabase
         .from('sync_runs')
         .select('total_fetched, total_inserted')
@@ -607,7 +757,7 @@ Deno.serve(async (req) => {
 
     console.log(`✅ Page complete | Stats: draft=${stats.draft} open=${stats.open} paid=${stats.paid} void=${stats.void}`);
 
-    const result: FetchInvoicesResponse = {
+    const responseData: FetchInvoicesResponse = {
       success: true,
       synced: invoices.length,
       upserted: upsertedCount,
@@ -618,7 +768,7 @@ Deno.serve(async (req) => {
     };
 
     return new Response(
-      JSON.stringify(result),
+      JSON.stringify(responseData),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   } catch (error) {
