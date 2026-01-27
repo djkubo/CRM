@@ -455,9 +455,9 @@ export function APISyncPanel() {
           await new Promise(r => setTimeout(r, 200));
         }
         
-        // Safety: limit to 100 pages (10,000 invoices per sync)
-        if (page >= 100) {
-          console.log('Reached page limit, stopping');
+        // Safety: limit to 1000 pages (100,000 invoices max)
+        if (page >= 1000) {
+          console.log('Reached page limit (100k invoices), stopping');
           break;
         }
       }
