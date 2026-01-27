@@ -1,119 +1,179 @@
 
-# Plan: Corrección de Mensajes de Error y Detección de Stale
+# Plan: Implementar Auto-Continuación en fetch-paypal
 
-## Problema Identificado
+## Problema Detectado
 
-| Issue | Causa | Solución |
-|-------|-------|----------|
-| Error "[object Object]" | El frontend intenta mostrar un objeto como mensaje de error | Mejorar serialización de errores |
-| "Sync atascado por 30 minutos" | El campo `lastActivity` en checkpoint no se actualiza durante el background sync | Actualizar `lastActivity` en cada página procesada |
+| Diagnóstico | Detalle |
+|-------------|---------|
+| Sync atascado | `f7916903-51dd-443b-8f63-f76b9889b416` |
+| Estado actual | `continuing` desde hace ~1 hora |
+| Procesado | Solo 145 transacciones (3 de 16 páginas) |
+| Causa raíz | **No tiene auto-continuación como fetch-invoices** |
+| Frontend | El frontend esperaba la respuesta para llamar la siguiente página, pero el Edge Runtime murió |
 
-## Estado Actual del Sync
+## Diferencia con fetch-invoices
 
-✅ **EL SYNC ESTÁ FUNCIONANDO CORRECTAMENTE**
-
-| Métrica | Valor |
-|---------|-------|
-| Facturas procesadas | 30,000+ |
-| Restantes | ~675 (aprox 7 páginas más) |
-| Tiempo estimado para completar | ~1-2 minutos más |
-| Estado | `continuing` |
-
-**No hay bucle infinito.** Las facturas son reales y únicas (30,642 en total).
-
-## Cambios Propuestos
-
-### 1. Actualizar `lastActivity` en el checkpoint durante background sync
-
-**Archivo:** `supabase/functions/fetch-invoices/index.ts`
-
-El checkpoint actual solo tiene `cursor`, pero necesita también `lastActivity` para que el frontend no lo marque como "stale":
-
-```typescript
-// En runFullInvoiceSync(), al actualizar sync_runs:
-await supabase.from('sync_runs').update({
-  status: hasMore ? 'continuing' : 'completed',
-  total_fetched: totalFetched,
-  total_inserted: totalInserted,
-  checkpoint: hasMore ? { 
-    cursor,
-    lastActivity: new Date().toISOString()  // ← AGREGAR
-  } : null,
-  completed_at: hasMore ? null : new Date().toISOString(),
-}).eq('id', syncRunId);
+`fetch-invoices` ahora tiene auto-continuación:
+```text
+Página 1 → guarda cursor → se auto-llama con cursor → Página 2 → ... → Completo
 ```
 
-### 2. Mejorar manejo de errores para evitar "[object Object]"
+`fetch-paypal` NO la tiene:
+```text
+Página 1 → devuelve "continuing" → ESPERA que el frontend llame con page=2 → 💀 TIMEOUT
+```
 
-**Archivo:** `src/components/dashboard/APISyncPanel.tsx`
+## Solución: Replicar el Patrón de Auto-Continuación
 
-Agregar una función helper para serializar errores:
+Agregar el mismo sistema de auto-invocación que implementamos en `fetch-invoices`:
+
+1. **Después de procesar cada página**, si hay más páginas, llamarse a sí mismo con `page + 1`
+2. **Usar flag `_continuation`** para bypass del check de "sync already running"
+3. **Devolver respuesta inmediata** mientras el background continúa
+
+## Cambios en fetch-paypal/index.ts
+
+### 1. Detectar flag de continuación en el request
 
 ```typescript
-const formatError = (error: unknown): string => {
-  if (error instanceof Error) return error.message;
-  if (typeof error === 'string') return error;
-  if (error && typeof error === 'object') {
-    // Handle edge function error responses
-    const obj = error as Record<string, unknown>;
-    if (obj.message) return String(obj.message);
-    if (obj.error) return String(obj.error);
-    try {
-      return JSON.stringify(error);
-    } catch {
-      return 'Error desconocido';
-    }
+let isContinuation = false;
+
+try {
+  const body = await req.json();
+  // ... existente ...
+  isContinuation = body._continuation === true;
+} catch { ... }
+```
+
+### 2. Bypass del check de sync existente para continuaciones
+
+```typescript
+if (existingRuns && existingRuns.length > 0 && !isContinuation) {
+  // Solo bloquear si NO es continuación
+}
+```
+
+### 3. Auto-llamarse cuando hay más páginas
+
+```typescript
+if (hasMore) {
+  // Actualizar sync_runs como ahora...
+  
+  // AUTO-CONTINUACIÓN: Llamarse a sí mismo
+  const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+  const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+  
+  fetch(`${supabaseUrl}/functions/v1/fetch-paypal`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${serviceKey}`
+    },
+    body: JSON.stringify({
+      fetchAll: true,
+      syncRunId,
+      page: page + 1,
+      startDate,
+      endDate,
+      _continuation: true  // Bypass security check
+    })
+  }).catch(err => logger.error('Auto-continuation failed', err));
+  
+  return new Response(...); // Respuesta inmediata
+}
+```
+
+### 4. Manejar auth diferente para continuaciones
+
+Las continuaciones usan `SUPABASE_SERVICE_ROLE_KEY` en lugar de JWT de usuario, así que necesitamos un bypass de `verifyAdmin()`:
+
+```typescript
+// Al inicio del handler:
+const isContinuation = body._continuation === true;
+
+// Solo verificar admin si NO es continuación (las continuaciones vienen del mismo edge function)
+if (!isContinuation) {
+  const authCheck = await verifyAdmin(req);
+  if (!authCheck.valid) {
+    return new Response(...forbidden...);
   }
-  return 'Error desconocido';
-};
-```
-
-Luego usarla en todos los catch blocks:
-```typescript
-} catch (error) {
-  const errorMessage = formatError(error);  // ← Usar nueva función
-  setInvoicesResult({ success: false, error: errorMessage });
-  toast.error(`Error sincronizando facturas: ${errorMessage}`);
 }
 ```
 
-### 3. Ajustar umbral de "stale" o usar `total_fetched` como indicador
+## Acciones Inmediatas
 
-**Archivo:** `src/components/dashboard/SyncStatusBanner.tsx`
+### 1. Cancelar el sync atascado
 
-Opción A: Usar `total_fetched` para detectar actividad real:
-```typescript
-// En lugar de solo lastActivity, también revisar si total_fetched cambió
-const lastFetched = checkpoint?.lastFetched as number || 0;
-const currentFetched = sync.total_fetched || 0;
-
-// Si el total ha cambiado recientemente, no está stale
-if (currentFetched > lastFetched) {
-  activeSyncs.push(sync);
-}
+```sql
+UPDATE sync_runs 
+SET status = 'cancelled', 
+    completed_at = NOW(),
+    error_message = 'Cancelado para reiniciar con auto-continuación'
+WHERE id = 'f7916903-51dd-443b-8f63-f76b9889b416';
 ```
 
-Opción B: Aumentar umbral a 60 minutos para syncs largos (facturas).
-
-## Archivos a Modificar
+## Archivo a Modificar
 
 | Archivo | Cambio |
 |---------|--------|
-| `supabase/functions/fetch-invoices/index.ts` | Agregar `lastActivity` al checkpoint |
-| `src/components/dashboard/APISyncPanel.tsx` | Función `formatError()` para errores |
-| `src/components/dashboard/SyncStatusBanner.tsx` | Ajustar detección de stale |
+| `supabase/functions/fetch-paypal/index.ts` | Agregar auto-continuación idéntica a fetch-invoices |
 
-## Impacto
+## Detalles Técnicos
 
-- ✅ El sync actual terminará normalmente en ~1-2 minutos
-- ✅ Futuros syncs no mostrarán falsos positivos de "atascado"
-- ✅ Errores se mostrarán correctamente sin "[object Object]"
+### Cambios específicos por sección
 
-## Nota Importante
+**Líneas 243-293 (Parseo de body):**
+- Agregar variable `isContinuation` para detectar llamadas de continuación
 
-El sync de facturas es lento porque:
-1. Stripe devuelve datos densos por factura
-2. Cada factura requiere resolución de cliente (lookup por ID + email)
-3. El upsert es más costoso que un insert simple
+**Líneas 345-379 (Check de sync existente):**
+- Agregar condición `&& !isContinuation` para permitir continuaciones
 
-Una optimización futura podría ser cachear el mapeo `stripe_customer_id → client_id` en memoria durante el batch.
+**Líneas 219-227 (Verificación de admin):**
+- Skip `verifyAdmin()` si `isContinuation === true` (la request viene del mismo edge function con service key)
+
+**Líneas 540-583 (Bloque hasMore):**
+- Agregar auto-invocación con fetch() antes del return
+
+## Flujo Resultante
+
+```text
+┌─────────────────────────────────────────────────────┐
+│             Ejecución 1 (Usuario)                   │
+├─────────────────────────────────────────────────────┤
+│  Página 1 → 100 transacciones                       │
+│  hasMore = true                                     │
+│  Se auto-llama con page=2                          │
+│  Respuesta inmediata al usuario                     │
+└─────────────────────┬───────────────────────────────┘
+                      │
+                      ▼
+┌─────────────────────────────────────────────────────┐
+│         Ejecución 2 (Auto-continuación)             │
+├─────────────────────────────────────────────────────┤
+│  Página 2 → 100 transacciones más                   │
+│  Se auto-llama con page=3...                        │
+└─────────────────────┬───────────────────────────────┘
+                      │
+                      ▼
+                     ...
+                      │
+                      ▼
+┌─────────────────────────────────────────────────────┐
+│              Ejecución N (Final)                    │
+├─────────────────────────────────────────────────────┤
+│  Última página                                      │
+│  hasMore = false                                    │
+│  Marca sync como completed ✅                       │
+└─────────────────────────────────────────────────────┘
+```
+
+## Resultado Esperado
+
+| Métrica | Antes | Después |
+|---------|-------|---------|
+| Dependencia del frontend | ✅ Necesita polling | ❌ Auto-suficiente |
+| Resistente a timeout | ❌ | ✅ |
+| Páginas por ejecución | 1 | 1 (pero encadena automáticamente) |
+| Tiempo total ~16 páginas | ∞ (atascado) | ~30 segundos |
+
+El sync de PayPal ahora procesará todas las páginas automáticamente sin depender del frontend.
