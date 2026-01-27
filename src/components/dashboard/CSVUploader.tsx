@@ -534,19 +534,36 @@ export function CSVUploader({ onProcessingComplete }: CSVUploaderProps) {
             toast.warning(`⚠️ ${masterResult.errors.length} advertencias`);
           }
         } else if (file.type === 'subscriptions') {
-          const subsResult = await processSubscriptionsCSV(text);
+          // Process subscriptions via Edge Function with chunking (same as GHL/Stripe)
+          const lineCount = text.split('\n').length;
+          
+          toast.info(`📋 Procesando suscripciones (${fileSizeMB.toFixed(1)}MB, ${lineCount.toLocaleString()} filas)...`, { duration: 10000 });
+          
+          const { ok, result: subsResult, error } = await processInChunks(text, 'subscriptions', file.name);
+
+          if (!ok || !subsResult) {
+            setFiles(prev => prev.map((f, idx) => 
+              idx === originalIndex ? { ...f, status: 'error' } : f
+            ));
+            toast.error(`❌ Error procesando suscripciones: ${error || 'Error desconocido'}`);
+            continue;
+          }
+
           setFiles(prev => prev.map((f, idx) => 
             idx === originalIndex ? { 
               ...f, 
-              status: 'done', 
+              status: 'done' as const, 
               result: subsResult,
-              subscriptionCount: subsResult.clientsCreated + subsResult.clientsUpdated
+              subscriptionCount: (subsResult.clientsCreated || 0) + (subsResult.clientsUpdated || 0)
             } : f
           ));
-          toast.success(`${file.name}: ${subsResult.clientsCreated + subsResult.clientsUpdated} suscripciones procesadas`);
           
-          if (subsResult.errors.length > 0) {
-            toast.warning(`${file.name}: ${subsResult.errors.length} errores`);
+          toast.success(
+            `✅ Suscripciones: ${subsResult.clientsCreated || 0} nuevos, ${subsResult.clientsUpdated || 0} actualizados`
+          );
+          
+          if (subsResult.errors?.length > 0) {
+            toast.warning(`⚠️ ${subsResult.errors.length} advertencias`);
           }
         } else if (file.type === 'ghl') {
           // For large GHL CSVs (> 10MB or > 100k lines), use Edge Function
