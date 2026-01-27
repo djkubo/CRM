@@ -652,18 +652,33 @@ Deno.serve(async (req) => {
       }
     }
 
-    // Update sync run
+    // Update sync run with INCREMENTAL counters
     if (syncRunId) {
+      // First, read current counters to add to them (not overwrite)
+      const { data: currentRun } = await supabase
+        .from('sync_runs')
+        .select('total_fetched, total_inserted')
+        .eq('id', syncRunId)
+        .single();
+      
+      const currentFetched = currentRun?.total_fetched || 0;
+      const currentInserted = currentRun?.total_inserted || 0;
+      
+      const newTotalFetched = currentFetched + invoices.length;
+      const newTotalInserted = currentInserted + upsertedCount;
+      
       await supabase
         .from('sync_runs')
         .update({
           status: hasMore ? 'continuing' : 'completed',
-          total_fetched: invoices.length,
-          total_inserted: upsertedCount,
+          total_fetched: newTotalFetched,
+          total_inserted: newTotalInserted,
           checkpoint: hasMore ? { cursor: nextCursor } : null,
           completed_at: hasMore ? null : new Date().toISOString(),
         })
         .eq('id', syncRunId);
+      
+      console.log(`📈 Updated sync run ${syncRunId}: fetched: ${currentFetched} + ${invoices.length} = ${newTotalFetched}, inserted: ${currentInserted} + ${upsertedCount} = ${newTotalInserted}`);
     }
 
     console.log(`✅ Sync page complete: ${upsertedCount} upserted, ${errorCount} errors`);
