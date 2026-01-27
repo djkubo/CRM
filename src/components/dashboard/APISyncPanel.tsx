@@ -48,7 +48,7 @@ export function APISyncPanel() {
   const [manychatResult, setManychatResult] = useState<SyncResult | null>(null);
   const [ghlResult, setGhlResult] = useState<SyncResult | null>(null);
   const [invoicesResult, setInvoicesResult] = useState<SyncResult | null>(null);
-  const [stripeProgress, setStripeProgress] = useState<{ current: number; total: number; status?: string } | null>(null);
+  const [stripeProgress, setStripeProgress] = useState<{ current: number; total: number; status?: string; page?: number; cursor?: string } | null>(null);
   const [paypalProgress, setPaypalProgress] = useState<{ current: number; total: number; page?: number; totalPages?: number; chunkIndex?: number; totalChunks?: number } | null>(null);
   const [invoicesProgress, setInvoicesProgress] = useState<{ current: number; total: number } | null>(null);
   const [ghlProgress, setGhlProgress] = useState<{ current: number; total: number } | null>(null);
@@ -163,7 +163,7 @@ export function APISyncPanel() {
       try {
         const { data, error } = await supabase
           .from('sync_runs')
-          .select('status, total_fetched, total_inserted')
+          .select('status, total_fetched, total_inserted, checkpoint')
           .eq('id', syncRunId)
           .single();
         
@@ -172,9 +172,19 @@ export function APISyncPanel() {
           return;
         }
         
+        const checkpoint = data.checkpoint as { page?: number; cursor?: string; lastActivity?: string } | null;
+        
         if (data.status === 'running' || data.status === 'continuing') {
-          setStripeProgress({ current: data.total_fetched || 0, total: 0 });
-          toast.info(`Stripe: ${(data.total_fetched || 0).toLocaleString()} transacciones...`, { 
+          setStripeProgress({ 
+            current: data.total_fetched || 0, 
+            total: 0,
+            page: checkpoint?.page,
+            cursor: checkpoint?.cursor
+          });
+          
+          // Toast mejorado con página
+          const pageInfo = checkpoint?.page ? ` (Página ${checkpoint.page})` : '';
+          toast.info(`Stripe: ${(data.total_fetched || 0).toLocaleString()} transacciones${pageInfo}...`, { 
             id: 'stripe-sync' 
           });
           stripePollingRef.current = window.setTimeout(poll, 3000);
@@ -807,9 +817,16 @@ export function APISyncPanel() {
               <Loader2 className="h-4 w-4 animate-spin" />
               <span>Stripe: {stripeProgress.current.toLocaleString()} transacciones sincronizadas</span>
             </div>
+            <div className="flex items-center gap-2 text-xs text-gray-400">
+              {stripeProgress.page && (
+                <Badge variant="outline" className="text-purple-300 border-purple-500/50">
+                  Página {stripeProgress.page}
+                </Badge>
+              )}
+            </div>
             <Progress 
-              value={100} 
-              className="h-2 animate-pulse"
+              value={stripeProgress.page ? Math.min(stripeProgress.page * 0.1, 95) : 50} 
+              className="h-2"
             />
             <p className="text-xs text-gray-400">
               Procesando en background... Actualizando cada 3s
