@@ -1,81 +1,69 @@
 
-# Plan: Optimización de Sincronización PayPal con Paginación Correcta
+# Plan: Optimización de Sincronización Stripe
+
+## Estado Actual
+
+| Componente | Estado | Registros |
+|------------|--------|-----------|
+| Transacciones Stripe | ✅ Funcional | 118,745 |
+| Subscripciones | ⚠️ Necesita optimizar | 1,642 |
+| Clientes Stripe | ✅ Funcional | 5,000 |
+| Invoices | 🔄 En sincronización | ~13,000+ |
 
 ## Diagnóstico
 
-| Problema | Impacto |
-|----------|---------|
-| Frontend no continúa páginas internas de PayPal | Solo 1 de cada 9-21 páginas se procesa |
-| Contadores se sobrescriben en lugar de sumar | Métricas de progreso incorrectas |
-| Sin loop `while(hasMore)` como el de facturas Stripe | Datos incompletos (~10% real) |
+### Transacciones Stripe (`fetch-stripe`)
+La función ya tiene una arquitectura robusta con `EdgeRuntime.waitUntil` que hace la paginación completa en background. **No necesita cambios en el backend**.
 
-**Estado actual**: 38,502 transacciones PayPal, pero probablemente faltan decenas de miles.
+El problema actual en el frontend es que usa "chunks de 31 días" que crea múltiples syncs y causa bloqueos "sync already running".
+
+### Subscripciones (`fetch-subscriptions`)
+Similar a transacciones, usa `EdgeRuntime.waitUntil` correctamente.
+
+### Clientes (`fetch-customers`)
+Ya tiene paginación interna y funciona correctamente.
 
 ---
 
-## Solución: Paginación de PayPal al Estilo Facturas
+## Solución: Simplificar Frontend para Stripe
 
-### 1. Frontend - APISyncPanel.tsx
-
-Agregar loop de paginación interno para PayPal (como el de facturas):
+### Cambio 1: Llamada Única para Historial Completo
 
 ```text
-syncPayPal() {
-  for (cada chunk de 31 días) {
-    syncRunId = null
-    hasMore = true
-    page = 1
-    
-    while (hasMore) {
-      response = fetch-paypal({ 
-        syncRunId, 
-        page, 
-        startDate, 
-        endDate 
-      })
-      
-      syncRunId = response.syncRunId
-      hasMore = response.hasMore
-      page = response.nextPage
-      
-      acumulador += response.synced_transactions
-      
-      await delay(200ms)  // Rate limit
-    }
+Antes (ineficiente):
+  for each chunk (36 chunks de 31 días) {
+    fetch-stripe(startDate, endDate) → Crea NUEVO sync
+    ↓ Bloqueo: "sync already running"
   }
-}
+
+Después (eficiente):
+  fetch-stripe(startDate: 3 años atrás, endDate: ahora) → UN sync
+  ↓ Backend procesa todo en background automáticamente
+  Opcional: Polling de sync_runs para progreso
 ```
 
-### 2. Backend - fetch-paypal/index.ts
+### Cambio 2: Polling de Progreso (Opcional)
 
-Arreglar contadores incrementales (como fetch-invoices):
+Agregar polling al `sync_runs` para mostrar progreso en tiempo real mientras el backend procesa:
 
 ```text
-Antes:
-  total_fetched: transactionsSaved
-
-Después:
-  const { data: currentRun } = await supabase
-    .from('sync_runs')
-    .select('total_fetched, total_inserted')
-    .eq('id', syncRunId)
-    .single();
-    
-  total_fetched: (currentRun?.total_fetched || 0) + transactionsSaved
-  total_inserted: (currentRun?.total_inserted || 0) + transactionsSaved
-```
-
-### 3. Limpiar Syncs Bloqueados
-
-Cancelar cualquier sync de PayPal en estado `running` o `continuing`:
-
-```sql
-UPDATE sync_runs 
-SET status = 'cancelled', 
-    completed_at = NOW(),
-    error_message = 'Limpieza - optimización paginación'
-WHERE source = 'paypal' 
-AND status IN ('running', 'continuing');
+┌─────────────────────────────────────────────────────────────┐
+│                 Frontend Simplificado                       │
+├─────────────────────────────────────────────────────────────┤
+│  1. Una sola llamada: fetch-stripe({                       │
+│       fetchAll: true,                                       │
+│       startDate: "2023-01-27",  // 3 años atrás            │
+│       endDate: "2026-01-27"                                 │
+│     })                                                      │
+│                                                             │
+│  2. Recibe: { syncRunId: "abc123", status: "running" }     │
+│                                                             │
+│  3. Polling opcional cada 3s:                               │
+│     SELECT total_fetched, status FROM sync_runs            │
+│     WHERE id = "abc123"                                     │
+│                                                             │
+│  4. Mostrar: "Sincronizando: 45,000 de ~120,000..."        │
+└─────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -84,103 +72,121 @@ AND status IN ('running', 'continuing');
 
 | Archivo | Cambio |
 |---------|--------|
-| `src/components/dashboard/APISyncPanel.tsx` | Agregar loop `while(hasMore)` para PayPal |
-| `supabase/functions/fetch-paypal/index.ts` | Contadores incrementales + bypass "sync already running" si tiene syncRunId |
+| `src/components/dashboard/APISyncPanel.tsx` | Simplificar `syncStripe` para usar una sola llamada + polling |
 
 ---
 
-## Flujo Optimizado
+## Cambios Específicos en APISyncPanel.tsx
 
-```text
-┌─────────────────────────────────────────────────────────────┐
-│                      Frontend Loop                          │
-├─────────────────────────────────────────────────────────────┤
-│  Chunk 1: Enero 2026                                        │
-│    ├─ Página 1 → 100 tx → syncRunId: abc123                │
-│    ├─ Página 2 → 100 tx → hasMore: true                    │
-│    ├─ Página 3 → 50 tx → hasMore: false ✓                  │
-│                                                             │
-│  Chunk 2: Diciembre 2025                                    │
-│    ├─ Página 1 → 100 tx → syncRunId: def456                │
-│    └─ ...                                                   │
-└─────────────────────────────────────────────────────────────┘
-```
+### Función `syncStripe` Optimizada
 
----
-
-## Sección Técnica
-
-### Cambios Específicos
-
-**APISyncPanel.tsx - Nueva función `syncPayPalPaginated`:**
+Reemplazar `syncInChunks('stripe', ...)` con una llamada directa:
 
 ```typescript
-const syncPayPalPaginated = async (
-  startDate: Date, 
-  endDate: Date
-): Promise<number> => {
-  let syncRunId: string | null = null;
-  let hasMore = true;
-  let page = 1;
-  let totalSynced = 0;
+const syncStripe = async (mode: 'last24h' | 'last31d' | 'all6months' | 'allHistory') => {
+  setStripeSyncing(true);
+  setStripeResult(null);
   
-  while (hasMore && page <= 500) {
-    const data = await invokeWithAdminKey<FetchPayPalResponse, FetchPayPalBody>(
-      'fetch-paypal',
+  try {
+    let startDate: Date | undefined;
+    const endDate = new Date();
+    
+    switch (mode) {
+      case 'last24h':
+        startDate = new Date(endDate.getTime() - 24 * 60 * 60 * 1000);
+        break;
+      case 'last31d':
+        startDate = new Date(endDate.getTime() - 31 * 24 * 60 * 60 * 1000);
+        break;
+      case 'all6months':
+        startDate = new Date(endDate.getTime() - 6 * 30 * 24 * 60 * 60 * 1000);
+        break;
+      case 'allHistory':
+        startDate = new Date(endDate.getTime() - 3 * 365 * 24 * 60 * 60 * 1000);
+        break;
+    }
+    
+    // UNA sola llamada - el backend hace toda la paginación
+    const data = await invokeWithAdminKey<FetchStripeResponse, FetchStripeBody>(
+      'fetch-stripe', 
       { 
         fetchAll: true,
         startDate: startDate.toISOString(),
-        endDate: endDate.toISOString(),
-        syncRunId,
-        page
+        endDate: endDate.toISOString()
       }
     );
+
+    if (data.status === 'running' && data.syncRunId) {
+      // Iniciar polling de progreso
+      pollSyncProgress(data.syncRunId, 'stripe');
+      
+      toast.info('Stripe: Sincronización iniciada en background...', { 
+        id: 'stripe-sync' 
+      });
+    } else if (data.success) {
+      setStripeResult(data);
+      toast.success(`Stripe: ${data.synced_transactions ?? 0} transacciones sincronizadas`);
+    }
     
-    if (!data.success) break;
-    
-    syncRunId = data.syncRunId || syncRunId;
-    hasMore = data.hasMore === true;
-    page = data.nextPage || (page + 1);
-    totalSynced += data.synced_transactions || 0;
-    
-    await new Promise(r => setTimeout(r, 200));
+    queryClient.invalidateQueries({ queryKey: ['transactions'] });
+    queryClient.invalidateQueries({ queryKey: ['clients'] });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Error desconocido';
+    setStripeResult({ success: false, error: errorMessage });
+    toast.error(`Error sincronizando Stripe: ${errorMessage}`);
+  } finally {
+    setStripeSyncing(false);
   }
+};
+
+// Nueva función de polling
+const pollSyncProgress = async (syncRunId: string, source: string) => {
+  const poll = async () => {
+    const { data } = await supabase
+      .from('sync_runs')
+      .select('status, total_fetched, total_inserted')
+      .eq('id', syncRunId)
+      .single();
+    
+    if (data?.status === 'running' || data?.status === 'continuing') {
+      setStripeProgress({ current: data.total_fetched || 0, total: 0 });
+      toast.info(`Stripe: ${data.total_fetched || 0} transacciones...`, { 
+        id: 'stripe-sync' 
+      });
+      setTimeout(poll, 3000);
+    } else if (data?.status === 'completed') {
+      setStripeProgress(null);
+      setStripeResult({ 
+        success: true, 
+        synced_transactions: data.total_inserted,
+        message: 'Sincronización completada'
+      });
+      toast.success(`Stripe: ${data.total_inserted} transacciones sincronizadas`, {
+        id: 'stripe-sync'
+      });
+      queryClient.invalidateQueries({ queryKey: ['transactions'] });
+    }
+  };
   
-  return totalSynced;
+  poll();
 };
 ```
 
-**fetch-paypal/index.ts - Líneas 340-378:**
+---
 
-```typescript
-// Permitir continuar sync existente sin bloquear
-if (!syncRunId) {
-  // Check existing sync...
-} 
-// Si ya tiene syncRunId, saltar check de "sync already running"
-```
+## Resultado Esperado
 
-**fetch-paypal/index.ts - Líneas 543-555:**
+- ✅ Una sola llamada inicia toda la sincronización
+- ✅ Sin bloqueos "sync already running" 
+- ✅ El backend procesa todo en background sin timeout
+- ✅ Progreso visible en tiempo real
+- ✅ Consistente con la arquitectura ya probada de facturas
 
-```typescript
-// Leer valores actuales antes de actualizar
-const { data: currentRun } = await supabase
-  .from('sync_runs')
-  .select('total_fetched, total_inserted')
-  .eq('id', syncRunId)
-  .single();
+---
 
-await supabase.from('sync_runs').update({
-  status: 'continuing',
-  total_fetched: (currentRun?.total_fetched || 0) + transactionsSaved,
-  total_inserted: (currentRun?.total_inserted || 0) + transactionsSaved,
-  checkpoint: { page, totalPages, lastActivity: new Date().toISOString() }
-}).eq('id', syncRunId);
-```
+## Nota Importante
 
-### Resultado Esperado
-
-- Cada página de PayPal se procesa completamente
-- Los contadores muestran progreso real acumulado
-- Sin syncs bloqueados que impidan nuevas ejecuciones
-- Consistencia con el patrón ya probado de facturas Stripe
+Este cambio NO interrumpirá el proceso de facturas actual porque:
+1. Solo modifica código del frontend
+2. El sync de facturas usa un `syncRunId` diferente
+3. Stripe transacciones y facturas son fuentes (`source`) distintas en `sync_runs`
