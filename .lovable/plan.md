@@ -1,146 +1,140 @@
 
-# Plan: Optimización de Sincronización Stripe
+# Plan: Optimización de Sincronización de Facturas (fetch-invoices)
 
-## Estado Actual
+## Problema Detectado
 
-| Componente | Estado | Registros |
-|------------|--------|-----------|
-| Transacciones Stripe | ✅ Funcional | 118,745 |
-| Subscripciones | ⚠️ Necesita optimizar | 1,642 |
-| Clientes Stripe | ✅ Funcional | 5,000 |
-| Invoices | 🔄 En sincronización | ~13,000+ |
+| Métrica | Actual | Óptimo |
+|---------|--------|--------|
+| Velocidad | ~58 facturas/min | ~8,000+ facturas/min |
+| Arquitectura | Frontend loop síncrono | Backend background processing |
+| Tiempo para 15k facturas | ~4 horas (estimado) | ~2-3 minutos |
 
-## Diagnóstico
+El sync de facturas usa un **loop síncrono en el frontend** que espera cada página antes de pedir la siguiente. Mientras tanto, `fetch-stripe` usa `EdgeRuntime.waitUntil()` para procesar todo en background.
 
-### Transacciones Stripe (`fetch-stripe`)
-La función ya tiene una arquitectura robusta con `EdgeRuntime.waitUntil` que hace la paginación completa en background. **No necesita cambios en el backend**.
-
-El problema actual en el frontend es que usa "chunks de 31 días" que crea múltiples syncs y causa bloqueos "sync already running".
-
-### Subscripciones (`fetch-subscriptions`)
-Similar a transacciones, usa `EdgeRuntime.waitUntil` correctamente.
-
-### Clientes (`fetch-customers`)
-Ya tiene paginación interna y funciona correctamente.
-
----
-
-## Solución: Simplificar Frontend para Stripe
-
-### Cambio 1: Llamada Única para Historial Completo
+## Arquitectura Actual vs Deseada
 
 ```text
-Antes (ineficiente):
-  for each chunk (36 chunks de 31 días) {
-    fetch-stripe(startDate, endDate) → Crea NUEVO sync
-    ↓ Bloqueo: "sync already running"
-  }
+ACTUAL (Lento):
+┌────────────┐    página 1     ┌────────────┐
+│  Frontend  │ ────────────►   │  Backend   │
+│            │ ◄────────────   │            │
+│  (espera)  │    ~700ms      │            │
+│            │    página 2     │            │
+│            │ ────────────►   │            │
+│            │ ◄────────────   │            │
+│  (espera)  │    ~700ms      │            │
+└────────────┘     ...x150     └────────────┘
+Total: 150 × 700ms = 105 segundos mínimo
 
-Después (eficiente):
-  fetch-stripe(startDate: 3 años atrás, endDate: ahora) → UN sync
-  ↓ Backend procesa todo en background automáticamente
-  Opcional: Polling de sync_runs para progreso
+DESEADO (Rápido):
+┌────────────┐   fetchAll:true  ┌────────────┐
+│  Frontend  │ ────────────────►│  Backend   │
+│            │   "running"      │ waitUntil  │──► Stripe API
+│            │ ◄────────────────│            │      página 1
+│  polling   │                  │            │      página 2
+│  cada 3s   │                  │            │      ...
+│            │                  │  ───────►  │      página 150
+└────────────┘                  └────────────┘
+Total: ~60-120 segundos en background
 ```
 
-### Cambio 2: Polling de Progreso (Opcional)
+## Solución
 
-Agregar polling al `sync_runs` para mostrar progreso en tiempo real mientras el backend procesa:
+### 1. Backend: Agregar `EdgeRuntime.waitUntil()` a fetch-invoices
 
-```text
-┌─────────────────────────────────────────────────────────────┐
-│                 Frontend Simplificado                       │
-├─────────────────────────────────────────────────────────────┤
-│  1. Una sola llamada: fetch-stripe({                       │
-│       fetchAll: true,                                       │
-│       startDate: "2023-01-27",  // 3 años atrás            │
-│       endDate: "2026-01-27"                                 │
-│     })                                                      │
-│                                                             │
-│  2. Recibe: { syncRunId: "abc123", status: "running" }     │
-│                                                             │
-│  3. Polling opcional cada 3s:                               │
-│     SELECT total_fetched, status FROM sync_runs            │
-│     WHERE id = "abc123"                                     │
-│                                                             │
-│  4. Mostrar: "Sincronizando: 45,000 de ~120,000..."        │
-└─────────────────────────────────────────────────────────────┘
-```
-
----
-
-## Archivos a Modificar
-
-| Archivo | Cambio |
-|---------|--------|
-| `src/components/dashboard/APISyncPanel.tsx` | Simplificar `syncStripe` para usar una sola llamada + polling |
-
----
-
-## Cambios Específicos en APISyncPanel.tsx
-
-### Función `syncStripe` Optimizada
-
-Reemplazar `syncInChunks('stripe', ...)` con una llamada directa:
+Modificar `supabase/functions/fetch-invoices/index.ts` para que procese TODAS las páginas en background cuando `fetchAll: true`:
 
 ```typescript
-const syncStripe = async (mode: 'last24h' | 'last31d' | 'all6months' | 'allHistory') => {
-  setStripeSyncing(true);
-  setStripeResult(null);
+// Nueva función para background processing
+async function runFullInvoiceSync(
+  supabase: SupabaseClient,
+  stripeSecretKey: string,
+  syncRunId: string,
+  mode: string,
+  startDate: string | null,
+  endDate: string | null,
+  initialCursor: string | null
+) {
+  let cursor = initialCursor;
+  let hasMore = true;
+  let pageCount = 0;
+  let totalFetched = 0;
+  let totalInserted = 0;
+
+  while (hasMore && pageCount < 500) {
+    pageCount++;
+    
+    // Fetch page from Stripe
+    const result = await fetchSinglePage(stripeSecretKey, mode, startDate, endDate, cursor);
+    
+    // Batch upsert (ya optimizado)
+    const upserted = await batchUpsertInvoices(supabase, result.invoices);
+    
+    totalFetched += result.invoices.length;
+    totalInserted += upserted;
+    cursor = result.nextCursor;
+    hasMore = result.hasMore && cursor !== null;
+    
+    // Update progress
+    await supabase.from('sync_runs').update({
+      status: hasMore ? 'running' : 'completed',
+      total_fetched: totalFetched,
+      total_inserted: totalInserted,
+      checkpoint: hasMore ? { cursor } : null,
+      completed_at: hasMore ? null : new Date().toISOString()
+    }).eq('id', syncRunId);
+    
+    // Small delay between pages
+    if (hasMore) await delay(150);
+  }
+}
+
+// En el handler principal
+if (fetchAll) {
+  EdgeRuntime.waitUntil(
+    runFullInvoiceSync(supabase, stripeSecretKey, syncRunId, mode, startDate, endDate, null)
+  );
+  
+  return Response.json({
+    success: true,
+    status: 'running',
+    syncRunId,
+    message: 'Sync iniciado en background'
+  });
+}
+```
+
+### 2. Frontend: Simplificar a una sola llamada
+
+Modificar `src/components/dashboard/APISyncPanel.tsx`:
+
+```typescript
+const syncInvoices = async (mode: 'recent' | 'full') => {
+  setInvoicesSyncing(true);
+  setInvoicesResult(null);
   
   try {
-    let startDate: Date | undefined;
-    const endDate = new Date();
-    
-    switch (mode) {
-      case 'last24h':
-        startDate = new Date(endDate.getTime() - 24 * 60 * 60 * 1000);
-        break;
-      case 'last31d':
-        startDate = new Date(endDate.getTime() - 31 * 24 * 60 * 60 * 1000);
-        break;
-      case 'all6months':
-        startDate = new Date(endDate.getTime() - 6 * 30 * 24 * 60 * 60 * 1000);
-        break;
-      case 'allHistory':
-        startDate = new Date(endDate.getTime() - 3 * 365 * 24 * 60 * 60 * 1000);
-        break;
-    }
-    
-    // UNA sola llamada - el backend hace toda la paginación
-    const data = await invokeWithAdminKey<FetchStripeResponse, FetchStripeBody>(
-      'fetch-stripe', 
-      { 
-        fetchAll: true,
-        startDate: startDate.toISOString(),
-        endDate: endDate.toISOString()
-      }
-    );
+    // UNA sola llamada - el backend hace todo
+    const data = await invokeWithAdminKey<InvoiceSyncResponse>('fetch-invoices', {
+      mode: mode === 'full' ? 'full' : 'recent',
+      fetchAll: true
+    });
 
     if (data.status === 'running' && data.syncRunId) {
-      // Iniciar polling de progreso
-      pollSyncProgress(data.syncRunId, 'stripe');
-      
-      toast.info('Stripe: Sincronización iniciada en background...', { 
-        id: 'stripe-sync' 
-      });
+      // Polling para ver progreso
+      pollInvoiceProgress(data.syncRunId);
+      toast.info('Facturas: Sincronización iniciada...', { id: 'invoices-sync' });
     } else if (data.success) {
-      setStripeResult(data);
-      toast.success(`Stripe: ${data.synced_transactions ?? 0} transacciones sincronizadas`);
+      setInvoicesResult(data);
+      toast.success(`Facturas: ${data.synced} sincronizadas`);
     }
-    
-    queryClient.invalidateQueries({ queryKey: ['transactions'] });
-    queryClient.invalidateQueries({ queryKey: ['clients'] });
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : 'Error desconocido';
-    setStripeResult({ success: false, error: errorMessage });
-    toast.error(`Error sincronizando Stripe: ${errorMessage}`);
-  } finally {
-    setStripeSyncing(false);
+    // ... error handling
   }
 };
 
-// Nueva función de polling
-const pollSyncProgress = async (syncRunId: string, source: string) => {
+// Polling similar al de Stripe
+const pollInvoiceProgress = async (syncRunId: string) => {
   const poll = async () => {
     const { data } = await supabase
       .from('sync_runs')
@@ -148,45 +142,63 @@ const pollSyncProgress = async (syncRunId: string, source: string) => {
       .eq('id', syncRunId)
       .single();
     
-    if (data?.status === 'running' || data?.status === 'continuing') {
-      setStripeProgress({ current: data.total_fetched || 0, total: 0 });
-      toast.info(`Stripe: ${data.total_fetched || 0} transacciones...`, { 
-        id: 'stripe-sync' 
-      });
+    if (data?.status === 'running') {
+      setInvoicesProgress({ current: data.total_fetched || 0, total: 0 });
+      toast.info(`Facturas: ${(data.total_fetched || 0).toLocaleString()}...`, { id: 'invoices-sync' });
       setTimeout(poll, 3000);
     } else if (data?.status === 'completed') {
-      setStripeProgress(null);
-      setStripeResult({ 
-        success: true, 
-        synced_transactions: data.total_inserted,
-        message: 'Sincronización completada'
-      });
-      toast.success(`Stripe: ${data.total_inserted} transacciones sincronizadas`, {
-        id: 'stripe-sync'
-      });
-      queryClient.invalidateQueries({ queryKey: ['transactions'] });
+      // Done!
+      toast.success(`Facturas: ${data.total_inserted} sincronizadas`, { id: 'invoices-sync' });
     }
   };
-  
   poll();
 };
 ```
 
----
+## Archivos a Modificar
+
+| Archivo | Cambio |
+|---------|--------|
+| `supabase/functions/fetch-invoices/index.ts` | Agregar `runFullInvoiceSync` + `EdgeRuntime.waitUntil` + parámetro `fetchAll` |
+| `src/components/dashboard/APISyncPanel.tsx` | Cambiar `syncInvoices` a una sola llamada + polling |
+
+## Detalles Técnicos
+
+### Cambios en fetch-invoices/index.ts
+
+1. Declarar EdgeRuntime al inicio:
+```typescript
+declare const EdgeRuntime: { waitUntil: (promise: Promise<unknown>) => void };
+```
+
+2. Refactorizar la lógica de página única a una función separada `processSingleInvoicePage()`
+
+3. Crear `runFullInvoiceSync()` que:
+   - Loop interno `while(hasMore)`
+   - Batch upserts (ya existe)
+   - Actualiza `sync_runs` cada página
+   - Rate limit de 150ms entre páginas
+
+4. En el handler principal, detectar `fetchAll: true` y usar `EdgeRuntime.waitUntil()`
+
+### Cambios en APISyncPanel.tsx
+
+1. Eliminar el loop `while(hasMore)` del frontend
+2. Una sola llamada con `{ mode, fetchAll: true }`
+3. Agregar función `pollInvoiceProgress()` con `useCallback` y `useRef`
+4. Mostrar progreso en tiempo real
 
 ## Resultado Esperado
 
-- ✅ Una sola llamada inicia toda la sincronización
-- ✅ Sin bloqueos "sync already running" 
-- ✅ El backend procesa todo en background sin timeout
-- ✅ Progreso visible en tiempo real
-- ✅ Consistente con la arquitectura ya probada de facturas
-
----
+| Antes | Después |
+|-------|---------|
+| 700 facturas en 12 min | ~15,000 facturas en 2-3 min |
+| Frontend bloqueado | Frontend libre, polling en background |
+| Vulnerable a desconexión | Resistente - proceso continúa en servidor |
 
 ## Nota Importante
 
-Este cambio NO interrumpirá el proceso de facturas actual porque:
-1. Solo modifica código del frontend
-2. El sync de facturas usa un `syncRunId` diferente
-3. Stripe transacciones y facturas son fuentes (`source`) distintas en `sync_runs`
+Esta optimización **NO interrumpirá** el proceso actual porque:
+1. El sync en curso (id: `b0d05d41-cd33...`) está en estado `continuing`
+2. Al desplegar los cambios, ese sync se marcará como "stale" y se reiniciará
+3. Las ~700 facturas ya guardadas se mantendrán (upsert por `stripe_invoice_id`)
