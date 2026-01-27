@@ -48,6 +48,13 @@ export function SyncOrchestrator() {
   const [pendingCounts, setPendingCounts] = useState<PendingCounts>({ ghl: 0, manychat: 0, csv: 0, total: 0 });
   const [isUnifying, setIsUnifying] = useState(false);
   const [unifyProgress, setUnifyProgress] = useState(0);
+  const [unifyStats, setUnifyStats] = useState<{
+    processed: number;
+    merged: number;
+    rate: string;
+    eta: number;
+    syncRunId: string | null;
+  }>({ processed: 0, merged: 0, rate: '0/s', eta: 0, syncRunId: null });
   const [loading, setLoading] = useState(true);
 
   // Fetch current counts
@@ -275,43 +282,71 @@ export function SyncOrchestrator() {
     }
   };
 
-  // Unify All Sources
+  // Unify All Sources (using new bulk-unify-contacts)
   const unifyAll = async () => {
     setIsUnifying(true);
     setUnifyProgress(0);
+    setUnifyStats({ processed: 0, merged: 0, rate: '0/s', eta: 0, syncRunId: null });
 
     try {
-      const { data, error } = await supabase.functions.invoke('unify-all-sources', {
-        body: { sources: ['ghl', 'manychat', 'csv'] }
+      const { data, error } = await supabase.functions.invoke('bulk-unify-contacts', {
+        body: { sources: ['ghl', 'manychat', 'csv'], batchSize: 200 }
       });
 
       if (error) throw error;
+      if (!data?.ok) throw new Error(data?.error || 'Unknown error');
 
-      toast.success('Unificación iniciada en background');
+      toast.success('Unificación masiva iniciada');
       
       // Poll for progress
       if (data?.syncRunId) {
+        setUnifyStats(prev => ({ ...prev, syncRunId: data.syncRunId }));
+        
         const pollProgress = async () => {
-          const { data: syncRun } = await supabase
-            .from('sync_runs')
-            .select('status, total_fetched, total_inserted')
-            .eq('id', data.syncRunId)
-            .single();
+          try {
+            const { data: syncRun } = await supabase
+              .from('sync_runs')
+              .select('status, total_fetched, total_inserted, checkpoint, metadata')
+              .eq('id', data.syncRunId)
+              .single();
 
-          if (syncRun) {
-            const progress = syncRun.total_fetched ? Math.min((syncRun.total_fetched / pendingCounts.total) * 100, 100) : 0;
-            setUnifyProgress(progress);
+            if (syncRun) {
+              const checkpoint = (syncRun.checkpoint || {}) as {
+                progressPct?: number;
+                rate?: string;
+                estimatedRemainingSeconds?: number;
+              };
+              
+              const progress = checkpoint.progressPct || 
+                (pendingCounts.total > 0 ? Math.min((syncRun.total_fetched || 0) / pendingCounts.total * 100, 100) : 0);
+              
+              setUnifyProgress(progress);
+              setUnifyStats(prev => ({
+                ...prev,
+                processed: syncRun.total_fetched || 0,
+                merged: syncRun.total_inserted || 0,
+                rate: checkpoint.rate || '0/s',
+                eta: checkpoint.estimatedRemainingSeconds || 0
+              }));
 
-            if (syncRun.status === 'completed') {
-              setIsUnifying(false);
-              toast.success(`Unificación completada: ${syncRun.total_inserted} registros fusionados`);
-              fetchCounts();
-            } else if (syncRun.status === 'failed') {
-              setIsUnifying(false);
-              toast.error('Error en la unificación');
-            } else {
-              setTimeout(pollProgress, 2000);
+              if (syncRun.status === 'completed') {
+                setIsUnifying(false);
+                setUnifyProgress(100);
+                toast.success(`✅ Unificación completada: ${(syncRun.total_inserted || 0).toLocaleString()} registros fusionados`);
+                fetchCounts();
+              } else if (syncRun.status === 'failed') {
+                setIsUnifying(false);
+                toast.error('Error en la unificación');
+              } else if (syncRun.status === 'cancelled') {
+                setIsUnifying(false);
+                toast.info('Unificación cancelada');
+              } else {
+                setTimeout(pollProgress, 2000);
+              }
             }
+          } catch (pollError) {
+            console.error('Poll error:', pollError);
+            setTimeout(pollProgress, 3000);
           }
         };
         
@@ -320,6 +355,17 @@ export function SyncOrchestrator() {
     } catch (error) {
       setIsUnifying(false);
       toast.error(`Error: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+
+  // Cancel unification
+  const cancelUnification = async () => {
+    try {
+      await supabase.functions.invoke('bulk-unify-contacts', { body: { forceCancel: true } });
+      setIsUnifying(false);
+      toast.success('Unificación cancelada');
+    } catch (error) {
+      toast.error('Error cancelando unificación');
     }
   };
 
@@ -540,12 +586,30 @@ export function SyncOrchestrator() {
           </div>
 
           {isUnifying && (
-            <div className="mb-4">
+            <div className="mb-4 p-4 bg-muted/50 rounded-lg">
               <div className="flex items-center justify-between mb-2">
-                <span className="text-sm font-medium">Progreso de unificación</span>
+                <span className="text-sm font-medium">Progreso de unificación masiva</span>
                 <span className="text-sm text-muted-foreground">{Math.round(unifyProgress)}%</span>
               </div>
-              <Progress value={unifyProgress} className="h-2" />
+              <Progress value={unifyProgress} className="h-3 mb-3" />
+              <div className="grid grid-cols-4 gap-4 text-center text-sm">
+                <div>
+                  <div className="font-bold text-lg">{unifyStats.processed.toLocaleString()}</div>
+                  <div className="text-muted-foreground">Procesados</div>
+                </div>
+                <div>
+                  <div className="font-bold text-lg text-green-600">{unifyStats.merged.toLocaleString()}</div>
+                  <div className="text-muted-foreground">Fusionados</div>
+                </div>
+                <div>
+                  <div className="font-bold text-lg text-blue-600">{unifyStats.rate}</div>
+                  <div className="text-muted-foreground">Velocidad</div>
+                </div>
+                <div>
+                  <div className="font-bold text-lg">{unifyStats.eta > 0 ? `${Math.ceil(unifyStats.eta / 60)}m` : '-'}</div>
+                  <div className="text-muted-foreground">Tiempo restante</div>
+                </div>
+              </div>
             </div>
           )}
 
@@ -559,7 +623,7 @@ export function SyncOrchestrator() {
               {isUnifying ? (
                 <>
                   <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
-                  Unificando...
+                  Unificando... ({unifyStats.processed.toLocaleString()} de {pendingCounts.total.toLocaleString()})
                 </>
               ) : (
                 <>
@@ -568,12 +632,19 @@ export function SyncOrchestrator() {
                 </>
               )}
             </Button>
-            <Button variant="outline" onClick={fetchCounts}>
-              <RefreshCw className="h-4 w-4" />
-            </Button>
+            {isUnifying ? (
+              <Button variant="destructive" onClick={cancelUnification}>
+                <Pause className="h-4 w-4 mr-2" />
+                Cancelar
+              </Button>
+            ) : (
+              <Button variant="outline" onClick={fetchCounts}>
+                <RefreshCw className="h-4 w-4" />
+              </Button>
+            )}
           </div>
 
-          {pendingCounts.total === 0 && (
+          {pendingCounts.total === 0 && !isUnifying && (
             <p className="text-sm text-muted-foreground text-center mt-4">
               ✓ No hay registros pendientes de unificar
             </p>
