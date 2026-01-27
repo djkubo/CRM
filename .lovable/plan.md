@@ -1,215 +1,116 @@
 
-# Plan: Sistema de Sincronización Robusto "Stage First, Merge Later"
+# Plan de Correcciones: Sincronización Basada en Documentación Oficial
 
-## Objetivo
-Crear un sistema donde **primero se descargue toda la data posible de todas las APIs** (GHL, ManyChat, Stripe, PayPal) guardándola en tablas "raw", y **después** (cuando el usuario decida) se haga el merge unificado a la tabla `clients`.
+## Diagnóstico de Problemas Encontrados
+
+Tras revisar la documentación oficial de cada API y los logs recientes, identifiqué **3 problemas críticos**:
+
+### Problema 1: GHL - Código Viejo Desplegado
+Los logs muestran que el código **todavía usa** `startAfterId` como parámetro separado:
+```
+Using startAfterId for pagination | startAfterId="7xGUYPBgMcfbTQKSBOf6"
+```
+Pero según la documentación oficial de GHL API v2, el parámetro correcto es `searchAfter: [timestamp, id]` como array.
+
+**Causa**: El diff anterior modificó el código, pero los logs muestran que todavía se está loggeando incorrectamente, lo que indica que hay mensajes de log desactualizados o una versión anterior del código corriendo.
+
+### Problema 2: GHL - Constraint de Base de Datos Incorrecto
+```
+Error upserting raw contacts batch | error=there is no unique or exclusion constraint matching the ON CONFLICT specification
+```
+- El código usa: `onConflict: 'external_id'`
+- La tabla tiene: `UNIQUE (external_id, fetched_at)` - constraint compuesto
+- **Conflicto**: El upsert no funciona porque el constraint es compuesto
+
+### Problema 3: ManyChat - Mismo Problema de Constraint
+- El código usa: `onConflict: 'subscriber_id'`
+- La tabla tiene: `UNIQUE (subscriber_id, fetched_at)` - constraint compuesto
 
 ---
 
-## Arquitectura Propuesta
+## Correcciones Requeridas
 
-```text
-┌─────────────────────────────────────────────────────────────────┐
-│                    SYNC COMMAND CENTER                           │
-│                  (Panel unificado en el Dashboard)               │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-        ┌─────────────────────┼─────────────────────┐
-        ▼                     ▼                     ▼
-┌───────────────┐    ┌───────────────┐    ┌───────────────┐
-│   CONTACTS    │    │   PAYMENTS    │    │   INVOICES    │
-│   (CRM Data)  │    │  (Revenue)    │    │   (Billing)   │
-└───────────────┘    └───────────────┘    └───────────────┘
-        │                     │                     │
-        ▼                     ▼                     ▼
-┌───────────────┐    ┌───────────────┐    ┌───────────────┐
-│  FASE 1:      │    │  FASE 1:      │    │  FASE 1:      │
-│  STAGING      │    │  STAGING      │    │  STAGING      │
-│ (Raw Tables)  │    │ (transactions)│    │ (invoices)    │
-└───────────────┘    └───────────────┘    └───────────────┘
-        │                     │                     │
-        └─────────────────────┼─────────────────────┘
-                              ▼
-                    ┌───────────────────┐
-                    │     FASE 2:       │
-                    │  UNIFY & MERGE    │
-                    │  (Background Job) │
-                    └───────────────────┘
-                              │
-                              ▼
-                    ┌───────────────────┐
-                    │   TABLA CLIENTS   │
-                    │ (Single Source of │
-                    │      Truth)       │
-                    └───────────────────┘
+### 1. Base de Datos: Agregar Constraints UNIQUE Simples
+
+Crear constraints únicos en columnas individuales:
+
+```sql
+-- GHL: Agregar constraint único solo en external_id
+ALTER TABLE ghl_contacts_raw 
+DROP CONSTRAINT IF EXISTS ghl_contacts_raw_external_id_key;
+
+ALTER TABLE ghl_contacts_raw 
+ADD CONSTRAINT ghl_contacts_raw_external_id_key UNIQUE (external_id);
+
+-- ManyChat: Agregar constraint único solo en subscriber_id
+ALTER TABLE manychat_contacts_raw 
+DROP CONSTRAINT IF EXISTS manychat_contacts_raw_subscriber_id_key;
+
+ALTER TABLE manychat_contacts_raw 
+ADD CONSTRAINT manychat_contacts_raw_subscriber_id_key UNIQUE (subscriber_id);
 ```
 
----
+### 2. sync-ghl: Limpiar Logs y Verificar Código
 
-## Lo Que Ya Funciona (Estado Actual)
-
-| Fuente | Edge Function | Estado | Tablas Raw |
-|--------|--------------|--------|-----------|
-| **Stripe Payments** | `fetch-stripe` | ✅ Funciona | → `transactions` (directo) |
-| **Stripe Invoices** | `fetch-invoices` | ✅ Funciona | → `invoices` (directo) |
-| **Stripe Subscriptions** | `fetch-subscriptions` | ✅ Funciona | → `subscriptions` (directo) |
-| **Stripe Customers** | `fetch-customers` | ✅ Funciona | → `clients` (directo) |
-| **PayPal Transactions** | `fetch-paypal` | ✅ Funciona | → `transactions` (directo) |
-| **GoHighLevel** | `sync-ghl` | ⚠️ Parcial | → `ghl_contacts_raw` ✅ |
-| **ManyChat** | `sync-manychat` | ⚠️ Lento | → `manychat_contacts_raw` ✅ |
-| **CSV Import** | `process-csv-bulk` | ✅ Funciona | → `csv_imports_raw` ✅ |
-
----
-
-## Cambios Requeridos
-
-### 1. Mejorar `sync-ghl` para Descarga Masiva Completa
-
-**Problema actual:** Procesa 50 páginas máximo por invocación, puede perderse contactos.
-
-**Solución:**
-- Cambiar a paginación completa con checkpoints
-- Guardar TODO en `ghl_contacts_raw` sin hacer merge inmediato
-- Soportar reanudación automática si se interrumpe
+El código actual **ya tiene la corrección** de `searchAfter`, pero los mensajes de log son confusos. Ajustar:
 
 ```typescript
-// Nuevo flujo sync-ghl
-1. Descargar página de contactos de GHL API
-2. Guardar TODA la respuesta en ghl_contacts_raw (payload JSONB)
-3. Actualizar checkpoint en sync_runs
-4. Responder hasMore: true → frontend hace siguiente página
-5. Repetir hasta hasMore: false
-// NO hacer merge aquí - eso es fase 2
+// Línea 81-84 - Actualizar mensaje de log
+logger.info('Fetching GHL contacts (STAGE ONLY MODE)', { 
+  hasSearchAfter: !!(startAfter && startAfterId),
+  searchAfterArray: startAfter && startAfterId ? [startAfter, startAfterId] : null,
+  limit: CONTACTS_PER_PAGE 
+});
 ```
 
-### 2. Optimizar `sync-manychat` 
+### 3. sync-ghl: Fallback a INSERT si UPSERT Falla
 
-**Problema actual:** Busca email por email (1 request por contacto = muy lento).
+Como precaución adicional, agregar fallback:
 
-**Solución:**
-- Cambiar estrategia: exportar lista de subscribers de ManyChat
-- O: Usar endpoint de tags para obtener listas masivas
-- Guardar en `manychat_contacts_raw` sin merge inmediato
+```typescript
+// Si el upsert falla por constraint, intentar delete + insert
+const { error: upsertError } = await supabase
+  .from('ghl_contacts_raw')
+  .upsert(rawRecords, { onConflict: 'external_id', ignoreDuplicates: false });
 
-### 3. Crear Panel de Control Unificado
-
-**Nueva página `SyncOrchestrator.tsx`:**
-
-```text
-┌─────────────────────────────────────────────────────────┐
-│ 🔄 Centro de Sincronización                              │
-├─────────────────────────────────────────────────────────┤
-│                                                          │
-│ FASE 1: DESCARGAR DATA                                  │
-│ ┌─────────┬─────────┬─────────┬─────────┐              │
-│ │ Stripe  │ PayPal  │   GHL   │ManyChat │              │
-│ │  ✅ 8k  │  ✅ 2k  │ 🔄 150k │   ⏸️    │              │
-│ └─────────┴─────────┴─────────┴─────────┘              │
-│                                                          │
-│ [Sync Stripe] [Sync PayPal] [Sync GHL] [Sync ManyChat]  │
-│                                                          │
-│ ──────────────────────────────────────────────────────  │
-│                                                          │
-│ FASE 2: UNIFICAR IDENTIDADES                            │
-│ ┌─────────────────────────────────────────────┐        │
-│ │ Raw Data Pendiente:                          │        │
-│ │   • ghl_contacts_raw: 217,324 registros     │        │
-│ │   • manychat_contacts_raw: 45,000 registros │        │
-│ │   • csv_imports_raw: 532,000 registros      │        │
-│ └─────────────────────────────────────────────┘        │
-│                                                          │
-│ [Unificar Todo] ← Ejecuta merge en background           │
-│                                                          │
-└─────────────────────────────────────────────────────────┘
+if (upsertError && upsertError.message.includes('ON CONFLICT')) {
+  // Fallback: Eliminar y reinsertar
+  const externalIds = rawRecords.map(r => r.external_id);
+  await supabase.from('ghl_contacts_raw').delete().in('external_id', externalIds);
+  await supabase.from('ghl_contacts_raw').insert(rawRecords);
+}
 ```
 
-### 4. Crear Edge Function `unify-all-sources`
+---
 
-Nueva función que:
-1. Lee de TODAS las tablas raw
-2. Aplica prioridades de merge (Email → Phone → IDs externos)
-3. Usa `unify_identity` RPC para cada contacto
-4. Ejecuta en background con `EdgeRuntime.waitUntil`
-5. Reporta progreso en `sync_runs`
+## Archivos a Modificar
 
-### 5. Mejorar `sync-command-center`
-
-Modificar para que:
-1. **Solo descargue data** (no haga merge)
-2. Reporte cuántos registros hay pendientes de unificar
-3. Tenga opción "Unificar Todo" separada
+| Archivo | Cambio |
+|---------|--------|
+| **Migración SQL** | Agregar constraints UNIQUE simples |
+| `sync-ghl/index.ts` | Limpiar logs, agregar fallback |
+| `sync-manychat/index.ts` | Agregar fallback para upsert |
 
 ---
 
-## Archivos a Crear/Modificar
+## Resumen de Documentación Oficial Verificada
 
-| Archivo | Acción | Descripción |
-|---------|--------|-------------|
-| `supabase/functions/sync-ghl/index.ts` | Modificar | Paginación completa, sin merge inmediato |
-| `supabase/functions/sync-manychat/index.ts` | Modificar | Estrategia de descarga masiva |
-| `supabase/functions/unify-all-sources/index.ts` | **Crear** | Merge unificado de todas las fuentes |
-| `src/components/dashboard/SyncOrchestrator.tsx` | **Crear** | Panel de control unificado |
-| `supabase/functions/sync-command-center/index.ts` | Modificar | Separar descarga de unificación |
-
----
-
-## Flujo de Usuario Final
-
-1. **Usuario abre "Centro de Sincronización"**
-2. **Hace clic en "Sync All"** → Descarga toda la data de APIs
-   - Stripe: Transacciones, Facturas, Suscripciones, Clientes
-   - PayPal: Transacciones, Suscripciones
-   - GHL: Todos los contactos → `ghl_contacts_raw`
-   - ManyChat: Todos los subscribers → `manychat_contacts_raw`
-3. **Ve el progreso en tiempo real** vía `sync_runs`
-4. **Cuando termina, ve contadores de "pendientes de unificar"**
-5. **Hace clic en "Unificar Todo"** → Merge en background
-6. **Todos los contactos aparecen en `clients` correctamente vinculados**
+| API | Parámetro Paginación | Formato | Límite |
+|-----|---------------------|---------|--------|
+| **GHL v2 Search** | `searchAfter` | `[timestamp, contactId]` | 100/página |
+| **Stripe** | `starting_after` | ID del último objeto | 100/página |
+| **PayPal Transactions** | `page`, `page_size` | Números enteros | 500/página, 31 días máx |
+| **ManyChat** | `findBySystemField` | Búsqueda individual | 1 por request |
 
 ---
 
-## Detalles Técnicos
+## Orden de Ejecución
 
-### Prioridades de Merge (Identity Resolution)
-```text
-1. stripe_customer_id → Identificador más confiable para pagos
-2. email → Identificador universal
-3. phone_e164 → Respaldo si no hay email
-4. ghl_contact_id → Para contactos solo de GHL
-5. manychat_subscriber_id → Para contactos solo de ManyChat
-```
+1. Aplicar migración SQL para agregar constraints
+2. Actualizar `sync-ghl` con logs limpios y fallback
+3. Actualizar `sync-manychat` con fallback
+4. Redesplegar Edge Functions
+5. Limpiar sync_runs bloqueados
+6. Probar sincronización
 
-### Manejo de Conflictos
-- Si email de GHL ≠ email de ManyChat para mismo teléfono → Guardar en `merge_conflicts`
-- UI para resolución manual de conflictos
-
-### Rate Limiting por API
-| API | Límite | Delay entre páginas |
-|-----|--------|---------------------|
-| Stripe | 100 req/s | 100ms |
-| PayPal | 30 req/s | 200ms |
-| GHL | 10 req/s | 150ms |
-| ManyChat | 10 req/s | 200ms |
-
----
-
-## Estimación de Trabajo
-
-| Tarea | Complejidad | Tiempo Estimado |
-|-------|-------------|-----------------|
-| Modificar sync-ghl | Media | 45 min |
-| Modificar sync-manychat | Alta | 60 min |
-| Crear unify-all-sources | Alta | 90 min |
-| Crear SyncOrchestrator UI | Media | 60 min |
-| Modificar sync-command-center | Baja | 30 min |
-| **Total** | | **~5 horas** |
-
----
-
-## Beneficios del Nuevo Sistema
-
-1. **Sin pérdida de data**: Todo se guarda primero, merge después
-2. **Reanudable**: Si se interrumpe, continúa desde checkpoint
-3. **Visible**: Panel muestra exactamente qué hay pendiente
-4. **Robusto**: Merge en background no bloquea la UI
-5. **Escalable**: Soporta 500k+ registros sin problemas
+Esto resolverá los errores de `ON CONFLICT` y asegurará que la paginación de GHL funcione correctamente según la documentación oficial.
