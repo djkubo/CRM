@@ -540,12 +540,22 @@ Deno.serve(async (req) => {
     const hasMore = fetchAll && page < result.totalPages;
 
     if (hasMore) {
+      // INCREMENTAL COUNTERS: Read current values before updating
+      const { data: currentRun } = await supabase
+        .from('sync_runs')
+        .select('total_fetched, total_inserted')
+        .eq('id', syncRunId)
+        .single();
+      
+      const accumulatedFetched = (currentRun?.total_fetched || 0) + transactionsSaved;
+      const accumulatedInserted = (currentRun?.total_inserted || 0) + transactionsSaved;
+      
       await supabase
         .from('sync_runs')
         .update({
           status: 'continuing',
-          total_fetched: transactionsSaved,
-          total_inserted: transactionsSaved,
+          total_fetched: accumulatedFetched,
+          total_inserted: accumulatedInserted,
           checkpoint: {
             page,
             totalPages: result.totalPages,
@@ -573,14 +583,23 @@ Deno.serve(async (req) => {
       );
     }
 
-    // Complete
+    // Complete - use incremental counters
+    const { data: finalRun } = await supabase
+      .from('sync_runs')
+      .select('total_fetched, total_inserted')
+      .eq('id', syncRunId)
+      .single();
+    
+    const finalFetched = (finalRun?.total_fetched || 0) + transactionsSaved;
+    const finalInserted = (finalRun?.total_inserted || 0) + transactionsSaved;
+    
     await supabase
       .from('sync_runs')
       .update({
         status: 'completed',
         completed_at: new Date().toISOString(),
-        total_fetched: transactionsSaved,
-        total_inserted: transactionsSaved,
+        total_fetched: finalFetched,
+        total_inserted: finalInserted,
         checkpoint: null
       })
       .eq('id', syncRunId);

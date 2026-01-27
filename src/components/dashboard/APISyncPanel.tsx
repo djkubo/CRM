@@ -68,18 +68,44 @@ export function APISyncPanel() {
             allResults.failed_count += data.failed_count ?? 0;
           }
         } else {
-          const data = await invokeWithAdminKey<FetchPayPalResponse, FetchPayPalBody>(
-            'fetch-paypal',
-            { 
-              fetchAll: true,
-              startDate: startDate.toISOString(),
-              endDate: endDate.toISOString()
+          // PayPal: Loop through ALL internal pages for this chunk
+          let paypalSyncRunId: string | null = null;
+          let paypalHasMore = true;
+          let paypalPage = 1;
+          
+          while (paypalHasMore && paypalPage <= 500) {
+            const data = await invokeWithAdminKey<FetchPayPalResponse, FetchPayPalBody>(
+              'fetch-paypal',
+              { 
+                fetchAll: true,
+                startDate: startDate.toISOString(),
+                endDate: endDate.toISOString(),
+                syncRunId: paypalSyncRunId,
+                page: paypalPage
+              }
+            );
+            
+            if (!data?.success) {
+              console.error(`PayPal page ${paypalPage} failed:`, data?.error);
+              break;
             }
-          );
-          if (data?.success) {
+            
+            // Track sync run ID across pages
+            paypalSyncRunId = data.syncRunId || paypalSyncRunId;
+            
+            // Accumulate results
             allResults.synced_transactions += data.synced_transactions ?? 0;
             allResults.paid_count += data.paid_count ?? 0;
             allResults.failed_count += data.failed_count ?? 0;
+            
+            // Check pagination
+            paypalHasMore = data.hasMore === true;
+            paypalPage = data.nextPage || (paypalPage + 1);
+            
+            // Rate limit delay
+            if (paypalHasMore) {
+              await new Promise(r => setTimeout(r, 200));
+            }
           }
         }
       } catch (err) {
