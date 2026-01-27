@@ -144,12 +144,26 @@ async function processSinglePageStageOnly(
         processed_at: null // Will be set during unification
       }));
 
+      // Try upsert first
       const { error: upsertError } = await supabase
         .from('ghl_contacts_raw')
         .upsert(rawRecords, { onConflict: 'external_id' });
 
       if (upsertError) {
-        logger.error('Error upserting raw contacts batch', upsertError);
+        // Fallback: Delete existing and insert new if constraint error
+        if (upsertError.message?.includes('ON CONFLICT') || upsertError.message?.includes('unique')) {
+          logger.warn('Upsert failed, using delete+insert fallback', { error: upsertError.message });
+          const externalIds = rawRecords.map((r: { external_id: string }) => r.external_id);
+          await supabase.from('ghl_contacts_raw').delete().in('external_id', externalIds);
+          const { error: insertError } = await supabase.from('ghl_contacts_raw').insert(rawRecords);
+          if (insertError) {
+            logger.error('Error inserting raw contacts batch (fallback)', insertError);
+          } else {
+            staged += batch.length;
+          }
+        } else {
+          logger.error('Error upserting raw contacts batch', upsertError);
+        }
       } else {
         staged += batch.length;
       }

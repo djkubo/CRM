@@ -133,17 +133,29 @@ async function processPageStageOnly(
           
           logger.debug('Found ManyChat subscriber', { subscriberId: subscriber.id, email });
 
+          const rawRecord = {
+            subscriber_id: subscriber.id,
+            payload: subscriber,
+            sync_run_id: syncRunId,
+            fetched_at: new Date().toISOString(),
+            processed_at: null
+          };
+
           const { error: upsertError } = await (supabase as any)
             .from('manychat_contacts_raw')
-            .upsert({
-              subscriber_id: subscriber.id,
-              payload: subscriber,
-              sync_run_id: syncRunId,
-              fetched_at: new Date().toISOString(),
-              processed_at: null
-            }, { onConflict: 'subscriber_id' });
+            .upsert(rawRecord, { onConflict: 'subscriber_id' });
 
-          if (!upsertError) {
+          if (upsertError) {
+            // Fallback: Delete existing and insert new if constraint error
+            if (upsertError.message?.includes('ON CONFLICT') || upsertError.message?.includes('unique')) {
+              logger.warn('Upsert failed, using delete+insert fallback', { subscriberId: subscriber.id });
+              await (supabase as any).from('manychat_contacts_raw').delete().eq('subscriber_id', subscriber.id);
+              const { error: insertError } = await (supabase as any).from('manychat_contacts_raw').insert(rawRecord);
+              if (!insertError) {
+                staged++;
+              }
+            }
+          } else {
             staged++;
           }
 
