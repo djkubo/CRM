@@ -1,84 +1,71 @@
 
-# Plan de Correcciones: Sincronización Basada en Documentación Oficial
+# Plan de Corrección: Sincronización de Facturas
 
-## Diagnóstico de Problemas Encontrados
+## Diagnóstico del Problema
 
-Tras revisar la documentación oficial de cada API y los logs recientes, identifiqué **3 problemas críticos**:
+Tras analizar los logs y el código, identifiqué **2 problemas críticos**:
 
-### Problema 1: GHL - Código Viejo Desplegado
-Los logs muestran que el código **todavía usa** `startAfterId` como parámetro separado:
+### Problema 1: Contadores se Sobrescriben en Lugar de Sumar
+En `fetch-invoices/index.ts` línea 661:
+```typescript
+total_fetched: invoices.length,  // ❌ Sobreescribe con 100 cada página
+total_inserted: upsertedCount,   // ❌ Sobreescribe con 100 cada página
 ```
-Using startAfterId for pagination | startAfterId="7xGUYPBgMcfbTQKSBOf6"
-```
-Pero según la documentación oficial de GHL API v2, el parámetro correcto es `searchAfter: [timestamp, id]` como array.
 
-**Causa**: El diff anterior modificó el código, pero los logs muestran que todavía se está loggeando incorrectamente, lo que indica que hay mensajes de log desactualizados o una versión anterior del código corriendo.
+**Comportamiento actual**: Cada página resetea los contadores a 100, por eso ves `total_fetched: 0` o `total_fetched: 100` independientemente de cuántas páginas se hayan procesado.
 
-### Problema 2: GHL - Constraint de Base de Datos Incorrecto
-```
-Error upserting raw contacts batch | error=there is no unique or exclusion constraint matching the ON CONFLICT specification
-```
-- El código usa: `onConflict: 'external_id'`
-- La tabla tiene: `UNIQUE (external_id, fetched_at)` - constraint compuesto
-- **Conflicto**: El upsert no funciona porque el constraint es compuesto
+**Comportamiento esperado**: Los contadores deben SUMAR incrementalmente.
 
-### Problema 3: ManyChat - Mismo Problema de Constraint
-- El código usa: `onConflict: 'subscriber_id'`
-- La tabla tiene: `UNIQUE (subscriber_id, fetched_at)` - constraint compuesto
+### Problema 2: Frontend Inicia Nuevos Syncs Antes de que se Actualice el Estado
+El check de "sync already running" detecta el sync que acaba de crear, bloqueando la continuación.
 
 ---
 
 ## Correcciones Requeridas
 
-### 1. Base de Datos: Agregar Constraints UNIQUE Simples
-
-Crear constraints únicos en columnas individuales:
-
-```sql
--- GHL: Agregar constraint único solo en external_id
-ALTER TABLE ghl_contacts_raw 
-DROP CONSTRAINT IF EXISTS ghl_contacts_raw_external_id_key;
-
-ALTER TABLE ghl_contacts_raw 
-ADD CONSTRAINT ghl_contacts_raw_external_id_key UNIQUE (external_id);
-
--- ManyChat: Agregar constraint único solo en subscriber_id
-ALTER TABLE manychat_contacts_raw 
-DROP CONSTRAINT IF EXISTS manychat_contacts_raw_subscriber_id_key;
-
-ALTER TABLE manychat_contacts_raw 
-ADD CONSTRAINT manychat_contacts_raw_subscriber_id_key UNIQUE (subscriber_id);
-```
-
-### 2. sync-ghl: Limpiar Logs y Verificar Código
-
-El código actual **ya tiene la corrección** de `searchAfter`, pero los mensajes de log son confusos. Ajustar:
+### 1. Edge Function `fetch-invoices`: Contadores Incrementales
 
 ```typescript
-// Línea 81-84 - Actualizar mensaje de log
-logger.info('Fetching GHL contacts (STAGE ONLY MODE)', { 
-  hasSearchAfter: !!(startAfter && startAfterId),
-  searchAfterArray: startAfter && startAfterId ? [startAfter, startAfterId] : null,
-  limit: CONTACTS_PER_PAGE 
-});
+// Antes de actualizar, leer los contadores actuales
+const { data: currentRun } = await supabase
+  .from('sync_runs')
+  .select('total_fetched, total_inserted')
+  .eq('id', syncRunId)
+  .single();
+
+const currentFetched = currentRun?.total_fetched || 0;
+const currentInserted = currentRun?.total_inserted || 0;
+
+// Actualizar SUMANDO los nuevos valores
+await supabase
+  .from('sync_runs')
+  .update({
+    status: hasMore ? 'continuing' : 'completed',
+    total_fetched: currentFetched + invoices.length,  // ✅ Sumar
+    total_inserted: currentInserted + upsertedCount,  // ✅ Sumar
+    checkpoint: hasMore ? { cursor: nextCursor } : null,
+    completed_at: hasMore ? null : new Date().toISOString(),
+  })
+  .eq('id', syncRunId);
 ```
 
-### 3. sync-ghl: Fallback a INSERT si UPSERT Falla
+### 2. Edge Function `fetch-invoices`: Mejorar Check de Duplicados
 
-Como precaución adicional, agregar fallback:
-
+Cuando el frontend pasa un `syncRunId`, NO debe bloquear el sync:
 ```typescript
-// Si el upsert falla por constraint, intentar delete + insert
-const { error: upsertError } = await supabase
-  .from('ghl_contacts_raw')
-  .upsert(rawRecords, { onConflict: 'external_id', ignoreDuplicates: false });
-
-if (upsertError && upsertError.message.includes('ON CONFLICT')) {
-  // Fallback: Eliminar y reinsertar
-  const externalIds = rawRecords.map(r => r.external_id);
-  await supabase.from('ghl_contacts_raw').delete().in('external_id', externalIds);
-  await supabase.from('ghl_contacts_raw').insert(rawRecords);
+// Solo bloquear si NO tenemos syncRunId y hay uno running reciente
+if (!syncRunId) {
+  // Check for existing...
 }
+// Si tenemos syncRunId, continuar inmediatamente
+```
+
+### 3. Añadir Logging para Debugging
+
+```typescript
+console.log(`📈 Updated sync run ${syncRunId}: 
+  fetched: ${currentFetched} + ${invoices.length} = ${currentFetched + invoices.length}
+  inserted: ${currentInserted} + ${upsertedCount} = ${currentInserted + upsertedCount}`);
 ```
 
 ---
@@ -87,30 +74,56 @@ if (upsertError && upsertError.message.includes('ON CONFLICT')) {
 
 | Archivo | Cambio |
 |---------|--------|
-| **Migración SQL** | Agregar constraints UNIQUE simples |
-| `sync-ghl/index.ts` | Limpiar logs, agregar fallback |
-| `sync-manychat/index.ts` | Agregar fallback para upsert |
+| `supabase/functions/fetch-invoices/index.ts` | Contadores incrementales + logging mejorado |
 
 ---
 
-## Resumen de Documentación Oficial Verificada
+## Limpieza Requerida
 
-| API | Parámetro Paginación | Formato | Límite |
-|-----|---------------------|---------|--------|
-| **GHL v2 Search** | `searchAfter` | `[timestamp, contactId]` | 100/página |
-| **Stripe** | `starting_after` | ID del último objeto | 100/página |
-| **PayPal Transactions** | `page`, `page_size` | Números enteros | 500/página, 31 días máx |
-| **ManyChat** | `findBySystemField` | Búsqueda individual | 1 por request |
+Cancelar syncs bloqueados actuales:
+```sql
+UPDATE sync_runs 
+SET status = 'cancelled', 
+    completed_at = NOW(),
+    error_message = 'Limpieza - corrección de contadores'
+WHERE source = 'stripe_invoices' 
+AND status IN ('running', 'continuing');
+```
 
 ---
 
-## Orden de Ejecución
+## Resultado Esperado
 
-1. Aplicar migración SQL para agregar constraints
-2. Actualizar `sync-ghl` con logs limpios y fallback
-3. Actualizar `sync-manychat` con fallback
-4. Redesplegar Edge Functions
-5. Limpiar sync_runs bloqueados
-6. Probar sincronización
+Después de aplicar estos cambios:
+1. La primera página creará un sync_run con `total_fetched: 100`
+2. La segunda página actualizará a `total_fetched: 200`
+3. La tercera página actualizará a `total_fetched: 300`
+4. Y así sucesivamente hasta completar todas las facturas
 
-Esto resolverá los errores de `ON CONFLICT` y asegurará que la paginación de GHL funcione correctamente según la documentación oficial.
+El frontend podrá mostrar el progreso real y la sincronización se completará correctamente.
+
+---
+
+## Sección Técnica
+
+### Flujo de Datos Corregido
+
+```text
+Frontend llama fetch-invoices (page 1)
+  ├─ Crea sync_run con status='running'
+  ├─ Procesa 100 facturas
+  ├─ Actualiza sync_run: total_fetched=100, status='continuing'
+  └─ Retorna: {hasMore: true, nextCursor: "in_xxx", syncRunId: "abc"}
+
+Frontend llama fetch-invoices (page 2, syncRunId="abc")
+  ├─ Lee sync_run actual: total_fetched=100
+  ├─ Procesa 100 facturas más
+  ├─ Actualiza sync_run: total_fetched=200 (100+100)
+  └─ Retorna: {hasMore: true, nextCursor: "in_yyy"}
+
+... continúa hasta hasMore=false
+```
+
+### Consideraciones de Performance
+- El SELECT adicional para leer contadores actuales añade ~10ms por página
+- Esto es insignificante comparado con el tiempo de fetch de Stripe (~5-15s por página)
