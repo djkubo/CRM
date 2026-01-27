@@ -1,134 +1,198 @@
 
-# Plan: Arreglar Bug de DUPLICATE_IDENTITY en unify-identity
+# Plan: Configuración Perfecta de Webhook GoHighLevel → unify-identity
 
-## Diagnóstico Confirmado
+## Resumen del Problema
 
-El webhook de ManyChat **FUNCIONA CORRECTAMENTE**:
-- URL: `https://sbexeqqizazjfsbsgrbd.supabase.co/functions/v1/unify-identity` ✅
-- Headers: `x-admin-key`, `Content-Type: application/json` ✅
-- Body JSON: Formato correcto ✅
-- Autenticación: Validada ✅
+GoHighLevel (GHL) tiene un sistema de webhooks que envía datos cuando se crea o actualiza un contacto. Necesitamos configurarlo correctamente para que toda la data llegue sin errores a nuestro sistema.
 
-**El problema**: Cualquier intento de ACTUALIZAR un contacto existente falla con error `DUPLICATE_IDENTITY`.
+## La Solución: 2 Opciones
 
-**Causa raíz**: Existen índices únicos duplicados en la tabla `clients`:
+### Opción A: Endpoint Dedicado (RECOMENDADO)
+Crear un endpoint `ghl-webhook` que:
+1. Reciba el formato nativo de GHL sin modificaciones
+2. Transforme automáticamente los datos
+3. Llame internamente a `unify-identity`
+4. Verifique la firma del webhook (seguridad)
 
-| Columna | Índices Únicos Encontrados |
-|---------|---------------------------|
-| email | `clients_email_key`, `clients_email_unique`, `idx_clients_email_unique` (3 duplicados) |
-| manychat_subscriber_id | `idx_clients_manychat_id`, `idx_clients_manychat_unique` (2 duplicados) |
-| ghl_contact_id | `idx_clients_ghl_id`, `idx_clients_ghl_unique` (2 duplicados) |
-
-Esto causa que Postgres lance una excepción `unique_violation` incluso al actualizar el mismo registro.
+### Opción B: Usar unify-identity directamente
+Requiere configurar el body manualmente en GHL (más complejo, propenso a errores)
 
 ---
 
-## Solución en 2 Pasos
+## Implementación Recomendada: Endpoint `ghl-webhook`
 
-### Paso 1: Limpiar Índices Duplicados (Migración SQL)
+### Estructura del Webhook de GHL
 
-```sql
--- IMPORTANTE: Eliminar índices únicos duplicados, mantener solo uno por columna
+Cuando GHL envía un webhook de "ContactCreate", el payload viene así:
 
--- Email: mantener solo idx_clients_email_unique (el más específico con lower())
-DROP INDEX IF EXISTS clients_email_key;
-DROP INDEX IF EXISTS clients_email_unique;
-
--- ManyChat: mantener solo idx_clients_manychat_id
-DROP INDEX IF EXISTS idx_clients_manychat_unique;
-
--- GHL: mantener solo idx_clients_ghl_id  
-DROP INDEX IF EXISTS idx_clients_ghl_unique;
+```json
+{
+  "type": "ContactCreate",
+  "locationId": "kIG3EUjfgGLoNW0QsJLS",
+  "id": "abc123xyz",
+  "email": "cliente@email.com",
+  "phone": "+15551234567",
+  "firstName": "Juan",
+  "lastName": "Pérez",
+  "name": "juan pérez",
+  "tags": ["lead", "facebook"],
+  "source": "facebook",
+  "dnd": false,
+  "dndSettings": {
+    "sms": { "status": "inactive" },
+    "email": { "status": "inactive" },
+    "whatsApp": { "status": "inactive" }
+  },
+  "attributionSource": {
+    "sessionSource": "facebook",
+    "medium": "paid",
+    "campaign": "promo_enero"
+  },
+  "customFields": [
+    { "id": "field_id", "value": "valor" }
+  ],
+  "dateAdded": "2026-01-27T19:30:00.000Z"
+}
 ```
 
-### Paso 2: Mejorar el RPC unify_identity
-
-Modificar el bloque EXCEPTION para manejar mejor las actualizaciones y evitar falsos positivos:
-
-```sql
--- En lugar de capturar TODAS las unique_violation,
--- solo capturar conflictos reales de INSERT
-EXCEPTION WHEN unique_violation THEN
-  -- Solo retornar error si estamos en INSERT, no en UPDATE
-  IF v_action = 'created' THEN
-    RETURN jsonb_build_object(
-      'success', false,
-      'error', 'DUPLICATE_IDENTITY',
-      'message', 'A client with this identity already exists'
-    );
-  ELSE
-    -- Para updates, reintentar sin los campos que causan conflicto
-    RAISE NOTICE 'Unique violation on update, retrying...';
-    -- Alternativamente, simplemente retornar éxito parcial
-    RETURN jsonb_build_object(
-      'success', true,
-      'action', 'updated_partial',
-      'client_id', v_client_id,
-      'warning', 'Some fields could not be updated due to conflicts'
-    );
-  END IF;
-```
-
----
-
-## Archivos a Modificar
-
-| Archivo/Recurso | Cambio |
-|-----------------|--------|
-| Migración SQL | Eliminar índices únicos duplicados |
-| RPC `unify_identity` | Mejorar manejo de EXCEPTION para updates |
-
----
-
-## Resultado Esperado
-
-Después de aplicar estos cambios:
-
-1. ManyChat podrá enviar webhooks que **actualicen** contactos existentes
-2. No habrá más errores `DUPLICATE_IDENTITY` falsos
-3. La unificación de identidad funcionará correctamente para:
-   - Crear nuevos contactos ✅ (ya funciona)
-   - Actualizar contactos existentes ✅ (a corregir)
-
----
-
-## Configuración Final de ManyChat
-
-Una vez aplicados los cambios, la configuración será:
+### Archivo a Crear: `supabase/functions/ghl-webhook/index.ts`
 
 ```text
 ┌─────────────────────────────────────────────────────────────────┐
-│ ManyChat External Request                                       │
+│                     GHL-WEBHOOK FLOW                            │
 ├─────────────────────────────────────────────────────────────────┤
-│ URL: https://sbexeqqizazjfsbsgrbd.supabase.co/functions/v1/     │
-│      unify-identity                                             │
 │                                                                 │
-│ Headers:                                                        │
-│   Content-Type: application/json                                │
-│   x-admin-key: vrp_admin_2026_K8p3dQ7xN2v9Lm5R1s0T4u6Yh8Gf3Jk  │
-│   x-source: manychat                                            │
+│   GoHighLevel                                                   │
+│       │                                                         │
+│       ▼                                                         │
+│   POST /ghl-webhook                                             │
+│       │                                                         │
+│       ├─► 1. Verificar x-wh-signature (seguridad)               │
+│       │                                                         │
+│       ├─► 2. Detectar tipo de evento:                           │
+│       │      - ContactCreate                                    │
+│       │      - ContactUpdate                                    │
+│       │      - ContactDelete (ignorar)                          │
+│       │                                                         │
+│       ├─► 3. Transformar payload GHL → formato unify-identity   │
+│       │                                                         │
+│       ├─► 4. Llamar RPC unify_identity                          │
+│       │                                                         │
+│       └─► 5. Responder 200 OK (siempre, para evitar retries)    │
 │                                                                 │
-│ Body:                                                           │
-│ {                                                               │
-│   "source": "manychat",                                         │
-│   "email": "{{email}}",                                         │
-│   "phone": "{{phone}}",                                         │
-│   "full_name": "{{first_name}} {{last_name}}",                  │
-│   "manychat_subscriber_id": "{{user_id}}",                      │
-│   "utm_source": "manychat",                                     │
-│   "utm_medium": "chatbot",                                      │
-│   "utm_campaign": "{{flow_name}}",                              │
-│   "tags": ["manychat", "{{flow_name}}"],                        │
-│   "wa_opt_in": true                                             │
-│ }                                                               │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Lógica de Transformación
+
+| Campo GHL | Campo unify-identity |
+|-----------|---------------------|
+| `id` | `ghl_contact_id` |
+| `email` | `email` |
+| `phone` | `phone` |
+| `firstName` + `lastName` | `full_name` |
+| `tags` | `tags` |
+| `attributionSource.sessionSource` | `utm_source` |
+| `attributionSource.medium` | `utm_medium` |
+| `attributionSource.campaign` | `utm_campaign` |
+| `!dnd && dndSettings.sms.status !== 'active'` | `sms_opt_in` |
+| `!dnd && dndSettings.whatsApp.status !== 'active'` | `wa_opt_in` |
+| `!dnd && dndSettings.email.status !== 'active'` | `email_opt_in` |
+| `customFields` | `custom_fields` (transformado a objeto) |
+| `source` | `metadata.ghl_source` |
+| `dateAdded` | `metadata.ghl_date_added` |
+
+---
+
+## Configuración en GoHighLevel
+
+### Paso 1: Ir a Settings → Integrations → Webhooks
+
+### Paso 2: Crear Nuevo Webhook
+
+```text
+┌─────────────────────────────────────────────────────────────────┐
+│ GoHighLevel Webhook Configuration                               │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│ Name: CRM Sync - Contact Created                                │
+│                                                                 │
+│ URL:                                                            │
+│ https://sbexeqqizazjfsbsgrbd.supabase.co/functions/v1/ghl-webhook│
+│                                                                 │
+│ Events:                                                         │
+│   ☑ ContactCreate                                               │
+│   ☑ ContactUpdate                                               │
+│   ☐ ContactDelete                                               │
+│   ☐ OpportunityCreate                                           │
+│   ☐ ... (otros eventos)                                         │
+│                                                                 │
+│ No se necesitan headers adicionales - GHL firma automáticamente │
+│                                                                 │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## Notas Técnicas
+## Actualización de supabase/config.toml
 
-- La eliminación de índices duplicados NO afecta datos existentes
-- Los índices que se mantienen son suficientes para garantizar unicidad
-- El rendimiento mejorará ligeramente al tener menos índices que mantener
-- Se requiere probar después de la migración para confirmar que funciona
+```toml
+[functions.ghl-webhook]
+verify_jwt = false  # Los webhooks de GHL no usan JWT, usan firma
+```
+
+---
+
+## Seguridad: Verificación de Firma
+
+GHL firma cada webhook con una clave pública RSA. El endpoint verificará:
+
+1. Header `x-wh-signature` presente
+2. Decodificar con la clave pública de GHL
+3. Comparar con el payload recibido
+4. Rechazar si no coincide
+
+---
+
+## Eventos Soportados
+
+| Evento | Acción |
+|--------|--------|
+| `ContactCreate` | Crear o unificar cliente en `clients` |
+| `ContactUpdate` | Actualizar cliente existente |
+| `ContactDelete` | Loguear pero no eliminar (soft delete) |
+| `ContactDndUpdate` | Actualizar opt-ins de canales |
+
+---
+
+## Beneficios de Esta Implementación
+
+1. **Zero configuración en GHL**: Solo pegar la URL
+2. **Transformación automática**: No hay que mapear campos manualmente
+3. **Seguridad**: Verificación de firma
+4. **Resiliente**: Siempre responde 200 para evitar reintentos infinitos
+5. **Logging completo**: Cada evento queda registrado
+6. **Compatible**: Mismo RPC `unify_identity` que ya probamos con ManyChat
+
+---
+
+## Archivos a Crear/Modificar
+
+| Archivo | Acción |
+|---------|--------|
+| `supabase/functions/ghl-webhook/index.ts` | CREAR - Endpoint dedicado |
+| `supabase/config.toml` | MODIFICAR - Añadir configuración |
+
+---
+
+## Resultado Final
+
+Una vez implementado:
+
+1. Vas a GHL → Settings → Webhooks
+2. Creas un webhook con la URL del endpoint
+3. Seleccionas eventos `ContactCreate` y `ContactUpdate`
+4. Guardas
+5. Cada contacto nuevo/actualizado llega automáticamente a tu CRM
+
+No necesitas configurar headers, body, ni nada más. El endpoint se encarga de todo.
