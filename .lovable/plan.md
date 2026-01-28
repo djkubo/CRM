@@ -1,140 +1,182 @@
 
-# Plan: Reparación del Módulo Diagnostics
+# Plan de Reparación: MRR y Filtros de Fecha en Analytics
 
-## Resumen
-La sección Diagnostics está 90% funcional. Los problemas principales son:
-1. La reconciliación con Stripe falló porque las transacciones no están sincronizadas
-2. PayPal reconciliation no está implementada
-3. Los datos de calidad muestran warnings legítimos que requieren atención
+## Resumen Ejecutivo
+Voy a corregir dos problemas críticos en la sección Analytics:
 
-## Cambios Propuestos
+1. **MRR**: Actualmente calcula el ingreso histórico del mes pasado. Lo cambiaré para que sume el valor de suscripciones activas (`status = 'active'`).
 
-### 1. Corregir Reconciliación Stripe (Prioridad Alta)
+2. **Filtros de Fecha**: Actualmente solo afectan las tarjetas KPI. Los propagaré a todas las gráficas (MRR Movements, Cohortes, Source Analytics).
 
-El problema no es del módulo Diagnostics, sino que las transacciones de Stripe no están en la tabla `transactions`. La reconciliación está funcionando correctamente - está detectando el problema real.
+---
 
-**Acción:** El usuario necesita ejecutar una sincronización completa de Stripe desde el Sync Center antes de poder reconciliar.
+## Cambio 1: Corregir Fórmula de MRR (PRIORIDAD MÁXIMA)
 
-### 2. Implementar Reconciliación PayPal (Prioridad Media)
+### Problema Actual
+```text
+LTVMetrics.tsx (línea 32-38):
+  - Lee transacciones del mes pasado
+  - Suma todos los pagos exitosos (succeeded/paid)
+  - Esto NO es MRR, es ingreso histórico
+```
 
-El Edge Function `reconcile-metrics` tiene un placeholder para PayPal que nunca se completó:
+### Solución
+Modificar `LTVMetrics.tsx` para:
+1. Recibir las suscripciones activas desde props (o usar el hook `useSubscriptions`)
+2. Calcular MRR como: `SUM(amount) WHERE status = 'active'`
 
+### Archivos a Modificar
+
+**src/components/dashboard/analytics/LTVMetrics.tsx**
+```text
+ANTES:
+  - Props: transactions[]
+  - MRR = suma de transacciones del mes pasado
+  
+DESPUÉS:
+  - Props: transactions[], subscriptions[] (NUEVO)
+  - MRR = suma de subs.amount WHERE status = 'active'
+```
+
+**src/components/dashboard/analytics/AnalyticsPanel.tsx**
+```text
+ANTES:
+  - Solo pasa transactions y clients a LTVMetrics
+  
+DESPUÉS:
+  - Importar useSubscriptions()
+  - Pasar subscriptions a LTVMetrics
+```
+
+### Código Propuesto (LTVMetrics)
 ```typescript
-// Línea 124-128 de reconcile-metrics/index.ts
-} else if (source === 'paypal') {
-  // PayPal reconciliation would go here
-  console.log('[reconcile] PayPal reconciliation not yet implemented');
+// Nuevo: Recibir subscriptions como prop
+interface LTVMetricsProps {
+  transactions: Transaction[];
+  subscriptions: Subscription[];  // NUEVO
 }
+
+// Nuevo cálculo de MRR
+const mrr = useMemo(() => {
+  const activeSubscriptions = subscriptions.filter(
+    (s) => s.status === "active"
+  );
+  return activeSubscriptions.reduce((sum, s) => sum + s.amount, 0) / 100;
+}, [subscriptions]);
 ```
 
-**Cambios en:** `supabase/functions/reconcile-metrics/index.ts`
-- Agregar llamada a PayPal API para obtener transacciones del período
-- Comparar con `transactions` table donde `source = 'paypal'`
-- Guardar diferencias en `reconciliation_runs`
+---
 
-### 3. Agregar Alerta Visual para Sync Requerido (Prioridad Media)
+## Cambio 2: Propagar Filtro de Fechas a Gráficas
 
-En `DiagnosticsPanel.tsx`, agregar un banner que detecte si la última reconciliación falló con 100% diferencia:
-
-```typescript
-// Nuevo componente de alerta
-{reconciliationRuns[0]?.difference_pct === 100 && (
-  <Alert variant="destructive">
-    <AlertTitle>Sincronización Requerida</AlertTitle>
-    <AlertDescription>
-      La reconciliación falló. Ejecuta "Sync Stripe" primero.
-    </AlertDescription>
-  </Alert>
-)}
+### Problema Actual
+```text
+┌─────────────────────────────────────────┐
+│  Command Center (filter: today/7d/...)  │
+│         ↓                               │
+│  useDailyKPIs ✅                        │
+│         ↓                               │
+│  KPI Cards ✅ (responden al filtro)     │
+│                                         │
+│  AnalyticsPanel ❌ (sin filtro)         │
+│    ├─ SourceAnalytics ❌                │
+│    ├─ LTVMetrics ❌                     │
+│    ├─ MRRMovementsChart ❌              │
+│    └─ CohortRetentionTable ❌           │
+└─────────────────────────────────────────┘
 ```
 
-**Cambios en:** `src/components/dashboard/DiagnosticsPanel.tsx`
+### Solución
+Crear un filtro de período dentro de Analytics y conectarlo a todos los componentes hijos.
 
-### 4. Agregar Timestamp de Última Actualización (Prioridad Baja)
+### Archivos a Modificar
 
-Mostrar cuándo fue el último check de calidad para que el usuario sepa si los datos están frescos.
+**src/components/dashboard/analytics/AnalyticsPanel.tsx**
+```text
+NUEVO:
+  - Agregar estado local [period, setPeriod] = useState<'7d' | '30d' | '90d' | 'all'>('30d')
+  - Agregar selector visual de período
+  - Pasar period a todos los componentes hijos
+  - Filtrar transactions/clients según período antes de pasarlos
+```
 
-**Cambios en:** `src/components/dashboard/DiagnosticsPanel.tsx`
+**src/components/dashboard/analytics/MRRMovementsChart.tsx**
+```text
+ANTES: Siempre muestra últimos 6 meses hardcodeado
+DESPUÉS: Recibe prop 'period' y ajusta el rango de meses
+```
 
-## Resumen de Archivos a Modificar
+**src/components/dashboard/analytics/CohortRetentionTable.tsx**
+```text
+ANTES: Siempre muestra últimos 6 meses hardcodeado
+DESPUÉS: Recibe prop 'period' y ajusta número de cohortes
+```
+
+**src/components/dashboard/analytics/SourceAnalytics.tsx**
+```text
+ANTES: Siempre usa últimos 30 días hardcodeado
+DESPUÉS: Recibe prop 'period' y ajusta el query
+```
+
+### UI Propuesta
+```text
+┌────────────────────────────────────────────┐
+│  Analytics                                 │
+│  [7d] [30d] [90d] [Todo] ← selector nuevo  │
+│                                            │
+│  ┌─ Por Fuente ─┬─ LTV & MRR ─┬─ Cohortes ─┤
+│  │              │             │            │
+│  │   (gráficas responden al período)       │
+│  │                                         │
+│  └─────────────────────────────────────────┘
+└────────────────────────────────────────────┘
+```
+
+---
+
+## Resumen de Cambios
 
 | Archivo | Cambio |
 |---------|--------|
-| `supabase/functions/reconcile-metrics/index.ts` | Implementar PayPal reconciliation |
-| `src/components/dashboard/DiagnosticsPanel.tsx` | Agregar alertas de sync requerido y timestamps |
+| `LTVMetrics.tsx` | Nuevo cálculo MRR desde suscripciones activas |
+| `AnalyticsPanel.tsx` | Agregar selector de período + pasar subscriptions |
+| `MRRMovementsChart.tsx` | Aceptar prop `period` y ajustar rango |
+| `CohortRetentionTable.tsx` | Aceptar prop `period` y ajustar cohortes |
+| `SourceAnalytics.tsx` | Aceptar prop `period` y ajustar query |
+
+---
+
+## Validación Post-Cambio
+
+Una vez implementados los cambios, podré confirmar:
+
+1. **Nuevo MRR**: Será la suma de suscripciones `status = 'active'`, diferente al valor anterior
+2. **Filtros Reactivos**: Al cambiar el período, las gráficas se redibujarán mostrando solo datos del rango seleccionado
+
+---
 
 ## Detalles Técnicos
 
-### Implementación PayPal Reconciliation
-
+### Mapeo de Período a Rango de Fechas
 ```typescript
-// En reconcile-metrics/index.ts
-} else if (source === 'paypal') {
-  const paypalClientId = Deno.env.get('PAYPAL_CLIENT_ID');
-  const paypalSecret = Deno.env.get('PAYPAL_SECRET');
-  
-  if (!paypalClientId || !paypalSecret) {
-    throw new Error('PayPal credentials not configured');
-  }
-  
-  // Get OAuth token
-  const tokenRes = await fetch('https://api-m.paypal.com/v1/oauth2/token', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Basic ${btoa(`${paypalClientId}:${paypalSecret}`)}`,
-      'Content-Type': 'application/x-www-form-urlencoded'
-    },
-    body: 'grant_type=client_credentials'
-  });
-  
-  const { access_token } = await tokenRes.json();
-  
-  // Fetch transactions
-  const txRes = await fetch(
-    `https://api-m.paypal.com/v1/reporting/transactions?` +
-    `start_date=${start_date}T00:00:00-0700&end_date=${end_date}T23:59:59-0700`,
-    { headers: { 'Authorization': `Bearer ${access_token}` } }
-  );
-  
-  const txData = await txRes.json();
-  
-  for (const tx of txData.transaction_details || []) {
-    if (tx.transaction_info?.transaction_status === 'S') { // Succeeded
-      const amount = parseFloat(tx.transaction_info.transaction_amount?.value || '0');
-      externalTotal += Math.round(amount * 100);
-      externalTransactions.push(tx.transaction_info.transaction_id);
-    }
+function getDateRange(period: AnalyticsPeriod) {
+  const now = new Date();
+  switch (period) {
+    case '7d':  return subDays(now, 7);
+    case '30d': return subDays(now, 30);
+    case '90d': return subDays(now, 90);
+    case 'all': return subYears(now, 10);
   }
 }
 ```
 
-### Alerta de Sync Requerido
-
+### Filtrado de Transacciones por Período
 ```typescript
-// En DiagnosticsPanel.tsx, después del Alert de Critical Issues
-{reconciliationRuns[0]?.status === 'fail' && reconciliationRuns[0]?.difference_pct >= 50 && (
-  <Alert className="border-orange-500/50 bg-orange-500/10">
-    <RefreshCw className="h-4 w-4 text-orange-400" />
-    <AlertTitle className="text-sm text-orange-400">Sincronización Requerida</AlertTitle>
-    <AlertDescription className="text-xs text-orange-300">
-      La última reconciliación detectó {reconciliationRuns[0].missing_internal?.length || 0} transacciones 
-      faltantes. Ejecuta una sincronización de {reconciliationRuns[0].source} antes de reconciliar.
-    </AlertDescription>
-  </Alert>
-)}
+const filteredTransactions = useMemo(() => {
+  const startDate = getDateRange(period);
+  return transactions.filter(tx => {
+    if (!tx.stripe_created_at) return false;
+    return new Date(tx.stripe_created_at) >= startDate;
+  });
+}, [transactions, period]);
 ```
-
-## Resultado Esperado
-
-Después de estos cambios:
-1. El usuario verá un mensaje claro cuando necesite sincronizar antes de reconciliar
-2. PayPal podrá ser reconciliado igual que Stripe
-3. Los timestamps mostrarán la frescura de los datos
-4. Las alertas se dispararán correctamente según la lógica establecida
-
-## Notas
-
-- Los 6 Data Quality Checks están funcionando perfectamente
-- El AI Audit con OpenAI está operativo
-- Los rebuilds funcionan pero ninguno ha sido promovido
-- El problema de 65% clientes sin source es dato real que requiere limpieza manual
