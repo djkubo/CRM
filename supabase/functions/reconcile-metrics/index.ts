@@ -122,9 +122,87 @@ Deno.serve(async (req) => {
         }
       }
     } else if (source === 'paypal') {
-      // PayPal reconciliation would go here
-      // For now, return a placeholder
-      console.log('[reconcile] PayPal reconciliation not yet implemented');
+      const paypalClientId = Deno.env.get('PAYPAL_CLIENT_ID');
+      const paypalSecret = Deno.env.get('PAYPAL_SECRET');
+      
+      if (!paypalClientId || !paypalSecret) {
+        throw new Error('PayPal credentials not configured');
+      }
+      
+      console.log('[reconcile] Starting PayPal reconciliation');
+      
+      // Get OAuth token
+      const tokenRes = await fetch('https://api-m.paypal.com/v1/oauth2/token', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Basic ${btoa(`${paypalClientId}:${paypalSecret}`)}`,
+          'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: 'grant_type=client_credentials'
+      });
+
+      if (!tokenRes.ok) {
+        throw new Error(`PayPal auth error: ${tokenRes.status}`);
+      }
+
+      const tokenData = await tokenRes.json();
+      const accessToken = tokenData.access_token;
+      
+      // PayPal API requires ISO 8601 format with timezone
+      const startDateISO = `${start_date}T00:00:00-0600`;
+      const endDateISO = `${end_date}T23:59:59-0600`;
+      
+      let page = 1;
+      let hasMorePages = true;
+      
+      while (hasMorePages) {
+        const txRes = await fetch(
+          `https://api-m.paypal.com/v1/reporting/transactions?` +
+          `start_date=${encodeURIComponent(startDateISO)}&` +
+          `end_date=${encodeURIComponent(endDateISO)}&` +
+          `page_size=100&page=${page}&fields=all`,
+          { 
+            headers: { 
+              'Authorization': `Bearer ${accessToken}`,
+              'Content-Type': 'application/json'
+            } 
+          }
+        );
+
+        if (!txRes.ok) {
+          const errText = await txRes.text();
+          console.error('[reconcile] PayPal API error:', errText);
+          throw new Error(`PayPal API error: ${txRes.status}`);
+        }
+
+        const txData = await txRes.json();
+        
+        for (const tx of txData.transaction_details || []) {
+          const status = tx.transaction_info?.transaction_status;
+          const eventCode = tx.transaction_info?.transaction_event_code;
+          
+          // S = Success, only count completed payments (T00xx = payments received)
+          if (status === 'S' && eventCode?.startsWith('T00')) {
+            const amountStr = tx.transaction_info?.transaction_amount?.value || '0';
+            const amount = Math.round(parseFloat(amountStr) * 100); // Convert to cents
+            
+            if (amount > 0) {
+              externalTotal += amount;
+              externalTransactions.push(tx.transaction_info.transaction_id);
+            }
+          }
+        }
+        
+        // Check for more pages
+        const totalPages = txData.total_pages || 1;
+        if (page >= totalPages) {
+          hasMorePages = false;
+        } else {
+          page++;
+        }
+      }
+      
+      console.log(`[reconcile] PayPal fetched ${externalTransactions.length} transactions, total: ${externalTotal}`);
     }
 
     // Get internal totals
