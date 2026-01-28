@@ -456,6 +456,18 @@ Responde en español, de forma concisa.`;
         </Alert>
       )}
 
+      {/* Sync Required Alert - Show when reconciliation has high difference */}
+      {reconciliationRuns[0] && reconciliationRuns[0].status === 'fail' && reconciliationRuns[0].difference_pct >= 50 && (
+        <Alert className="border-orange-500/50 bg-orange-500/10 py-3">
+          <RefreshCw className="h-4 w-4 text-orange-400" />
+          <AlertTitle className="text-sm text-orange-400">Sincronización Requerida</AlertTitle>
+          <AlertDescription className="text-xs text-orange-300">
+            La última reconciliación de {reconciliationRuns[0].source} detectó {reconciliationRuns[0].difference_pct.toFixed(1)}% de diferencia.
+            Ejecuta "Sync {reconciliationRuns[0].source === 'stripe' ? 'Stripe' : 'PayPal'}" desde el Sync Center antes de reconciliar.
+          </AlertDescription>
+        </Alert>
+      )}
+
       {/* Summary Cards - 2x2 on mobile */}
       <div className="grid gap-3 grid-cols-2 md:grid-cols-4">
         <Card className={hasCriticalIssues ? 'border-red-500/50' : hasWarnings ? 'border-yellow-500/50' : 'border-green-500/50'}>
@@ -561,10 +573,17 @@ Responde en español, de forma concisa.`;
         <TabsContent value="quality">
           <Card>
             <CardHeader className="p-4 md:p-6">
-              <CardTitle className="text-base md:text-lg">Calidad de Datos</CardTitle>
-              <CardDescription className="text-xs md:text-sm">
-                Integridad y consistencia
-              </CardDescription>
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle className="text-base md:text-lg">Calidad de Datos</CardTitle>
+                  <CardDescription className="text-xs md:text-sm">
+                    Integridad y consistencia
+                  </CardDescription>
+                </div>
+                <span className="text-[10px] text-muted-foreground">
+                  Actualizado: {format(new Date(), 'HH:mm')}
+                </span>
+              </div>
             </CardHeader>
             <CardContent className="p-4 md:p-6 pt-0 md:pt-0">
               {loadingChecks ? (
