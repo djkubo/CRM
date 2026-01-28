@@ -1,345 +1,290 @@
 
+# 📊 Auditoría Técnica: Sección Facturas (Invoices)
 
-# Plan de Reparación: Sección Clientes 360°
+## 🎯 Resumen Ejecutivo
 
-## Resumen de Cambios
+| Dimensión | Estado | Comentario |
+|-----------|--------|------------|
+| **Funcionalidad de Cobro** | 🟢 OPERATIVA | Botones conectados a API Stripe real |
+| **Cobertura de Fuentes** | 🔴 INCOMPLETO | Solo Stripe, NO incluye PayPal |
+| **PDFs Descargables** | 🟢 OPERATIVA | 97.5% tienen URL de Stripe |
+| **Vinculación a CRM** | 🔴 CRÍTICO | Solo 5.3% vinculadas a clientes |
+| **Coherencia con Revenue** | 🔴 DISCREPANCIA | Facturas muestran $5,053 vs Transacciones $283,766 |
 
-Este plan corrige los 3 problemas críticos identificados en la auditoría:
-
-| Prioridad | Problema | Solución |
-|-----------|----------|----------|
-| 🔴 ALTA | LTV solo suma Stripe ($194 vs $654 real) | Edge Function que recalcula desde TODAS las transacciones |
-| 🔴 ALTA | 8,376 CUSTOMER sin suscripción activa | Automatización de lifecycle_stage con lógica determinista |
-| 🟡 MEDIA | Perfil limitado (10 transacciones, sin subs) | CustomerDrawer 360° con timeline completo y suscripciones |
-
----
-
-## FASE 1: Reparación del LTV Real
-
-### Problema Confirmado
-```text
-Cliente: cjmorales2009@gmail.com
-Stored LTV:     $194 (solo Stripe CSV)
-Calculated LTV: $654 (Stripe + PayPal + Web)
-Transacciones:  42 (fuentes: stripe, paypal, web)
-```
-
-### Solución: Nueva Edge Function `recalculate-ltv`
-
-Crearemos una función que:
-1. Agrupe transacciones por `customer_email`
-2. Sume `amount` donde `status IN ('succeeded', 'paid')`
-3. Actualice `clients.total_spend` con el resultado
-
-```text
-supabase/functions/recalculate-ltv/index.ts
-
-Lógica:
-- Parámetro: { batchSize: 1000, dryRun: false }
-- Query: SUM(amount) FROM transactions GROUP BY customer_email
-- Update: clients.total_spend WHERE email = transactions.customer_email
-- Checkpoint: Actualiza sync_runs para tracking de progreso
-```
-
-### Cambios en Código
-
-| Archivo | Acción |
-|---------|--------|
-| `supabase/functions/recalculate-ltv/index.ts` | CREAR - Edge Function con batch processing |
-| `supabase/config.toml` | ACTUALIZAR - Agregar configuración de la función |
+**Semáforo Final: 🟡 VISOR PARCIAL**
+Puedo cobrar facturas reales de Stripe, pero NO tengo visibilidad completa para contabilidad (falta PayPal) y los datos no están conectados al CRM unificado.
 
 ---
 
-## FASE 2: Automatización de Lifecycle Stage
+## 1. Arquitectura y Fuentes de Datos
 
-### Problema Confirmado
+### 📌 Origen de Facturas
 ```text
-┌────────────────┬─────────────┬──────────────┬──────────────┐
-│ lifecycle_stage│ Total       │ Con Sub Activa│ Sin Sub Activa│
-├────────────────┼─────────────┼──────────────┼──────────────┤
-│ LEAD           │ 210,737     │ 130          │ 210,607      │
-│ CUSTOMER       │ 9,532       │ 1,015        │ 8,517 ❌     │
-│ CHURN          │ 683         │ 0            │ 683          │
-└────────────────┴─────────────┴──────────────┴──────────────┘
-
-8,517 usuarios marcados como CUSTOMER pero sin suscripción activa
+FUENTE: API de Stripe → Tabla local `invoices`
+SINCRONIZACIÓN: Edge Function `fetch-invoices`
+  - Modo "recent": últimos 90 días
+  - Modo "full": histórico completo
+  - Paginación: 100 facturas por página con auto-continuación
 ```
 
-### Solución: Lógica Determinista
-
-La Edge Function `recalculate-ltv` también actualizará `lifecycle_stage`:
-
-```text
-LÓGICA DE CLASIFICACIÓN:
-
-1. Si tiene suscripción 'active' o 'trialing'
-   → CUSTOMER (o TRIAL si trialing)
-
-2. Si NO tiene suscripción activa PERO tiene transacciones exitosas
-   → Si última transacción < 30 días → CUSTOMER (gracia)
-   → Si última transacción > 30 días → CHURN
-
-3. Si NO tiene transacciones exitosas
-   → LEAD
+**Flujo de datos:**
+```
+Stripe API (/v1/invoices)
+    ↓ fetch-invoices (Edge Function)
+    ↓ Upsert con expand[]=subscription, customer, lines
+    ↓ Tabla `invoices` (1,101 registros)
+    ↓ useInvoices (React Query + Realtime)
+    ↓ InvoicesPage.tsx
 ```
 
-### Query SQL Equivalente
-```sql
-UPDATE clients c SET lifecycle_stage = 
-  CASE 
-    WHEN EXISTS (
-      SELECT 1 FROM subscriptions s 
-      WHERE s.customer_email = c.email 
-        AND s.status IN ('active', 'trialing')
-    ) THEN 'CUSTOMER'
-    WHEN EXISTS (
-      SELECT 1 FROM transactions t 
-      WHERE t.customer_email = c.email 
-        AND t.status IN ('succeeded', 'paid')
-        AND t.stripe_created_at > NOW() - INTERVAL '30 days'
-    ) THEN 'CUSTOMER'
-    WHEN EXISTS (
-      SELECT 1 FROM transactions t 
-      WHERE t.customer_email = c.email 
-        AND t.status IN ('succeeded', 'paid')
-    ) THEN 'CHURN'
-    ELSE 'LEAD'
-  END
-```
+### 📌 Cobertura de Fuentes
+
+| Fuente | Facturas | Notas |
+|--------|----------|-------|
+| **Stripe** | 1,101 (100%) | ✅ Todas son de Stripe (`in_*`) |
+| **PayPal** | 0 (0%) | ❌ **NO HAY FACTURAS PAYPAL** |
+| **Web Sales** | 0 (0%) | ❌ No aplica (son ventas directas) |
+
+**PROBLEMA CRÍTICO**: Este mes hay **$18,729** en transacciones PayPal que NO aparecen en facturas. Tu contador no verá ese dinero aquí.
+
+### 📌 PDFs Descargables
+
+| Métrica | Valor |
+|---------|-------|
+| Total Facturas | 1,101 |
+| Con PDF URL | 1,074 (97.5%) ✅ |
+| Con Hosted URL | 1,076 (97.7%) ✅ |
+
+**Veredicto**: Los botones de PDF funcionan y usan la URL hospedada de Stripe (`invoice.invoice_pdf`). NO se generan al vuelo.
 
 ---
 
-## FASE 3: Customer Drawer 360°
+## 2. Funcionalidad de Acciones
 
-### Mejoras al Panel Lateral
-
-```text
-ANTES:
-┌──────────────────────────┐
-│ Nombre + Badge Status    │
-│ ─────────────────────── │
-│ Email / Teléfono         │
-│ ─────────────────────── │
-│ LTV: $194 ❌             │
-│ Pagos: 3 (de 42) ❌      │
-│ ─────────────────────── │
-│ Timeline (últimos 10)    │
-│   - Pago 1               │
-│   - Pago 2               │
-│   ...                    │
-└──────────────────────────┘
-
-DESPUÉS:
-┌──────────────────────────┐
-│ Nombre + Badge Status    │
-│ ─────────────────────── │
-│ Email / Teléfono         │
-│ ─────────────────────── │
-│ LTV: $654 ✅             │
-│ Pagos: 42 ✅             │
-│ ─────────────────────── │
-│ 🎫 SUSCRIPCIÓN ACTIVA    │ ← NUEVO
-│ Plan: Mensual $35        │
-│ Renovación: 15 Feb 2026  │
-│ ─────────────────────── │
-│ 💬 COMUNICACIÓN (3)      │ ← NUEVO
-│ Último mensaje: hace 2d  │
-│ ─────────────────────── │
-│ Timeline (completo)      │
-│   - Ordenado por fecha   │
-│   - Incluye PayPal+Web   │
-│   ...                    │
-└──────────────────────────┘
-```
-
-### Cambios en Código
-
-| Archivo | Cambio |
-|---------|--------|
-| `src/components/dashboard/CustomerDrawer.tsx` | Quitar límite 10, agregar sección suscripciones, agregar sección mensajes |
-
-### Queries Nuevas en CustomerDrawer
-
+### ✅ Botón "Cobrar" (Individual)
 ```typescript
-// 1. Suscripciones activas del cliente
-const { data: subscriptions } = useQuery({
-  queryKey: ['client-subscriptions', client?.email],
-  queryFn: async () => {
-    if (!client?.email) return [];
-    const { data } = await supabase
-      .from('subscriptions')
-      .select('*')
-      .eq('customer_email', client.email)
-      .in('status', ['active', 'trialing', 'past_due'])
-      .order('current_period_end', { ascending: false });
-    return data;
-  },
-  enabled: open && !!client?.email,
-});
-
-// 2. Historial de mensajes
-const { data: messages } = useQuery({
-  queryKey: ['client-messages', client?.id],
-  queryFn: async () => {
-    if (!client?.id) return [];
-    const { data } = await supabase
-      .from('messages')
-      .select('*')
-      .eq('client_id', client.id)
-      .order('created_at', { ascending: false })
-      .limit(20);
-    return data;
-  },
-  enabled: open && !!client?.id,
-});
-
-// 3. Transacciones SIN LÍMITE con fecha unificada
-const { data: transactions } = useQuery({
-  queryKey: ['client-transactions', client?.email],
-  queryFn: async () => {
-    if (!client?.email) return [];
-    const { data } = await supabase
-      .from('transactions')
-      .select('*')
-      .eq('customer_email', client.email)
-      .order('stripe_created_at', { ascending: false }); // Sin límite
-    return data;
-  },
-  enabled: open && !!client?.email,
-});
+// InvoicesPage.tsx:81-98
+handleChargeInvoice → invokeWithAdminKey('force-charge-invoice', { invoice_id })
+  ↓
+// force-charge-invoice/index.ts:76-115
+if (status === 'draft') → stripe.invoices.finalizeInvoice()
+if (status === 'open') → stripe.invoices.pay()
+  ↓
+Actualiza invoices.status en Supabase
 ```
+**Estado**: 🟢 **FUNCIONAL** - Conectado a API real de Stripe.
 
----
-
-## Resumen de Archivos
-
-| Archivo | Acción | Descripción |
-|---------|--------|-------------|
-| `supabase/functions/recalculate-ltv/index.ts` | CREAR | LTV + Lifecycle batch processor |
-| `supabase/config.toml` | ACTUALIZAR | Agregar función |
-| `src/components/dashboard/CustomerDrawer.tsx` | ACTUALIZAR | Vista 360° completa |
-
----
-
-## Resultado Esperado Post-Implementación
-
-### Métricas Corregidas
-
-| Métrica | Antes | Después |
-|---------|-------|---------|
-| LTV (cjmorales2009@gmail.com) | $194 | $654 |
-| Clientes con LTV > $0 | ~7,000 | ~18,000+ |
-| CUSTOMER sin sub activa | 8,517 | 0 (reclasificados) |
-| Transacciones visibles en perfil | 10 máx | Todas |
-| Suscripción visible en perfil | No | Sí |
-| Mensajes visibles en perfil | No | Sí |
-
-### Verificación
-
-Después de ejecutar el recálculo masivo:
-1. El cliente ejemplo mostrará $654 en vez de $194
-2. Los 8,517 ex-CUSTOMER serán reclasificados correctamente
-3. El perfil del cliente mostrará suscripción activa y comunicaciones
-
----
-
-## Detalles Técnicos
-
-### Edge Function: recalculate-ltv
-
+### ✅ Botón "Cobrar Todas"
 ```typescript
-// Pseudocódigo del procesamiento
+// InvoicesPage.tsx:100-138
+handleChargeAll → Loop con 300ms delay entre cada cobro
+  - Muestra barra de progreso
+  - Suma total recuperado
+  - Resumen de éxitos/fallos
+```
+**Estado**: 🟢 **FUNCIONAL** - Respeta rate limits de Stripe.
 
-async function recalculateBatch(supabase, batchSize, offset) {
-  // 1. Obtener clientes con email
-  const { data: clients } = await supabase
-    .from('clients')
-    .select('id, email')
-    .not('email', 'is', null)
-    .range(offset, offset + batchSize - 1);
-  
-  for (const client of clients) {
-    // 2. Sumar transacciones
-    const { data: txSum } = await supabase
-      .from('transactions')
-      .select('amount.sum()')
-      .eq('customer_email', client.email)
-      .in('status', ['succeeded', 'paid']);
-    
-    // 3. Verificar suscripción activa
-    const { data: activeSub } = await supabase
-      .from('subscriptions')
-      .select('id, status')
-      .eq('customer_email', client.email)
-      .in('status', ['active', 'trialing'])
-      .limit(1);
-    
-    // 4. Determinar lifecycle
-    let lifecycleStage = 'LEAD';
-    if (activeSub?.length > 0) {
-      lifecycleStage = activeSub[0].status === 'trialing' ? 'TRIAL' : 'CUSTOMER';
-    } else if (txSum > 0) {
-      // Verificar última transacción
-      const { data: lastTx } = await supabase
-        .from('transactions')
-        .select('stripe_created_at')
-        .eq('customer_email', client.email)
-        .order('stripe_created_at', { ascending: false })
-        .limit(1);
-      
-      const daysSinceLast = differenceInDays(new Date(), lastTx?.[0]?.stripe_created_at);
-      lifecycleStage = daysSinceLast <= 30 ? 'CUSTOMER' : 'CHURN';
-    }
-    
-    // 5. Actualizar cliente
-    await supabase
-      .from('clients')
-      .update({ 
-        total_spend: txSum, 
-        lifecycle_stage: lifecycleStage 
-      })
-      .eq('id', client.id);
-  }
-  
-  return { processed: clients.length, hasMore: clients.length === batchSize };
-}
+### ❌ Botón "Enviar Recordatorio"
+**NO EXISTE** en la implementación actual. Solo hay:
+- Cobrar (individual)
+- Cobrar Todas
+- Ver PDF
+- Ver en Stripe (external link)
+
+### ✅ Exportar CSV
+```typescript
+// useInvoices.ts:300-338
+exportToCSV() → Genera CSV con todos los datos filtrados
+```
+**Estado**: 🟢 **FUNCIONAL**
+
+---
+
+## 3. Manejo de Estados
+
+### Estadísticas por Estado
+
+| Estado | Cantidad | Monto | Con PDF | Vinculado a Cliente |
+|--------|----------|-------|---------|---------------------|
+| **uncollectible** | 683 | $19,915 | 683 (100%) | 0 (0%) ❌ |
+| **paid** | 222 | $5,102 | 222 (100%) | 46 (21%) |
+| **open** | 171 | $8,091 | 169 (99%) | 0 (0%) ❌ |
+| **draft** | 25 | $1,340 | 0 (0%) | 12 (48%) |
+
+### Filtrado de Estados en UI
+
+| Estado | ¿Se Muestra? | Badge Color | Acción Disponible |
+|--------|--------------|-------------|-------------------|
+| draft | ✅ Sí | Gris (Borrador) | Cobrar |
+| open | ✅ Sí | Azul (Abierta) | Cobrar |
+| paid | ✅ Sí | Verde (Pagada) | Ver PDF |
+| void | ✅ Sí | Rojo (Anulada) | - |
+| uncollectible | ✅ Sí | Ámbar (Incobrable) | Ver PDF |
+
+**Nota**: NO hay distinción visual entre `open` (pendiente normal) y `past_due` (vencida). Stripe no tiene estado `past_due` en invoices, pero sí en subscriptions.
+
+---
+
+## 4. Widget "Dinero en Camino"
+
+### Lógica Actual
+```typescript
+// useInvoices.ts:278-288
+const invoicesNext72h = invoices.filter((inv) => {
+  if (!inv.next_payment_attempt || inv.status !== 'open') return false;
+  const attemptDate = new Date(inv.next_payment_attempt);
+  return attemptDate <= next72Hours;
+});
 ```
 
-### CustomerDrawer: Sección Suscripciones
-
-```tsx
-// Nueva sección en CustomerDrawer.tsx
-
-{/* Active Subscription Card */}
-{subscriptions && subscriptions.length > 0 && (
-  <div className="mb-4 sm:mb-6">
-    <h3 className="text-xs sm:text-sm font-medium text-muted-foreground mb-2 flex items-center gap-2">
-      <CreditCard className="h-4 w-4" />
-      Suscripción Activa
-    </h3>
-    {subscriptions.map((sub) => (
-      <div key={sub.id} className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3">
-        <div className="flex justify-between items-center">
-          <span className="font-medium text-sm">{sub.plan_name}</span>
-          <Badge variant="outline" className="text-emerald-400">
-            {sub.status}
-          </Badge>
-        </div>
-        <div className="mt-2 text-xs text-muted-foreground">
-          <div className="flex justify-between">
-            <span>Monto:</span>
-            <span>${(sub.amount / 100).toFixed(2)}/{sub.interval}</span>
-          </div>
-          {sub.current_period_end && (
-            <div className="flex justify-between">
-              <span>Renovación:</span>
-              <span>{format(new Date(sub.current_period_end), 'd MMM yyyy', { locale: es })}</span>
-            </div>
-          )}
-        </div>
-      </div>
-    ))}
-  </div>
-)}
+### Datos Actuales
+```text
+Próximas 72 horas:
+├── draft: 2 facturas → $63
+├── open: 58 facturas → $3,200
+└── TOTAL: 60 facturas → $3,263 proyectados
 ```
 
+**PROBLEMA**: El filtro excluye `draft`. Solo suma `open` con `next_payment_attempt`. Los drafts deberían contarse porque Stripe los finaliza automáticamente.
+
+### Corrección Necesaria
+```typescript
+// Debería incluir drafts también:
+const invoicesNext72h = invoices.filter((inv) => {
+  if (!['open', 'draft'].includes(inv.status)) return false;
+  // Para drafts, usar automatically_finalizes_at
+  const targetDate = inv.next_payment_attempt || inv.automatically_finalizes_at;
+  if (!targetDate) return false;
+  return new Date(targetDate) <= next72Hours;
+});
+```
+
+---
+
+## 5. Coherencia con Perfil de Cliente
+
+### Vinculación CRM
+```text
+Total Facturas: 1,101
+Vinculadas a client_id: 58 (5.3%) ❌ CRÍTICO
+
+Causa: batchResolveClients() busca por stripe_customer_id,
+pero solo 5% de clientes tienen ese campo poblado.
+```
+
+### Ejemplo de Discrepancia
+
+| Cliente | Transacciones | Total Tx | Facturas | Total Inv |
+|---------|---------------|----------|----------|-----------|
+| djkubo@live.com.mx | 70 | $2,732 | 1 | $0 |
+| chacas1@outlook.com | 73 | $1,600 | 0 | N/A |
+| vjcdamian@gmail.com | 74 | $1,575 | 0 | N/A |
+
+**Problema**: Clientes con historial de $1,500+ solo tienen 0-1 facturas porque:
+1. Sus pagos son de PayPal (no genera invoice)
+2. Son pagos únicos (one-time charges, no subscriptions)
+
+---
+
+## 6. Coherencia Facturas vs Revenue
+
+### Mes Actual (Enero 2026)
+
+| Fuente | Registros | Monto |
+|--------|-----------|-------|
+| **Invoices (paid)** | 219 | $5,053 |
+| **Transactions (stripe)** | 10,522 | $283,766 |
+| **Transactions (paypal)** | 359 | $18,729 |
+| **Transactions (web)** | 163 | $3,449 |
+
+### Discrepancia: $278,713 NO APARECEN EN FACTURAS
+
+**Razón**:
+1. Stripe Invoices solo rastrea **suscripciones recurrentes**
+2. Los **one-time charges** no generan invoice
+3. PayPal y Web Sales nunca generan invoices en Stripe
+
+---
+
+## 7. Brechas Críticas Identificadas
+
+### 🔴 Brecha 1: Suscripciones sin Factura
+```text
+Suscripciones activas: 1,331
+Suscripciones con factura vinculada: 0 ❌
+
+Causa: subscription_id no está siendo vinculado correctamente
+durante la sincronización.
+```
+
+### 🔴 Brecha 2: Uncollectibles Ocultos
+```text
+Facturas incobrables: 683
+Monto perdido: $19,915
+Rango: 2020 → 2026
+
+Estas NO están siendo usadas para métricas de recuperación.
+```
+
+### 🔴 Brecha 3: Sin PayPal Invoices
+```text
+PayPal Revenue este mes: $18,729
+PayPal en sistema de facturas: $0
+
+Para contabilidad necesitas:
+- fetch-paypal-transactions con recibos
+- O crear "pseudo-invoices" desde transacciones PayPal
+```
+
+---
+
+## 8. Resumen de Archivos Analizados
+
+| Archivo | Propósito | Estado |
+|---------|-----------|--------|
+| `src/components/dashboard/InvoicesPage.tsx` | UI principal | ✅ Funcional |
+| `src/hooks/useInvoices.ts` | Lógica de datos | ✅ Funcional |
+| `supabase/functions/fetch-invoices/index.ts` | Sync con Stripe | ✅ Funcional |
+| `supabase/functions/force-charge-invoice/index.ts` | Cobro forzado | ✅ Funcional |
+| `src/components/dashboard/IncomingRevenueCard.tsx` | Widget proyección | 🟡 Excluye drafts |
+| `src/components/dashboard/PendingInvoicesTable.tsx` | Lista cobros | ✅ Funcional |
+
+---
+
+## 9. Recomendaciones de Reparación
+
+### Prioridad Alta
+1. **Vincular client_id en facturas**: Actualizar `batchResolveClients` para buscar también por email
+2. **Incluir drafts en proyección**: Corregir lógica de `invoicesNext72h`
+3. **Crear pseudo-invoices de PayPal**: Para que el contador vea todo el revenue
+
+### Prioridad Media
+4. **Conectar subscription_id**: La tabla tiene el campo pero está vacío en 95% de casos
+5. **Métricas de Uncollectibles**: Mostrar el $19,915 perdido como alerta
+
+### Prioridad Baja
+6. **Botón "Enviar Recordatorio"**: Implementar integración con email/SMS
+
+---
+
+## 10. Veredicto Final
+
+**🟡 VISOR PARCIAL**
+
+| Capacidad | Estado |
+|-----------|--------|
+| Ver facturas de Stripe | ✅ |
+| Descargar PDFs | ✅ |
+| Cobrar manualmente | ✅ |
+| Cobrar en lote | ✅ |
+| Ver PayPal | ❌ |
+| Dar cuentas al contador | ❌ (incompleto) |
+| Conectar con CRM | ❌ (5% vinculado) |
+| Proyección precisa | 🟡 (excluye drafts) |
+
+**Para usar esto con tu contador**, necesitas:
+1. Exportar CSV desde aquí (solo Stripe)
+2. Exportar transacciones PayPal por separado
+3. Combinar manualmente en Excel
+
+**O implementar**: Un reporte unificado que sume Invoices + Transactions de todas las fuentes.
