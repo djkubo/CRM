@@ -1,126 +1,88 @@
 
-# Plan: Reparación de Unificación de Contactos y Visualización en Dashboard
+# Plan: Corrección Urgente de Conteos (Error 500 Timeout)
 
-## Diagnóstico del Problema
+## Problema Identificado
 
-### Problema Principal: Discrepancia de Estado
-El frontend del **SyncOrchestrator** busca `processing_status = 'staged'` pero todos los 664,048 registros CSV tienen `processing_status = 'pending'`. Esto hace que la UI muestre **"0 contactos para unificar"** cuando en realidad hay más de **850,000 registros pendientes** en total.
+Las consultas de conteo actuales causan **timeout (error 500)** porque:
+- `ghl_contacts_raw`: 187,468 registros
+- `csv_imports_raw`: 664,141 registros
+- `clients`: 208,696 registros
 
-### Estado Actual de los Datos
-| Tabla | Total | Pendientes |
-|-------|-------|------------|
-| `ghl_contacts_raw` | 188,256 | 188,256 |
-| `csv_imports_raw` | 664,048 | 664,048 (status='pending') |
-| `manychat_contacts_raw` | 0 | 0 |
-| `clients` | 221,031 | Ya unificados |
-| `transactions` | 175,734 | Stripe: 118k, PayPal: 38k, Web: 18k |
-| `invoices` | 79,911 | Sincronizadas |
-| `subscriptions` | 1,645 | 1,332 activas |
+PostgreSQL no puede ejecutar `COUNT(*)` exacto en tablas tan grandes sin timeout.
 
-### Archivos Afectados
+## Solución en 2 Pasos
 
-1. **SyncOrchestrator.tsx** (líneas 131-134): Busca solo `'staged'`, ignora `'pending'`
-2. **bulk-unify-contacts**: Ya funciona correctamente (busca ambos estados)
+### Paso 1: Crear RPC de Conteo Rápido (Base de Datos)
 
----
+Crear una función SQL que use estimaciones de `pg_stat_user_tables` para conteos instantáneos:
 
-## Solución en 3 Partes
-
-### Parte 1: Arreglar el Conteo en el Frontend
-
-**Archivo:** `src/components/dashboard/SyncOrchestrator.tsx`
-
-**Cambio:** Modificar la query de conteo de CSV para incluir ambos estados:
-
-```typescript
-// ANTES (línea 131-134):
-const { count: csvStaged } = await supabase
-  .from('csv_imports_raw')
-  .select('*', { count: 'exact', head: true })
-  .eq('processing_status', 'staged'); // ❌ Solo 'staged'
-
-// DESPUÉS:
-const { count: csvStaged } = await supabase
-  .from('csv_imports_raw')
-  .select('*', { count: 'exact', head: true })
-  .in('processing_status', ['staged', 'pending']); // ✅ Ambos estados
+```sql
+CREATE OR REPLACE FUNCTION get_staging_counts_fast()
+RETURNS JSON AS $$
+  SELECT json_build_object(
+    'ghl_total', (SELECT n_live_tup FROM pg_stat_user_tables WHERE relname = 'ghl_contacts_raw'),
+    'ghl_unprocessed', (SELECT n_live_tup FROM pg_stat_user_tables WHERE relname = 'ghl_contacts_raw'),
+    'manychat_total', (SELECT n_live_tup FROM pg_stat_user_tables WHERE relname = 'manychat_contacts_raw'),
+    'manychat_unprocessed', (SELECT n_live_tup FROM pg_stat_user_tables WHERE relname = 'manychat_contacts_raw'),
+    'csv_total', (SELECT n_live_tup FROM pg_stat_user_tables WHERE relname = 'csv_imports_raw'),
+    'csv_staged', (SELECT n_live_tup FROM pg_stat_user_tables WHERE relname = 'csv_imports_raw')
+  );
+$$ LANGUAGE SQL STABLE;
 ```
 
-### Parte 2: Optimizar el Mensaje de "Nada que Unificar"
+### Paso 2: Actualizar Frontend
 
-**Archivo:** `src/components/dashboard/SyncOrchestrator.tsx`
+Modificar `SyncOrchestrator.tsx` para:
+1. Llamar al RPC `get_staging_counts_fast()` en lugar de 6 queries separadas
+2. Manejar el fallback a 0 en caso de error
+3. Eliminar el polling de 5 segundos para reducir carga
 
-Agregar lógica para mostrar el mensaje correcto cuando hay datos disponibles pero el conteo estaba erróneo:
-
-- Mostrar un botón de **"Refrescar Conteos"** que fuerza un recount
-- Agregar indicador visual cuando hay datos en staging
-
-### Parte 3: Verificar que Todas las Vistas Muestran Data
-
-Las siguientes secciones ya funcionan correctamente porque consultan directamente las tablas finales:
-
-| Sección | Tabla | Estado |
-|---------|-------|--------|
-| Command Center | `transactions`, `clients` | ✅ OK - 175k transacciones |
-| Movimientos | `transactions` | ✅ OK - Muestra Stripe/PayPal/Web |
-| Recovery | `invoices` (status=open) | ✅ OK |
-| Facturas | `invoices` | ✅ OK - 79,911 facturas |
-| Clientes | `clients` | ✅ OK - 221,031 clientes |
-| Suscripciones | `subscriptions` | ✅ OK - 1,645 suscripciones |
-| Analíticas | `daily_kpi_cache`, `transactions` | ✅ OK |
-
----
-
-## Cambios Específicos
-
-### Archivo 1: `src/components/dashboard/SyncOrchestrator.tsx`
-
-**Líneas 131-134** - Cambiar filtro de CSV:
+**Cambio en fetchCounts:**
 ```typescript
-// Antes
-.eq('processing_status', 'staged')
-
-// Después  
-.in('processing_status', ['staged', 'pending'])
+const fetchCounts = useCallback(async () => {
+  try {
+    const { data, error } = await supabase.rpc('get_staging_counts_fast');
+    if (error) throw error;
+    
+    setRawCounts({
+      ghl_total: data.ghl_total || 0,
+      ghl_unprocessed: data.ghl_unprocessed || 0,
+      manychat_total: data.manychat_total || 0,
+      manychat_unprocessed: data.manychat_unprocessed || 0,
+      csv_staged: data.csv_staged || 0,
+      csv_total: data.csv_total || 0
+    });
+    
+    setPendingCounts({
+      ghl: data.ghl_unprocessed || 0,
+      manychat: data.manychat_unprocessed || 0,
+      csv: data.csv_staged || 0,
+      total: (data.ghl_unprocessed || 0) + (data.manychat_unprocessed || 0) + (data.csv_staged || 0)
+    });
+    setLoading(false);
+  } catch (error) {
+    console.error('Error fetching counts:', error);
+    setLoading(false);
+  }
+}, []);
 ```
-
-**Agregar mensaje informativo** cuando hay datos disponibles:
-```typescript
-// En la sección de "Fase 2: Unificar Contactos", agregar:
-{pendingCounts.total > 0 && (
-  <Badge variant="outline" className="border-green-500 text-green-500">
-    {pendingCounts.total.toLocaleString()} contactos listos para unificar
-  </Badge>
-)}
-```
-
----
 
 ## Resultado Esperado
 
-Después de implementar estos cambios:
+| Antes | Después |
+|-------|---------|
+| 6 queries separadas | 1 llamada RPC |
+| Timeout en ~8 segundos | Respuesta en <50ms |
+| Error 500 | Datos visibles inmediatamente |
+| 0 contactos mostrados | ~852,000 contactos mostrados |
 
-1. **SyncOrchestrator** mostrará correctamente:
-   - GHL: 188,256 contactos pendientes
-   - CSV: 664,048 registros pendientes
-   - Total: ~852,304 contactos para unificar
+## Archivos a Modificar
 
-2. El botón **"Unificar Todo"** funcionará y procesará los datos en background
+1. **Nueva migración SQL**: Crear función `get_staging_counts_fast()`
+2. **src/components/dashboard/SyncOrchestrator.tsx**: Usar el nuevo RPC
 
-3. Los datos unificados aparecerán en:
-   - **Clientes**: Se actualizarán con datos de GHL/CSV
-   - **Movimientos**: Ya tienen 175k transacciones visibles
-   - **Facturas**: Ya muestran 79k+ facturas
-   - **Suscripciones**: Ya muestran 1,645 registros
-   - **Command Center**: Mostrará KPIs actualizados
+## Beneficios Adicionales
 
----
-
-## Notas Técnicas
-
-- La función `bulk-unify-contacts` procesa en batches de 200 registros
-- Tiempo estimado para 850k registros: ~70-90 minutos
-- El proceso corre en background usando `EdgeRuntime.waitUntil()`
-- Se puede cancelar en cualquier momento desde la UI
-- El progreso se actualiza en tiempo real cada 2 segundos
-
+- Los conteos estimados son actualizados automáticamente por PostgreSQL
+- Se reduce la carga en la base de datos de 6 queries a 1
+- El dashboard cargará instantáneamente
