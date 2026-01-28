@@ -1,88 +1,140 @@
 
-# Plan: Corrección Urgente de Conteos (Error 500 Timeout)
+# Plan: Reparación del Módulo Diagnostics
 
-## Problema Identificado
+## Resumen
+La sección Diagnostics está 90% funcional. Los problemas principales son:
+1. La reconciliación con Stripe falló porque las transacciones no están sincronizadas
+2. PayPal reconciliation no está implementada
+3. Los datos de calidad muestran warnings legítimos que requieren atención
 
-Las consultas de conteo actuales causan **timeout (error 500)** porque:
-- `ghl_contacts_raw`: 187,468 registros
-- `csv_imports_raw`: 664,141 registros
-- `clients`: 208,696 registros
+## Cambios Propuestos
 
-PostgreSQL no puede ejecutar `COUNT(*)` exacto en tablas tan grandes sin timeout.
+### 1. Corregir Reconciliación Stripe (Prioridad Alta)
 
-## Solución en 2 Pasos
+El problema no es del módulo Diagnostics, sino que las transacciones de Stripe no están en la tabla `transactions`. La reconciliación está funcionando correctamente - está detectando el problema real.
 
-### Paso 1: Crear RPC de Conteo Rápido (Base de Datos)
+**Acción:** El usuario necesita ejecutar una sincronización completa de Stripe desde el Sync Center antes de poder reconciliar.
 
-Crear una función SQL que use estimaciones de `pg_stat_user_tables` para conteos instantáneos:
+### 2. Implementar Reconciliación PayPal (Prioridad Media)
 
-```sql
-CREATE OR REPLACE FUNCTION get_staging_counts_fast()
-RETURNS JSON AS $$
-  SELECT json_build_object(
-    'ghl_total', (SELECT n_live_tup FROM pg_stat_user_tables WHERE relname = 'ghl_contacts_raw'),
-    'ghl_unprocessed', (SELECT n_live_tup FROM pg_stat_user_tables WHERE relname = 'ghl_contacts_raw'),
-    'manychat_total', (SELECT n_live_tup FROM pg_stat_user_tables WHERE relname = 'manychat_contacts_raw'),
-    'manychat_unprocessed', (SELECT n_live_tup FROM pg_stat_user_tables WHERE relname = 'manychat_contacts_raw'),
-    'csv_total', (SELECT n_live_tup FROM pg_stat_user_tables WHERE relname = 'csv_imports_raw'),
-    'csv_staged', (SELECT n_live_tup FROM pg_stat_user_tables WHERE relname = 'csv_imports_raw')
-  );
-$$ LANGUAGE SQL STABLE;
+El Edge Function `reconcile-metrics` tiene un placeholder para PayPal que nunca se completó:
+
+```typescript
+// Línea 124-128 de reconcile-metrics/index.ts
+} else if (source === 'paypal') {
+  // PayPal reconciliation would go here
+  console.log('[reconcile] PayPal reconciliation not yet implemented');
+}
 ```
 
-### Paso 2: Actualizar Frontend
+**Cambios en:** `supabase/functions/reconcile-metrics/index.ts`
+- Agregar llamada a PayPal API para obtener transacciones del período
+- Comparar con `transactions` table donde `source = 'paypal'`
+- Guardar diferencias en `reconciliation_runs`
 
-Modificar `SyncOrchestrator.tsx` para:
-1. Llamar al RPC `get_staging_counts_fast()` en lugar de 6 queries separadas
-2. Manejar el fallback a 0 en caso de error
-3. Eliminar el polling de 5 segundos para reducir carga
+### 3. Agregar Alerta Visual para Sync Requerido (Prioridad Media)
 
-**Cambio en fetchCounts:**
+En `DiagnosticsPanel.tsx`, agregar un banner que detecte si la última reconciliación falló con 100% diferencia:
+
 ```typescript
-const fetchCounts = useCallback(async () => {
-  try {
-    const { data, error } = await supabase.rpc('get_staging_counts_fast');
-    if (error) throw error;
-    
-    setRawCounts({
-      ghl_total: data.ghl_total || 0,
-      ghl_unprocessed: data.ghl_unprocessed || 0,
-      manychat_total: data.manychat_total || 0,
-      manychat_unprocessed: data.manychat_unprocessed || 0,
-      csv_staged: data.csv_staged || 0,
-      csv_total: data.csv_total || 0
-    });
-    
-    setPendingCounts({
-      ghl: data.ghl_unprocessed || 0,
-      manychat: data.manychat_unprocessed || 0,
-      csv: data.csv_staged || 0,
-      total: (data.ghl_unprocessed || 0) + (data.manychat_unprocessed || 0) + (data.csv_staged || 0)
-    });
-    setLoading(false);
-  } catch (error) {
-    console.error('Error fetching counts:', error);
-    setLoading(false);
+// Nuevo componente de alerta
+{reconciliationRuns[0]?.difference_pct === 100 && (
+  <Alert variant="destructive">
+    <AlertTitle>Sincronización Requerida</AlertTitle>
+    <AlertDescription>
+      La reconciliación falló. Ejecuta "Sync Stripe" primero.
+    </AlertDescription>
+  </Alert>
+)}
+```
+
+**Cambios en:** `src/components/dashboard/DiagnosticsPanel.tsx`
+
+### 4. Agregar Timestamp de Última Actualización (Prioridad Baja)
+
+Mostrar cuándo fue el último check de calidad para que el usuario sepa si los datos están frescos.
+
+**Cambios en:** `src/components/dashboard/DiagnosticsPanel.tsx`
+
+## Resumen de Archivos a Modificar
+
+| Archivo | Cambio |
+|---------|--------|
+| `supabase/functions/reconcile-metrics/index.ts` | Implementar PayPal reconciliation |
+| `src/components/dashboard/DiagnosticsPanel.tsx` | Agregar alertas de sync requerido y timestamps |
+
+## Detalles Técnicos
+
+### Implementación PayPal Reconciliation
+
+```typescript
+// En reconcile-metrics/index.ts
+} else if (source === 'paypal') {
+  const paypalClientId = Deno.env.get('PAYPAL_CLIENT_ID');
+  const paypalSecret = Deno.env.get('PAYPAL_SECRET');
+  
+  if (!paypalClientId || !paypalSecret) {
+    throw new Error('PayPal credentials not configured');
   }
-}, []);
+  
+  // Get OAuth token
+  const tokenRes = await fetch('https://api-m.paypal.com/v1/oauth2/token', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Basic ${btoa(`${paypalClientId}:${paypalSecret}`)}`,
+      'Content-Type': 'application/x-www-form-urlencoded'
+    },
+    body: 'grant_type=client_credentials'
+  });
+  
+  const { access_token } = await tokenRes.json();
+  
+  // Fetch transactions
+  const txRes = await fetch(
+    `https://api-m.paypal.com/v1/reporting/transactions?` +
+    `start_date=${start_date}T00:00:00-0700&end_date=${end_date}T23:59:59-0700`,
+    { headers: { 'Authorization': `Bearer ${access_token}` } }
+  );
+  
+  const txData = await txRes.json();
+  
+  for (const tx of txData.transaction_details || []) {
+    if (tx.transaction_info?.transaction_status === 'S') { // Succeeded
+      const amount = parseFloat(tx.transaction_info.transaction_amount?.value || '0');
+      externalTotal += Math.round(amount * 100);
+      externalTransactions.push(tx.transaction_info.transaction_id);
+    }
+  }
+}
+```
+
+### Alerta de Sync Requerido
+
+```typescript
+// En DiagnosticsPanel.tsx, después del Alert de Critical Issues
+{reconciliationRuns[0]?.status === 'fail' && reconciliationRuns[0]?.difference_pct >= 50 && (
+  <Alert className="border-orange-500/50 bg-orange-500/10">
+    <RefreshCw className="h-4 w-4 text-orange-400" />
+    <AlertTitle className="text-sm text-orange-400">Sincronización Requerida</AlertTitle>
+    <AlertDescription className="text-xs text-orange-300">
+      La última reconciliación detectó {reconciliationRuns[0].missing_internal?.length || 0} transacciones 
+      faltantes. Ejecuta una sincronización de {reconciliationRuns[0].source} antes de reconciliar.
+    </AlertDescription>
+  </Alert>
+)}
 ```
 
 ## Resultado Esperado
 
-| Antes | Después |
-|-------|---------|
-| 6 queries separadas | 1 llamada RPC |
-| Timeout en ~8 segundos | Respuesta en <50ms |
-| Error 500 | Datos visibles inmediatamente |
-| 0 contactos mostrados | ~852,000 contactos mostrados |
+Después de estos cambios:
+1. El usuario verá un mensaje claro cuando necesite sincronizar antes de reconciliar
+2. PayPal podrá ser reconciliado igual que Stripe
+3. Los timestamps mostrarán la frescura de los datos
+4. Las alertas se dispararán correctamente según la lógica establecida
 
-## Archivos a Modificar
+## Notas
 
-1. **Nueva migración SQL**: Crear función `get_staging_counts_fast()`
-2. **src/components/dashboard/SyncOrchestrator.tsx**: Usar el nuevo RPC
-
-## Beneficios Adicionales
-
-- Los conteos estimados son actualizados automáticamente por PostgreSQL
-- Se reduce la carga en la base de datos de 6 queries a 1
-- El dashboard cargará instantáneamente
+- Los 6 Data Quality Checks están funcionando perfectamente
+- El AI Audit con OpenAI está operativo
+- Los rebuilds funcionan pero ninguno ha sido promovido
+- El problema de 65% clientes sin source es dato real que requiere limpieza manual
