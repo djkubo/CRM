@@ -1,290 +1,153 @@
 
-# 📊 Auditoría Técnica: Sección Facturas (Invoices)
+# Plan: Actualización Final del Command Center a "Torre de Control" (🟢)
 
-## 🎯 Resumen Ejecutivo
-
-| Dimensión | Estado | Comentario |
-|-----------|--------|------------|
-| **Funcionalidad de Cobro** | 🟢 OPERATIVA | Botones conectados a API Stripe real |
-| **Cobertura de Fuentes** | 🔴 INCOMPLETO | Solo Stripe, NO incluye PayPal |
-| **PDFs Descargables** | 🟢 OPERATIVA | 97.5% tienen URL de Stripe |
-| **Vinculación a CRM** | 🔴 CRÍTICO | Solo 5.3% vinculadas a clientes |
-| **Coherencia con Revenue** | 🔴 DISCREPANCIA | Facturas muestran $5,053 vs Transacciones $283,766 |
-
-**Semáforo Final: 🟡 VISOR PARCIAL**
-Puedo cobrar facturas reales de Stripe, pero NO tengo visibilidad completa para contabilidad (falta PayPal) y los datos no están conectados al CRM unificado.
+## Resumen Ejecutivo
+Transformar el Dashboard Principal de **Desactualizado (🟡)** a **Torre de Control (🟢)** integrando las métricas reales validadas en otros módulos y habilitando navegación activa.
 
 ---
 
-## 1. Arquitectura y Fuentes de Datos
+## Hallazgos de la Auditoría
 
-### 📌 Origen de Facturas
-```text
-FUENTE: API de Stripe → Tabla local `invoices`
-SINCRONIZACIÓN: Edge Function `fetch-invoices`
-  - Modo "recent": últimos 90 días
-  - Modo "full": histórico completo
-  - Paginación: 100 facturas por página con auto-continuación
-```
-
-**Flujo de datos:**
-```
-Stripe API (/v1/invoices)
-    ↓ fetch-invoices (Edge Function)
-    ↓ Upsert con expand[]=subscription, customer, lines
-    ↓ Tabla `invoices` (1,101 registros)
-    ↓ useInvoices (React Query + Realtime)
-    ↓ InvoicesPage.tsx
-```
-
-### 📌 Cobertura de Fuentes
-
-| Fuente | Facturas | Notas |
-|--------|----------|-------|
-| **Stripe** | 1,101 (100%) | ✅ Todas son de Stripe (`in_*`) |
-| **PayPal** | 0 (0%) | ❌ **NO HAY FACTURAS PAYPAL** |
-| **Web Sales** | 0 (0%) | ❌ No aplica (son ventas directas) |
-
-**PROBLEMA CRÍTICO**: Este mes hay **$18,729** en transacciones PayPal que NO aparecen en facturas. Tu contador no verá ese dinero aquí.
-
-### 📌 PDFs Descargables
-
-| Métrica | Valor |
-|---------|-------|
-| Total Facturas | 1,101 |
-| Con PDF URL | 1,074 (97.5%) ✅ |
-| Con Hosted URL | 1,076 (97.7%) ✅ |
-
-**Veredicto**: Los botones de PDF funcionan y usan la URL hospedada de Stripe (`invoice.invoice_pdf`). NO se generan al vuelo.
-
----
-
-## 2. Funcionalidad de Acciones
-
-### ✅ Botón "Cobrar" (Individual)
-```typescript
-// InvoicesPage.tsx:81-98
-handleChargeInvoice → invokeWithAdminKey('force-charge-invoice', { invoice_id })
-  ↓
-// force-charge-invoice/index.ts:76-115
-if (status === 'draft') → stripe.invoices.finalizeInvoice()
-if (status === 'open') → stripe.invoices.pay()
-  ↓
-Actualiza invoices.status en Supabase
-```
-**Estado**: 🟢 **FUNCIONAL** - Conectado a API real de Stripe.
-
-### ✅ Botón "Cobrar Todas"
-```typescript
-// InvoicesPage.tsx:100-138
-handleChargeAll → Loop con 300ms delay entre cada cobro
-  - Muestra barra de progreso
-  - Suma total recuperado
-  - Resumen de éxitos/fallos
-```
-**Estado**: 🟢 **FUNCIONAL** - Respeta rate limits de Stripe.
-
-### ❌ Botón "Enviar Recordatorio"
-**NO EXISTE** en la implementación actual. Solo hay:
-- Cobrar (individual)
-- Cobrar Todas
-- Ver PDF
-- Ver en Stripe (external link)
-
-### ✅ Exportar CSV
-```typescript
-// useInvoices.ts:300-338
-exportToCSV() → Genera CSV con todos los datos filtrados
-```
-**Estado**: 🟢 **FUNCIONAL**
-
----
-
-## 3. Manejo de Estados
-
-### Estadísticas por Estado
-
-| Estado | Cantidad | Monto | Con PDF | Vinculado a Cliente |
-|--------|----------|-------|---------|---------------------|
-| **uncollectible** | 683 | $19,915 | 683 (100%) | 0 (0%) ❌ |
-| **paid** | 222 | $5,102 | 222 (100%) | 46 (21%) |
-| **open** | 171 | $8,091 | 169 (99%) | 0 (0%) ❌ |
-| **draft** | 25 | $1,340 | 0 (0%) | 12 (48%) |
-
-### Filtrado de Estados en UI
-
-| Estado | ¿Se Muestra? | Badge Color | Acción Disponible |
-|--------|--------------|-------------|-------------------|
-| draft | ✅ Sí | Gris (Borrador) | Cobrar |
-| open | ✅ Sí | Azul (Abierta) | Cobrar |
-| paid | ✅ Sí | Verde (Pagada) | Ver PDF |
-| void | ✅ Sí | Rojo (Anulada) | - |
-| uncollectible | ✅ Sí | Ámbar (Incobrable) | Ver PDF |
-
-**Nota**: NO hay distinción visual entre `open` (pendiente normal) y `past_due` (vencida). Stripe no tiene estado `past_due` en invoices, pero sí en subscriptions.
-
----
-
-## 4. Widget "Dinero en Camino"
-
-### Lógica Actual
-```typescript
-// useInvoices.ts:278-288
-const invoicesNext72h = invoices.filter((inv) => {
-  if (!inv.next_payment_attempt || inv.status !== 'open') return false;
-  const attemptDate = new Date(inv.next_payment_attempt);
-  return attemptDate <= next72Hours;
-});
-```
-
-### Datos Actuales
-```text
-Próximas 72 horas:
-├── draft: 2 facturas → $63
-├── open: 58 facturas → $3,200
-└── TOTAL: 60 facturas → $3,263 proyectados
-```
-
-**PROBLEMA**: El filtro excluye `draft`. Solo suma `open` con `next_payment_attempt`. Los drafts deberían contarse porque Stripe los finaliza automáticamente.
-
-### Corrección Necesaria
-```typescript
-// Debería incluir drafts también:
-const invoicesNext72h = invoices.filter((inv) => {
-  if (!['open', 'draft'].includes(inv.status)) return false;
-  // Para drafts, usar automatically_finalizes_at
-  const targetDate = inv.next_payment_attempt || inv.automatically_finalizes_at;
-  if (!targetDate) return false;
-  return new Date(targetDate) <= next72Hours;
-});
-```
-
----
-
-## 5. Coherencia con Perfil de Cliente
-
-### Vinculación CRM
-```text
-Total Facturas: 1,101
-Vinculadas a client_id: 58 (5.3%) ❌ CRÍTICO
-
-Causa: batchResolveClients() busca por stripe_customer_id,
-pero solo 5% de clientes tienen ese campo poblado.
-```
-
-### Ejemplo de Discrepancia
-
-| Cliente | Transacciones | Total Tx | Facturas | Total Inv |
-|---------|---------------|----------|----------|-----------|
-| djkubo@live.com.mx | 70 | $2,732 | 1 | $0 |
-| chacas1@outlook.com | 73 | $1,600 | 0 | N/A |
-| vjcdamian@gmail.com | 74 | $1,575 | 0 | N/A |
-
-**Problema**: Clientes con historial de $1,500+ solo tienen 0-1 facturas porque:
-1. Sus pagos son de PayPal (no genera invoice)
-2. Son pagos únicos (one-time charges, no subscriptions)
-
----
-
-## 6. Coherencia Facturas vs Revenue
-
-### Mes Actual (Enero 2026)
-
-| Fuente | Registros | Monto |
-|--------|-----------|-------|
-| **Invoices (paid)** | 219 | $5,053 |
-| **Transactions (stripe)** | 10,522 | $283,766 |
-| **Transactions (paypal)** | 359 | $18,729 |
-| **Transactions (web)** | 163 | $3,449 |
-
-### Discrepancia: $278,713 NO APARECEN EN FACTURAS
-
-**Razón**:
-1. Stripe Invoices solo rastrea **suscripciones recurrentes**
-2. Los **one-time charges** no generan invoice
-3. PayPal y Web Sales nunca generan invoices en Stripe
-
----
-
-## 7. Brechas Críticas Identificadas
-
-### 🔴 Brecha 1: Suscripciones sin Factura
-```text
-Suscripciones activas: 1,331
-Suscripciones con factura vinculada: 0 ❌
-
-Causa: subscription_id no está siendo vinculado correctamente
-durante la sincronización.
-```
-
-### 🔴 Brecha 2: Uncollectibles Ocultos
-```text
-Facturas incobrables: 683
-Monto perdido: $19,915
-Rango: 2020 → 2026
-
-Estas NO están siendo usadas para métricas de recuperación.
-```
-
-### 🔴 Brecha 3: Sin PayPal Invoices
-```text
-PayPal Revenue este mes: $18,729
-PayPal en sistema de facturas: $0
-
-Para contabilidad necesitas:
-- fetch-paypal-transactions con recibos
-- O crear "pseudo-invoices" desde transacciones PayPal
-```
-
----
-
-## 8. Resumen de Archivos Analizados
-
-| Archivo | Propósito | Estado |
+### Datos Confirmados en Base de Datos
+| Métrica | Valor Real | Fuente |
 |---------|-----------|--------|
-| `src/components/dashboard/InvoicesPage.tsx` | UI principal | ✅ Funcional |
-| `src/hooks/useInvoices.ts` | Lógica de datos | ✅ Funcional |
-| `supabase/functions/fetch-invoices/index.ts` | Sync con Stripe | ✅ Funcional |
-| `supabase/functions/force-charge-invoice/index.ts` | Cobro forzado | ✅ Funcional |
-| `src/components/dashboard/IncomingRevenueCard.tsx` | Widget proyección | 🟡 Excluye drafts |
-| `src/components/dashboard/PendingInvoicesTable.tsx` | Lista cobros | ✅ Funcional |
+| **MRR** | $69,009 USD | 1,332 suscripciones activas |
+| **Revenue at Risk** | $498,513 USD | 21,367 facturas (open + draft) |
+| **Facturas Open** | $258,568 USD | 10,419 facturas |
+| **Facturas Draft** | $239,945 USD | 10,948 facturas |
+
+### Problemas Actuales
+1. **MRR Ausente**: No hay tarjeta de MRR en el Command Center
+2. **Revenue at Risk Incorrecto**: Usa `failuresToday × $50` (estimación) en lugar del total real de facturas pendientes
+3. **KPI Cards No Clicables**: Las tarjetas son solo visuales, no navegan
+4. **Sin Botón Broadcast**: No hay acceso directo a campañas
 
 ---
 
-## 9. Recomendaciones de Reparación
+## Cambios a Implementar
 
-### Prioridad Alta
-1. **Vincular client_id en facturas**: Actualizar `batchResolveClients` para buscar también por email
-2. **Incluir drafts en proyección**: Corregir lógica de `invoicesNext72h`
-3. **Crear pseudo-invoices de PayPal**: Para que el contador vea todo el revenue
+### 1. Agregar Tarjeta de MRR
+**Archivo**: `src/components/dashboard/DashboardHome.tsx`
 
-### Prioridad Media
-4. **Conectar subscription_id**: La tabla tiene el campo pero está vacío en 95% de casos
-5. **Métricas de Uncollectibles**: Mostrar el $19,915 perdido como alerta
+- Crear una nueva tarjeta KPI prominente para "MRR Actual"
+- Usar la misma lógica de `LTVMetrics.tsx`: suma de `subscriptions.amount` donde `status = 'active'`
+- Hacer la tarjeta clicable para navegar a Analytics
 
-### Prioridad Baja
-6. **Botón "Enviar Recordatorio"**: Implementar integración con email/SMS
+```text
++------------------+
+|   💰 MRR         |
+|   $69,009        |
+|   1,332 activas  |
++------------------+
+```
+
+### 2. Corregir Revenue at Risk
+**Archivo**: `src/components/dashboard/DashboardHome.tsx`
+
+Reemplazar la lógica actual:
+```typescript
+// ANTES (incorrecto)
+const atRiskAmount = kpis.failuresToday * 50;
+```
+
+Por una consulta real a facturas pendientes:
+```typescript
+// DESPUÉS (correcto)
+const { data: pendingInvoices } = await supabase
+  .from('invoices')
+  .select('amount_due')
+  .in('status', ['open', 'past_due']);
+const revenueAtRisk = pendingInvoices.reduce((sum, inv) => sum + inv.amount_due, 0) / 100;
+```
+
+Mostrar en rojo prominente con navegación a Recovery.
+
+### 3. Navegación Activa en KPI Cards
+**Archivo**: `src/components/dashboard/DashboardHome.tsx`
+
+Agregar `onClick` handlers a cada tarjeta:
+
+| Tarjeta | Navega a |
+|---------|----------|
+| MRR | Analytics |
+| Ventas | Movimientos |
+| Nuevos Clientes | Clientes |
+| Fallos / Riesgo | Recovery |
+| Trials | Suscripciones |
+| Cancelaciones | Suscripciones |
+
+### 4. Botón de Broadcast (Quick Action)
+**Archivo**: `src/components/dashboard/DashboardHome.tsx`
+
+Agregar botón en el header junto a "Sync All":
+```text
+[ 📢 Broadcast ] [ 🔄 Sync All ▾ ]
+```
+
+El botón navegará a la sección "campaigns" (Campaign Control Center).
 
 ---
 
-## 10. Veredicto Final
+## Detalles Técnicos
 
-**🟡 VISOR PARCIAL**
+### Hook Modificado: useDailyKPIs
+Se agregará una nueva query para obtener el MRR y Revenue at Risk en tiempo real:
 
-| Capacidad | Estado |
-|-----------|--------|
-| Ver facturas de Stripe | ✅ |
-| Descargar PDFs | ✅ |
-| Cobrar manualmente | ✅ |
-| Cobrar en lote | ✅ |
-| Ver PayPal | ❌ |
-| Dar cuentas al contador | ❌ (incompleto) |
-| Conectar con CRM | ❌ (5% vinculado) |
-| Proyección precisa | 🟡 (excluye drafts) |
+```typescript
+// Agregar a useDailyKPIs o crear hook separado
+const fetchRevenueMetrics = async () => {
+  const [mrrResult, atRiskResult] = await Promise.all([
+    supabase.from('subscriptions')
+      .select('amount')
+      .eq('status', 'active'),
+    supabase.from('invoices')
+      .select('amount_due')
+      .in('status', ['open', 'past_due'])
+  ]);
+  
+  return {
+    mrr: mrrResult.data?.reduce((sum, s) => sum + s.amount, 0) / 100,
+    revenueAtRisk: atRiskResult.data?.reduce((sum, i) => sum + i.amount_due, 0) / 100
+  };
+};
+```
 
-**Para usar esto con tu contador**, necesitas:
-1. Exportar CSV desde aquí (solo Stripe)
-2. Exportar transacciones PayPal por separado
-3. Combinar manualmente en Excel
+### UI de Tarjetas Clicables
+Agregar cursor pointer y visual feedback:
+```typescript
+<div
+  onClick={() => onNavigate?.('analytics')}
+  className="cursor-pointer hover:ring-2 hover:ring-primary/50 transition-all"
+>
+  {/* KPI content */}
+</div>
+```
 
-**O implementar**: Un reporte unificado que sume Invoices + Transactions de todas las fuentes.
+### Estructura Final del Grid de KPIs
+```text
+[ MRR ][ Ventas ][ Nuevos ][ Trials ][ T→Paid ][ Renovs ][ Fallos ][ Cancel ]
+  ↓        ↓        ↓         ↓         ↓         ↓         ↓         ↓
+Analytics  Movs   Clients   Subs      Subs      Subs    Recovery   Subs
+```
+
+---
+
+## Archivos a Modificar
+
+| Archivo | Cambios |
+|---------|---------|
+| `src/components/dashboard/DashboardHome.tsx` | Agregar MRR card, corregir Revenue at Risk, hacer cards clicables, agregar botón Broadcast |
+| `src/hooks/useDailyKPIs.ts` | Agregar queries para MRR y Revenue at Risk real |
+
+---
+
+## Resultado Esperado
+
+Después de implementar:
+
+1. **MRR visible** mostrando `$69,009` con 1,332 suscripciones activas
+2. **Revenue at Risk real** mostrando `~$258k-498k` (según filtro open/draft) en rojo
+3. **Navegación con un clic** desde cualquier KPI a su sección detallada
+4. **Acceso directo a Broadcast** para enviar campañas rápidas
+
+El Command Center pasará de **🟡 Desactualizado** a **🟢 Torre de Control**.
