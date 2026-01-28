@@ -131,7 +131,7 @@ export function SyncOrchestrator() {
       const { count: csvStaged } = await supabase
         .from('csv_imports_raw')
         .select('*', { count: 'exact', head: true })
-        .eq('processing_status', 'staged');
+        .in('processing_status', ['staged', 'pending']);
 
       setRawCounts({
         ghl_total: ghlTotal || 0,
