@@ -1,226 +1,209 @@
 
+# Plan: Optimización Definitiva de Smart Recovery
 
-# Plan: Crear Edge Function "vrp-brain-api"
+## Problemas Identificados
 
-## Objetivo
-Crear un API Gateway seguro para conectar tu agente Python externo con las funciones de Supabase.
+### 1. Error "inesperado" en el Frontend
+- El hook `useSmartRecovery` no maneja correctamente algunos casos de error
+- Si la respuesta no tiene la estructura esperada, falla silenciosamente
+
+### 2. El Proceso se Cancela al Salir de la Página
+- La ejecución actual depende del bucle `while(hasMore)` en el navegador
+- Si cierras la pestaña, el proceso muere
+
+### 3. No hay Visualización en Tiempo Real
+- El frontend no tiene polling/suscripción a `sync_runs`
+- Al recargar la página no se restaura correctamente el progreso activo
+
+### 4. Lógica de Cobro Incompleta
+- No se verifica si ya se intentó cobrar recientemente
+- No hay límite de reintentos por factura
 
 ---
 
-## Estructura de la Función
+## Solución Arquitectónica
+
+### Nueva Arquitectura: Backend-First con Polling Realtime
 
 ```text
-supabase/functions/
-└── vrp-brain-api/
-    └── index.ts       ← Nueva función
+┌─────────────────────────────────────────────────────────────────┐
+│                        FRONTEND (React)                         │
+├─────────────────────────────────────────────────────────────────┤
+│  SmartRecoveryCard                                              │
+│  ├── Botón "Iniciar" → Llama Edge Function UNA vez              │
+│  ├── Polling cada 3s a sync_runs mientras status = "running"   │
+│  ├── Muestra progreso en tiempo real (checkpoint data)         │
+│  └── Al recargar → Detecta run activo y muestra estado         │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    BACKEND (Edge Function)                      │
+├─────────────────────────────────────────────────────────────────┤
+│  recover-revenue (auto-continuation)                            │
+│  ├── Procesa batch de 3 facturas                                │
+│  ├── Guarda progreso en sync_runs.checkpoint                    │
+│  ├── Si hasMore → Se auto-invoca con EdgeRuntime.waitUntil()   │
+│  └── Frontend solo observa, no coordina                         │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## Especificaciones Técnicas
+## Cambios Específicos
 
-### 1. Seguridad
-| Header | Valor Esperado |
-|--------|----------------|
-| `x-admin-key` | `vrp_admin_2026_K8p3dQ7xN2v9Lm5R1s0T4u6Yh8Gf3Jk` |
+### Archivo 1: `supabase/functions/recover-revenue/index.ts`
 
-Si no coincide → Retorna `401 Unauthorized`
-
-### 2. Acciones Soportadas
-
-| Action | Operación | Parámetros Body |
-|--------|-----------|-----------------|
-| `identify` | `supabase.rpc('unify_identity_v2', params)` | Todos los `p_*` de la función |
-| `search` | `supabase.rpc('match_knowledge', params)` | `query_embedding`, `match_threshold`, `match_count` |
-| `insert` | `supabase.from(table).insert(data)` | `table`, `data` |
-
-### 3. CORS
-Headers completos para permitir conexiones externas desde cualquier origen.
-
----
-
-## Código de la Función
+**Cambios:**
+1. Agregar auto-continuación con `EdgeRuntime.waitUntil()` (mismo patrón que fetch-stripe)
+2. Agregar validación de "ya intentado hoy" para evitar spam a Stripe
+3. Limitar reintentos por factura (máximo 3 en 24h)
+4. Actualizar `checkpoint.lastActivity` para detectar stalls
 
 ```typescript
-// supabase/functions/vrp-brain-api/index.ts
+// Nuevo flujo:
+// 1. Procesar batch
+// 2. Si hasMore && !cancelled:
+//    EdgeRuntime.waitUntil(fetch(self, { cursor: nextCursor }))
+// 3. Retornar inmediatamente con status parcial
+```
 
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+### Archivo 2: `src/hooks/useSmartRecovery.ts`
 
-const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-admin-key',
-  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+**Cambios:**
+1. Eliminar bucle `while(hasMore)` del frontend
+2. Implementar polling a `sync_runs` cada 3 segundos
+3. Al montar, verificar si hay un run activo y mostrar su progreso
+4. Manejar reconexión al recargar la página
+5. Mejorar manejo de errores con mensajes claros
+
+```typescript
+// Nuevo flujo:
+// 1. runRecovery() → Llama edge function UNA vez
+// 2. Inicia polling a sync_runs cada 3s
+// 3. Actualiza UI con datos del checkpoint
+// 4. Al recargar → useEffect detecta run activo
+```
+
+### Archivo 3: `src/components/dashboard/SmartRecoveryCard.tsx`
+
+**Cambios:**
+1. Mostrar progreso detallado desde `sync_runs.checkpoint`
+2. Mostrar tiempo transcurrido
+3. Mostrar última actividad (para detectar si se atoró)
+4. Botón "Forzar Cancelación" si detecta stall > 5 min
+
+---
+
+## Detalle de Cambios por Archivo
+
+### recover-revenue/index.ts - Auto-Continuación
+
+```typescript
+// Al final del procesamiento:
+if (hasMore) {
+  const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+  const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+  
+  // Auto-invocar en background
+  EdgeRuntime.waitUntil((async () => {
+    await new Promise(r => setTimeout(r, 1000)); // 1s delay entre batches
+    
+    await fetch(`${supabaseUrl}/functions/v1/recover-revenue`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${serviceRoleKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        hours_lookback,
+        cursor: nextCursor,
+        sync_run_id: syncRunId,
+        _continuation: true, // Flag para identificar auto-invocación
+      }),
+    });
+  })());
 }
+```
 
-const ADMIN_KEY = 'vrp_admin_2026_K8p3dQ7xN2v9Lm5R1s0T4u6Yh8Gf3Jk'
+### useSmartRecovery.ts - Polling Pattern
 
-Deno.serve(async (req) => {
-  // CORS preflight
-  if (req.method === 'OPTIONS') {
-    return new Response('ok', { headers: corsHeaders })
+```typescript
+// Nuevo hook de polling
+const pollSyncRun = useCallback(async (syncRunId: string) => {
+  const { data } = await supabase
+    .from("sync_runs")
+    .select("*")
+    .eq("id", syncRunId)
+    .single();
+  
+  if (data) {
+    const checkpoint = data.checkpoint as any;
+    setProgress({
+      batch: checkpoint?.processed || 0,
+      message: `Procesadas ${checkpoint?.processed || 0} facturas`,
+      recovered: checkpoint?.recovered_amount || 0,
+      failed: checkpoint?.failed_amount || 0,
+      skipped: checkpoint?.skipped_amount || 0,
+    });
+    
+    if (data.status === "completed" || data.status === "failed") {
+      // Terminar polling
+      return true;
+    }
   }
+  return false;
+}, []);
 
-  const requestId = crypto.randomUUID().slice(0, 8)
-  console.log(`[${requestId}] vrp-brain-api: Start`)
+// En runRecovery:
+// 1. Llamar edge function
+// 2. Iniciar setInterval de 3s para polling
+// 3. Limpiar interval cuando termine
+```
 
-  try {
-    // ========== SECURITY CHECK ==========
-    const providedKey = req.headers.get('x-admin-key')
-    if (providedKey !== ADMIN_KEY) {
-      console.warn(`[${requestId}] Unauthorized - Invalid key`)
-      return new Response(
-        JSON.stringify({ ok: false, error: 'Unauthorized', message: 'Invalid x-admin-key' }),
-        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      )
-    }
+### Verificación de Reintentos
 
-    // ========== PARSE BODY ==========
-    const body = await req.json()
-    const { action, ...params } = body
-
-    if (!action) {
-      return new Response(
-        JSON.stringify({ ok: false, error: 'Missing action field' }),
-        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      )
-    }
-
-    const supabase = createClient(
-      Deno.env.get('SUPABASE_URL')!,
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
-    )
-
-    let result: any
-    let error: any
-
-    // ========== ACTION ROUTER ==========
-    switch (action) {
-      case 'identify':
-        console.log(`[${requestId}] Action: identify`)
-        const identifyResult = await supabase.rpc('unify_identity_v2', params)
-        result = identifyResult.data
-        error = identifyResult.error
-        break
-
-      case 'search':
-        console.log(`[${requestId}] Action: search`)
-        const searchResult = await supabase.rpc('match_knowledge', params)
-        result = searchResult.data
-        error = searchResult.error
-        break
-
-      case 'insert':
-        console.log(`[${requestId}] Action: insert → ${params.table}`)
-        if (!params.table || !params.data) {
-          return new Response(
-            JSON.stringify({ ok: false, error: 'Insert requires "table" and "data" fields' }),
-            { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-          )
-        }
-        const insertResult = await supabase.from(params.table).insert(params.data).select()
-        result = insertResult.data
-        error = insertResult.error
-        break
-
-      default:
-        return new Response(
-          JSON.stringify({ ok: false, error: `Unknown action: ${action}` }),
-          { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-        )
-    }
-
-    if (error) {
-      console.error(`[${requestId}] Error:`, error)
-      return new Response(
-        JSON.stringify({ ok: false, error: error.message, details: error }),
-        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      )
-    }
-
-    console.log(`[${requestId}] Success`)
-    return new Response(
-      JSON.stringify({ ok: true, data: result }),
-      { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    )
-
-  } catch (err) {
-    const errorMessage = err instanceof Error ? err.message : 'Internal server error'
-    console.error(`[${requestId}] Fatal:`, err)
-    return new Response(
-      JSON.stringify({ ok: false, error: errorMessage }),
-      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    )
-  }
-})
+```sql
+-- Nueva columna en invoices o metadata en sync_runs
+-- Track: invoice_id → { last_attempt: timestamp, attempt_count: number }
 ```
 
 ---
 
-## Configuración config.toml
+## Reglas de Cobro (Validaciones)
 
-Agregar al final de `supabase/config.toml`:
-
-```toml
-[functions.vrp-brain-api]
-verify_jwt = false
-```
-
----
-
-## Ejemplos de Uso (Python)
-
-### Identify
-```python
-import requests
-
-url = "https://sbexeqqizazjfsbsgrbd.supabase.co/functions/v1/vrp-brain-api"
-headers = {"x-admin-key": "vrp_admin_2026_K8p3dQ7xN2v9Lm5R1s0T4u6Yh8Gf3Jk"}
-
-response = requests.post(url, json={
-    "action": "identify",
-    "p_source": "python_agent",
-    "p_email": "cliente@ejemplo.com",
-    "p_phone": "+5215512345678",
-    "p_full_name": "Juan Pérez"
-}, headers=headers)
-
-print(response.json())
-```
-
-### Search (Knowledge Base)
-```python
-response = requests.post(url, json={
-    "action": "search",
-    "query_embedding": [0.1, 0.2, ...],  # Vector de embedding
-    "match_threshold": 0.7,
-    "match_count": 5
-}, headers=headers)
-```
-
-### Insert
-```python
-response = requests.post(url, json={
-    "action": "insert",
-    "table": "chat_logs",
-    "data": {
-        "client_id": "uuid-aqui",
-        "message": "Hola, tengo una duda",
-        "role": "user"
-    }
-}, headers=headers)
-```
+1. **NO cobrar** si la suscripción está `canceled` o `incomplete_expired`
+2. **NO cobrar** si la factura está `paid`, `void`, o `uncollectible`
+3. **NO cobrar** si ya se intentó en las últimas 24 horas (mismo invoice)
+4. **MÁXIMO 3** intentos por factura en una ventana de 7 días
+5. **DELAY** de 80ms entre llamadas a Stripe API
 
 ---
 
-## Archivos a Crear/Modificar
+## Archivos a Modificar
 
 | Archivo | Acción |
 |---------|--------|
-| `supabase/functions/vrp-brain-api/index.ts` | **Crear** - Código principal |
-| `supabase/config.toml` | **Modificar** - Agregar configuración |
+| `supabase/functions/recover-revenue/index.ts` | Agregar auto-continuación y validaciones |
+| `src/hooks/useSmartRecovery.ts` | Reescribir con polling pattern |
+| `src/components/dashboard/SmartRecoveryCard.tsx` | Mejorar UI de progreso |
 
 ---
 
-## Despliegue
-La función se desplegará automáticamente cuando se guarden los cambios.
+## Resultado Esperado
 
+1. **Inicia Recovery 60 días** → Función se auto-ejecuta en background
+2. **Cierras la pestaña** → El proceso sigue en el servidor
+3. **Recargas la página** → Ves el progreso actual automáticamente
+4. **Error** → Mensaje claro, opción de reanudar
+5. **Completado** → Resultados detallados con exportación CSV
+
+---
+
+## Beneficios
+
+- **Resiliente**: El proceso no depende del navegador
+- **En tiempo real**: UI actualizada cada 3 segundos
+- **Recuperable**: Puedes reanudar después de errores
+- **Seguro**: Validaciones para no abusar de la API de Stripe
+- **Optimizado**: Batches pequeños (3) para evitar timeouts
