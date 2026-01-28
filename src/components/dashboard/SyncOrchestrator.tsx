@@ -100,58 +100,69 @@ export function SyncOrchestrator() {
   }>({ processed: 0, merged: 0, rate: '0/s', eta: 0, syncRunId: null });
   const [loading, setLoading] = useState(true);
 
-  // Fetch current counts
+  // Fetch current counts with proper error handling
   const fetchCounts = useCallback(async () => {
     try {
-      // GHL raw counts
-      const { count: ghlTotal } = await supabase
-        .from('ghl_contacts_raw')
-        .select('*', { count: 'exact', head: true });
-      
-      const { count: ghlUnprocessed } = await supabase
-        .from('ghl_contacts_raw')
-        .select('*', { count: 'exact', head: true })
-        .is('processed_at', null);
+      // Run all counts in parallel for speed
+      const [
+        ghlTotalResult,
+        ghlUnprocessedResult,
+        manychatTotalResult,
+        manychatUnprocessedResult,
+        csvTotalResult,
+        csvStagedResult
+      ] = await Promise.all([
+        supabase.from('ghl_contacts_raw').select('*', { count: 'exact', head: true }),
+        supabase.from('ghl_contacts_raw').select('*', { count: 'exact', head: true }).is('processed_at', null),
+        supabase.from('manychat_contacts_raw').select('*', { count: 'exact', head: true }),
+        supabase.from('manychat_contacts_raw').select('*', { count: 'exact', head: true }).is('processed_at', null),
+        supabase.from('csv_imports_raw').select('*', { count: 'exact', head: true }),
+        supabase.from('csv_imports_raw').select('*', { count: 'exact', head: true }).in('processing_status', ['staged', 'pending'])
+      ]);
 
-      // ManyChat raw counts
-      const { count: manychatTotal } = await supabase
-        .from('manychat_contacts_raw')
-        .select('*', { count: 'exact', head: true });
-      
-      const { count: manychatUnprocessed } = await supabase
-        .from('manychat_contacts_raw')
-        .select('*', { count: 'exact', head: true })
-        .is('processed_at', null);
+      // Check for errors in any query
+      const errors = [
+        ghlTotalResult.error,
+        ghlUnprocessedResult.error,
+        manychatTotalResult.error,
+        manychatUnprocessedResult.error,
+        csvTotalResult.error,
+        csvStagedResult.error
+      ].filter(Boolean);
 
-      // CSV raw counts
-      const { count: csvTotal } = await supabase
-        .from('csv_imports_raw')
-        .select('*', { count: 'exact', head: true });
-      
-      const { count: csvStaged } = await supabase
-        .from('csv_imports_raw')
-        .select('*', { count: 'exact', head: true })
-        .in('processing_status', ['staged', 'pending']);
+      if (errors.length > 0) {
+        console.error('Errors fetching counts:', errors);
+        // Don't throw - just use what we got
+      }
+
+      const ghlTotal = ghlTotalResult.count ?? 0;
+      const ghlUnprocessed = ghlUnprocessedResult.count ?? 0;
+      const manychatTotal = manychatTotalResult.count ?? 0;
+      const manychatUnprocessed = manychatUnprocessedResult.count ?? 0;
+      const csvTotal = csvTotalResult.count ?? 0;
+      const csvStaged = csvStagedResult.count ?? 0;
 
       setRawCounts({
-        ghl_total: ghlTotal || 0,
-        ghl_unprocessed: ghlUnprocessed || 0,
-        manychat_total: manychatTotal || 0,
-        manychat_unprocessed: manychatUnprocessed || 0,
-        csv_staged: csvStaged || 0,
-        csv_total: csvTotal || 0
+        ghl_total: ghlTotal,
+        ghl_unprocessed: ghlUnprocessed,
+        manychat_total: manychatTotal,
+        manychat_unprocessed: manychatUnprocessed,
+        csv_staged: csvStaged,
+        csv_total: csvTotal
       });
 
       setPendingCounts({
-        ghl: ghlUnprocessed || 0,
-        manychat: manychatUnprocessed || 0,
-        csv: csvStaged || 0,
-        total: (ghlUnprocessed || 0) + (manychatUnprocessed || 0) + (csvStaged || 0)
+        ghl: ghlUnprocessed,
+        manychat: manychatUnprocessed,
+        csv: csvStaged,
+        total: ghlUnprocessed + manychatUnprocessed + csvStaged
       });
 
       setLoading(false);
     } catch (error) {
-      console.error('Error fetching counts:', error);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error('Error fetching counts:', errorMessage);
+      toast.error(`Error cargando conteos: ${errorMessage}`);
       setLoading(false);
     }
   }, []);
