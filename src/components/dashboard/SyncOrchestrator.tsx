@@ -100,69 +100,50 @@ export function SyncOrchestrator() {
   }>({ processed: 0, merged: 0, rate: '0/s', eta: 0, syncRunId: null });
   const [loading, setLoading] = useState(true);
 
-  // Fetch current counts with proper error handling
+  // Fetch current counts using fast RPC (avoids timeout on 850k+ records)
   const fetchCounts = useCallback(async () => {
     try {
-      // Run all counts in parallel for speed
-      const [
-        ghlTotalResult,
-        ghlUnprocessedResult,
-        manychatTotalResult,
-        manychatUnprocessedResult,
-        csvTotalResult,
-        csvStagedResult
-      ] = await Promise.all([
-        supabase.from('ghl_contacts_raw').select('*', { count: 'exact', head: true }),
-        supabase.from('ghl_contacts_raw').select('*', { count: 'exact', head: true }).is('processed_at', null),
-        supabase.from('manychat_contacts_raw').select('*', { count: 'exact', head: true }),
-        supabase.from('manychat_contacts_raw').select('*', { count: 'exact', head: true }).is('processed_at', null),
-        supabase.from('csv_imports_raw').select('*', { count: 'exact', head: true }),
-        supabase.from('csv_imports_raw').select('*', { count: 'exact', head: true }).in('processing_status', ['staged', 'pending'])
-      ]);
+      // Use RPC for instant estimated counts (no timeouts)
+      const { data, error } = await supabase.rpc('get_staging_counts_fast');
 
-      // Check for errors in any query
-      const errors = [
-        ghlTotalResult.error,
-        ghlUnprocessedResult.error,
-        manychatTotalResult.error,
-        manychatUnprocessedResult.error,
-        csvTotalResult.error,
-        csvStagedResult.error
-      ].filter(Boolean);
-
-      if (errors.length > 0) {
-        console.error('Errors fetching counts:', errors);
-        // Don't throw - just use what we got
+      if (error) {
+        console.error('RPC error:', error);
+        // Fallback to 0s on error but don't block UI
+        setLoading(false);
+        return;
       }
 
-      const ghlTotal = ghlTotalResult.count ?? 0;
-      const ghlUnprocessed = ghlUnprocessedResult.count ?? 0;
-      const manychatTotal = manychatTotalResult.count ?? 0;
-      const manychatUnprocessed = manychatUnprocessedResult.count ?? 0;
-      const csvTotal = csvTotalResult.count ?? 0;
-      const csvStaged = csvStagedResult.count ?? 0;
+      const counts = data as {
+        ghl_total: number;
+        ghl_unprocessed: number;
+        manychat_total: number;
+        manychat_unprocessed: number;
+        csv_total: number;
+        csv_staged: number;
+        clients_total: number;
+        transactions_total: number;
+      };
 
       setRawCounts({
-        ghl_total: ghlTotal,
-        ghl_unprocessed: ghlUnprocessed,
-        manychat_total: manychatTotal,
-        manychat_unprocessed: manychatUnprocessed,
-        csv_staged: csvStaged,
-        csv_total: csvTotal
+        ghl_total: counts.ghl_total || 0,
+        ghl_unprocessed: counts.ghl_unprocessed || 0,
+        manychat_total: counts.manychat_total || 0,
+        manychat_unprocessed: counts.manychat_unprocessed || 0,
+        csv_staged: counts.csv_staged || 0,
+        csv_total: counts.csv_total || 0
       });
 
       setPendingCounts({
-        ghl: ghlUnprocessed,
-        manychat: manychatUnprocessed,
-        csv: csvStaged,
-        total: ghlUnprocessed + manychatUnprocessed + csvStaged
+        ghl: counts.ghl_unprocessed || 0,
+        manychat: counts.manychat_unprocessed || 0,
+        csv: counts.csv_staged || 0,
+        total: (counts.ghl_unprocessed || 0) + (counts.manychat_unprocessed || 0) + (counts.csv_staged || 0)
       });
 
       setLoading(false);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       console.error('Error fetching counts:', errorMessage);
-      toast.error(`Error cargando conteos: ${errorMessage}`);
       setLoading(false);
     }
   }, []);
@@ -298,8 +279,8 @@ export function SyncOrchestrator() {
     checkActiveSync('stripe');
     checkActiveSync('paypal');
     
-    const interval = setInterval(fetchCounts, 5000);
-    return () => clearInterval(interval);
+    // Removed 5s polling - fetchCounts now uses fast RPC
+    // Only refresh on user actions (sync complete, etc.)
   }, [fetchCounts, checkActiveSync]);
 
   // Sync GHL (Stage Only)
