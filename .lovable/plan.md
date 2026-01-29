@@ -1,153 +1,207 @@
 
-# Plan: Actualización Final del Command Center a "Torre de Control" (🟢)
+# Plan de Reparación: Rendimiento del Botón "Unificar Todos"
 
 ## Resumen Ejecutivo
-Transformar el Dashboard Principal de **Desactualizado (🟡)** a **Torre de Control (🟢)** integrando las métricas reales validadas en otros módulos y habilitando navegación activa.
+
+El botón "Unificar Todos" no congela la aplicación en el sentido técnico, pero presenta una **experiencia de usuario degradada** debido a:
+1. Progreso que no avanza (0% por mucho tiempo)
+2. Tiempos de procesamiento extremos (~18 horas teóricas para 800k registros)
+3. Falta de feedback visual significativo
+4. Sin capacidad de reanudar procesos fallidos
 
 ---
 
-## Hallazgos de la Auditoría
-
-### Datos Confirmados en Base de Datos
-| Métrica | Valor Real | Fuente |
-|---------|-----------|--------|
-| **MRR** | $69,009 USD | 1,332 suscripciones activas |
-| **Revenue at Risk** | $498,513 USD | 21,367 facturas (open + draft) |
-| **Facturas Open** | $258,568 USD | 10,419 facturas |
-| **Facturas Draft** | $239,945 USD | 10,948 facturas |
-
-### Problemas Actuales
-1. **MRR Ausente**: No hay tarjeta de MRR en el Command Center
-2. **Revenue at Risk Incorrecto**: Usa `failuresToday × $50` (estimación) en lugar del total real de facturas pendientes
-3. **KPI Cards No Clicables**: Las tarjetas son solo visuales, no navegan
-4. **Sin Botón Broadcast**: No hay acceso directo a campañas
-
----
-
-## Cambios a Implementar
-
-### 1. Agregar Tarjeta de MRR
-**Archivo**: `src/components/dashboard/DashboardHome.tsx`
-
-- Crear una nueva tarjeta KPI prominente para "MRR Actual"
-- Usar la misma lógica de `LTVMetrics.tsx`: suma de `subscriptions.amount` donde `status = 'active'`
-- Hacer la tarjeta clicable para navegar a Analytics
+## Arquitectura Actual vs Propuesta
 
 ```text
-+------------------+
-|   💰 MRR         |
-|   $69,009        |
-|   1,332 activas  |
-+------------------+
-```
+┌─────────────────────────────────────────────────────────────────┐
+│                    ARQUITECTURA ACTUAL                          │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  [Botón Unificar]                                               │
+│        │                                                        │
+│        ▼                                                        │
+│  ┌─────────────────┐     ┌─────────────────┐                    │
+│  │ Edge Function   │────▶│ Background Task │                    │
+│  │ bulk-unify      │     │ (waitUntil)     │                    │
+│  └────────┬────────┘     └────────┬────────┘                    │
+│           │                       │                             │
+│           ▼                       ▼                             │
+│  ┌─────────────────┐     ┌─────────────────┐                    │
+│  │ Respuesta       │     │ Procesa 500/    │                    │
+│  │ Inmediata       │     │ iteración       │────▶ TIMEOUT       │
+│  └─────────────────┘     └─────────────────┘      después de    │
+│                                                   ~2 horas      │
+└─────────────────────────────────────────────────────────────────┘
 
-### 2. Corregir Revenue at Risk
-**Archivo**: `src/components/dashboard/DashboardHome.tsx`
-
-Reemplazar la lógica actual:
-```typescript
-// ANTES (incorrecto)
-const atRiskAmount = kpis.failuresToday * 50;
-```
-
-Por una consulta real a facturas pendientes:
-```typescript
-// DESPUÉS (correcto)
-const { data: pendingInvoices } = await supabase
-  .from('invoices')
-  .select('amount_due')
-  .in('status', ['open', 'past_due']);
-const revenueAtRisk = pendingInvoices.reduce((sum, inv) => sum + inv.amount_due, 0) / 100;
-```
-
-Mostrar en rojo prominente con navegación a Recovery.
-
-### 3. Navegación Activa en KPI Cards
-**Archivo**: `src/components/dashboard/DashboardHome.tsx`
-
-Agregar `onClick` handlers a cada tarjeta:
-
-| Tarjeta | Navega a |
-|---------|----------|
-| MRR | Analytics |
-| Ventas | Movimientos |
-| Nuevos Clientes | Clientes |
-| Fallos / Riesgo | Recovery |
-| Trials | Suscripciones |
-| Cancelaciones | Suscripciones |
-
-### 4. Botón de Broadcast (Quick Action)
-**Archivo**: `src/components/dashboard/DashboardHome.tsx`
-
-Agregar botón en el header junto a "Sync All":
-```text
-[ 📢 Broadcast ] [ 🔄 Sync All ▾ ]
-```
-
-El botón navegará a la sección "campaigns" (Campaign Control Center).
-
----
-
-## Detalles Técnicos
-
-### Hook Modificado: useDailyKPIs
-Se agregará una nueva query para obtener el MRR y Revenue at Risk en tiempo real:
-
-```typescript
-// Agregar a useDailyKPIs o crear hook separado
-const fetchRevenueMetrics = async () => {
-  const [mrrResult, atRiskResult] = await Promise.all([
-    supabase.from('subscriptions')
-      .select('amount')
-      .eq('status', 'active'),
-    supabase.from('invoices')
-      .select('amount_due')
-      .in('status', ['open', 'past_due'])
-  ]);
-  
-  return {
-    mrr: mrrResult.data?.reduce((sum, s) => sum + s.amount, 0) / 100,
-    revenueAtRisk: atRiskResult.data?.reduce((sum, i) => sum + i.amount_due, 0) / 100
-  };
-};
-```
-
-### UI de Tarjetas Clicables
-Agregar cursor pointer y visual feedback:
-```typescript
-<div
-  onClick={() => onNavigate?.('analytics')}
-  className="cursor-pointer hover:ring-2 hover:ring-primary/50 transition-all"
->
-  {/* KPI content */}
-</div>
-```
-
-### Estructura Final del Grid de KPIs
-```text
-[ MRR ][ Ventas ][ Nuevos ][ Trials ][ T→Paid ][ Renovs ][ Fallos ][ Cancel ]
-  ↓        ↓        ↓         ↓         ↓         ↓         ↓         ↓
-Analytics  Movs   Clients   Subs      Subs      Subs    Recovery   Subs
+┌─────────────────────────────────────────────────────────────────┐
+│                    ARQUITECTURA PROPUESTA                       │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  [Botón Unificar]                                               │
+│        │                                                        │
+│        ▼                                                        │
+│  ┌─────────────────┐                                            │
+│  │ Edge Function   │──┐                                         │
+│  │ (Chunk 1)       │  │    Auto-encadenamiento                  │
+│  └─────────────────┘  │                                         │
+│                       ▼                                         │
+│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐  │
+│  │ Chunk 2         │─▶│ Chunk 3         │─▶│ Chunk N         │  │
+│  │ 10,000 records  │  │ 10,000 records  │  │ (hasta fin)     │  │
+│  └─────────────────┘  └─────────────────┘  └─────────────────┘  │
+│                                                                 │
+│  Cada chunk:                                                    │
+│  - Persiste checkpoint en sync_runs                             │
+│  - Auto-invoca siguiente chunk via fetch()                      │
+│  - Se ejecuta en <50 segundos para evitar timeout               │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## Archivos a Modificar
+## Fases de Implementación
 
-| Archivo | Cambios |
-|---------|---------|
-| `src/components/dashboard/DashboardHome.tsx` | Agregar MRR card, corregir Revenue at Risk, hacer cards clicables, agregar botón Broadcast |
-| `src/hooks/useDailyKPIs.ts` | Agregar queries para MRR y Revenue at Risk real |
+### Fase 1: Arreglo Inmediato del RPC (5 min)
+
+**Problema**: `get_staging_counts_fast()` no distingue entre procesados y no-procesados.
+
+**Solución**: Crear nueva función que haga conteos exactos pero con límites de tiempo.
+
+```sql
+CREATE OR REPLACE FUNCTION public.get_staging_counts_accurate()
+RETURNS JSON
+LANGUAGE SQL
+STABLE
+SECURITY DEFINER
+SET statement_timeout = '5s'
+AS $$
+  SELECT json_build_object(
+    'ghl_total', (SELECT COUNT(*) FROM ghl_contacts_raw),
+    'ghl_unprocessed', (SELECT COUNT(*) FROM ghl_contacts_raw WHERE processed_at IS NULL),
+    'manychat_total', (SELECT COUNT(*) FROM manychat_contacts_raw),
+    'manychat_unprocessed', (SELECT COUNT(*) FROM manychat_contacts_raw WHERE processed_at IS NULL),
+    'csv_total', (SELECT COUNT(*) FROM csv_imports_raw),
+    'csv_staged', (SELECT COUNT(*) FROM csv_imports_raw WHERE processing_status IN ('staged', 'pending')),
+    'clients_total', (SELECT COUNT(*) FROM clients),
+    'transactions_total', (SELECT COUNT(*) FROM transactions)
+  );
+$$;
+```
+
+---
+
+### Fase 2: Optimización del Edge Function (20 min)
+
+**Cambios en `bulk-unify-contacts/index.ts`**:
+
+1. **Aumentar batch size** de 500 → 2,000 por fuente
+2. **Implementar auto-encadenamiento** (como ya existe en `fetch-stripe`)
+3. **Reducir delay entre batches** de 20ms → 5ms
+4. **Añadir tiempo máximo por invocación** de 45 segundos
+5. **Guardar cursor de progreso** para permitir resume
+
+```typescript
+// Patrón de auto-encadenamiento
+const MAX_EXECUTION_TIME_MS = 45_000; // 45 segundos max
+
+while (hasMoreWork && (Date.now() - startTime) < MAX_EXECUTION_TIME_MS) {
+  // Procesar batches...
+}
+
+if (hasMoreWork) {
+  // Auto-invoke next chunk
+  EdgeRuntime.waitUntil(
+    fetch(`${supabaseUrl}/functions/v1/bulk-unify-contacts`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${supabaseServiceKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ 
+        syncRunId, 
+        cursor: lastProcessedId,
+        sources,
+        batchSize 
+      })
+    })
+  );
+}
+```
+
+---
+
+### Fase 3: UI de Progreso Mejorada (15 min)
+
+**Cambios en `SyncOrchestrator.tsx`**:
+
+1. **Mostrar ETA realista** basado en velocidad actual
+2. **Polling adaptativo**: 5s cuando hay actividad, 15s cuando está estancado
+3. **Botón "Reanudar"** visible si el último sync falló pero hay progreso guardado
+4. **Indicador de chunks**: "Procesando chunk 4 de ~80"
+
+```tsx
+// Polling adaptativo
+const pollInterval = unifyStats.rate.includes('0/s') ? 15000 : 5000;
+setTimeout(pollProgress, pollInterval);
+
+// Botón de Resume
+{lastFailedSync && (
+  <Button onClick={resumeUnification}>
+    <Play className="h-4 w-4 mr-2" />
+    Reanudar desde {lastFailedSync.total_fetched.toLocaleString()}
+  </Button>
+)}
+```
+
+---
+
+### Fase 4: Índices de Base de Datos (10 min)
+
+**Crear índices parciales** para acelerar las queries de conteo:
+
+```sql
+-- Índice parcial para GHL sin procesar (más rápido que escaneo completo)
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_ghl_raw_unprocessed 
+ON ghl_contacts_raw (id) 
+WHERE processed_at IS NULL;
+
+-- Índice parcial para CSV pendientes
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_csv_raw_staged 
+ON csv_imports_raw (id) 
+WHERE processing_status IN ('staged', 'pending');
+```
+
+---
+
+## Estimaciones de Tiempo con Optimizaciones
+
+| Escenario | Batch Size | Velocidad | Tiempo para 800k |
+|-----------|------------|-----------|------------------|
+| **Actual** | 500 | ~50/s | ~4.5 horas |
+| **Optimizado** | 2,000 | ~200/s | ~1.1 horas |
+| **Con índices** | 2,000 | ~400/s | ~35 min |
+
+---
+
+## Sección Técnica: Archivos a Modificar
+
+1. **Nueva migración SQL**:
+   - `supabase/migrations/XXX_fix_staging_counts_accurate.sql`
+   - Crea RPC con conteos exactos + índices parciales
+
+2. **Edge Function**:
+   - `supabase/functions/bulk-unify-contacts/index.ts`
+   - Auto-encadenamiento + batch size aumentado
+
+3. **Frontend**:
+   - `src/components/dashboard/SyncOrchestrator.tsx`
+   - Polling adaptativo + botón resume + ETA mejorado
 
 ---
 
 ## Resultado Esperado
 
-Después de implementar:
-
-1. **MRR visible** mostrando `$69,009` con 1,332 suscripciones activas
-2. **Revenue at Risk real** mostrando `~$258k-498k` (según filtro open/draft) en rojo
-3. **Navegación con un clic** desde cualquier KPI a su sección detallada
-4. **Acceso directo a Broadcast** para enviar campañas rápidas
-
-El Command Center pasará de **🟡 Desactualizado** a **🟢 Torre de Control**.
+- **Antes**: "Unificar Todos" → UI parece congelada → Falla después de 2h
+- **Después**: "Unificar Todos" → Progreso visible cada 5s → Completa en ~35-60 min → Si falla, puede reanudar
