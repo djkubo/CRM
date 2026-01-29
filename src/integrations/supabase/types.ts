@@ -107,6 +107,54 @@ export type Database = {
         }
         Relationships: []
       }
+      automation_flows: {
+        Row: {
+          created_at: string | null
+          description: string | null
+          edges_json: Json
+          id: string
+          is_active: boolean | null
+          is_draft: boolean | null
+          name: string
+          nodes_json: Json
+          successful_executions: number | null
+          total_executions: number | null
+          trigger_config: Json | null
+          trigger_type: string
+          updated_at: string | null
+        }
+        Insert: {
+          created_at?: string | null
+          description?: string | null
+          edges_json?: Json
+          id?: string
+          is_active?: boolean | null
+          is_draft?: boolean | null
+          name: string
+          nodes_json?: Json
+          successful_executions?: number | null
+          total_executions?: number | null
+          trigger_config?: Json | null
+          trigger_type: string
+          updated_at?: string | null
+        }
+        Update: {
+          created_at?: string | null
+          description?: string | null
+          edges_json?: Json
+          id?: string
+          is_active?: boolean | null
+          is_draft?: boolean | null
+          name?: string
+          nodes_json?: Json
+          successful_executions?: number | null
+          total_executions?: number | null
+          trigger_config?: Json | null
+          trigger_type?: string
+          updated_at?: string | null
+        }
+        Relationships: []
+      }
       balance_snapshots: {
         Row: {
           available_amount: number | null
@@ -941,6 +989,60 @@ export type Database = {
           updated_at_external?: string | null
         }
         Relationships: []
+      }
+      flow_executions: {
+        Row: {
+          client_id: string | null
+          completed_at: string | null
+          current_node_id: string | null
+          error_message: string | null
+          execution_log: Json | null
+          flow_id: string | null
+          id: string
+          started_at: string | null
+          status: string | null
+          trigger_event: string
+        }
+        Insert: {
+          client_id?: string | null
+          completed_at?: string | null
+          current_node_id?: string | null
+          error_message?: string | null
+          execution_log?: Json | null
+          flow_id?: string | null
+          id?: string
+          started_at?: string | null
+          status?: string | null
+          trigger_event: string
+        }
+        Update: {
+          client_id?: string | null
+          completed_at?: string | null
+          current_node_id?: string | null
+          error_message?: string | null
+          execution_log?: Json | null
+          flow_id?: string | null
+          id?: string
+          started_at?: string | null
+          status?: string | null
+          trigger_event?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "flow_executions_client_id_fkey"
+            columns: ["client_id"]
+            isOneToOne: false
+            referencedRelation: "clients"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "flow_executions_flow_id_fkey"
+            columns: ["flow_id"]
+            isOneToOne: false
+            referencedRelation: "automation_flows"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       ghl_contacts_raw: {
         Row: {
