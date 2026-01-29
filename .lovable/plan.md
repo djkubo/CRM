@@ -1,145 +1,291 @@
 
-# Plan: Conectar los Toggles de Configuración a las Edge Functions
+
+# Plan: Persistencia de Estados de Recuperación (Fix Amnesia)
 
 ## Resumen Ejecutivo
-Implementaremos "Kill Switches" reales en las Edge Functions críticas para que respeten la configuración guardada en la tabla `system_settings`. Actualmente, los toggles del panel de configuración son puramente visuales y no afectan el comportamiento del sistema.
+Actualmente, el estado de recuperación de cada deudor (`pending`, `contacted`, `paid`, `lost`) se almacena en un `useState` local en `RecoveryPage.tsx`. Al recargar la página, todos los estados se pierden y los clientes vuelven a aparecer como "Pendientes". Implementaremos persistencia real en la base de datos para que el progreso de seguimiento se conserve permanentemente.
 
-## Funciones a Modificar
+## Análisis del Problema
 
-### 1. `automated-dunning/index.ts` - Kill Switch para Auto-Dunning
-**Ubicación**: `supabase/functions/automated-dunning/index.ts`
-
-**Cambio**: Al inicio de la función (después de crear el cliente Supabase), consultar la tabla `system_settings` buscando la key `auto_dunning_enabled`. Si el valor es `false`, detener la ejecución inmediatamente.
-
-**Lógica**:
+### Estado Actual
 ```text
-1. Consultar: SELECT value FROM system_settings WHERE key = 'auto_dunning_enabled'
-2. Si value === 'false' → retornar JSON: { skipped: true, reason: "Auto-dunning is disabled globally" }
-3. Registrar en logs: "⏸️ Auto-dunning disabled globally, skipping execution"
+┌───────────────────────────────────────────────────────────────┐
+│                  RecoveryPage.tsx                             │
+├───────────────────────────────────────────────────────────────┤
+│  const [stages, setStages] = useState({})                     │
+│       ↑                                                       │
+│   Vacío al cargar → Todos aparecen como 'pending'             │
+│                                                               │
+│  setStage(email, stage):                                      │
+│    1. ✅ Actualiza estado local                               │
+│    2. ✅ Registra evento en client_events                     │
+│    3. ❌ NO guarda en clients table                           │
+│    4. ❌ NO se recupera al recargar                           │
+└───────────────────────────────────────────────────────────────┘
 ```
 
----
-
-### 2. `fetch-stripe/index.ts` - Kill Switch para Sync Pausado
-**Ubicación**: `supabase/functions/fetch-stripe/index.ts`
-
-**Cambio**: Después de la verificación de autenticación y antes de iniciar el sync, consultar `sync_paused`. Si es `true`, detener la ejecución.
-
-**Lógica**:
-```text
-1. Consultar: SELECT value FROM system_settings WHERE key = 'sync_paused'
-2. Si value === 'true' → retornar JSON: { success: false, status: 'skipped', reason: "Sync is paused globally" }
-3. Para continuaciones automáticas (_continuation=true), también verificar el toggle
-```
+### Solución Propuesta
+Almacenaremos `recovery_status` dentro del campo JSONB `customer_metadata` de la tabla `clients`, ya que:
+- La tabla `clients` ya tiene campos JSONB (`customer_metadata`)
+- No requiere migración de esquema (menos riesgoso)
+- El campo ya se usa para datos adicionales de clientes
 
 ---
 
-### 3. `fetch-paypal/index.ts` - Kill Switch para Sync Pausado
-**Ubicación**: `supabase/functions/fetch-paypal/index.ts`
+## Cambios a Implementar
 
-**Cambio**: Misma lógica que fetch-stripe, verificar `sync_paused` antes de iniciar.
+### 1. Modificar `useMetrics.ts` - Incluir `recovery_status` en la consulta
 
----
+**Archivo**: `src/hooks/useMetrics.ts`
 
-### 4. `recover-revenue/index.ts` - Kill Switch para Auto-Dunning
-**Ubicación**: `supabase/functions/recover-revenue/index.ts`
+**Cambio**: Al consultar los clientes para el `recoveryList`, incluir el campo `customer_metadata` para extraer el `recovery_status` guardado.
 
-**Cambio**: Esta función intenta cobrar facturas automáticamente. Debe respetar `auto_dunning_enabled` ya que es parte del sistema de dunning.
-
----
-
-### 5. `sync-command-center/index.ts` - Kill Switch para Sync Pausado
-**Ubicación**: `supabase/functions/sync-command-center/index.ts`
-
-**Cambio**: El orquestador maestro debe verificar `sync_paused` antes de invocar cualquier sync.
-
----
-
-## Implementación Técnica
-
-### Helper Function Reutilizable
-Crearemos una función helper que puede ser copiada en cada Edge Function:
-
+**Antes (líneas 159-162)**:
 ```typescript
-async function getSystemSetting(
-  supabase: SupabaseClient, 
-  key: string
-): Promise<string | null> {
-  const { data } = await supabase
-    .from('system_settings')
-    .select('value')
-    .eq('key', key)
-    .single();
-  return data?.value ?? null;
-}
-
-async function isFeatureEnabled(
-  supabase: SupabaseClient, 
-  key: string, 
-  defaultValue: boolean = true
-): Promise<boolean> {
-  const value = await getSystemSetting(supabase, key);
-  if (value === null) return defaultValue;
-  return value === 'true';
-}
+const { data: clients } = await supabase
+  .from('clients')
+  .select('email, full_name, phone')
+  .in('email', failedEmails.slice(0, 100));
 ```
 
-### Patrón de Respuesta para Funciones Deshabilitadas
-Todas las funciones deshabilitadas retornarán un JSON consistente:
-
-```json
-{
-  "success": true,
-  "status": "skipped",
-  "skipped": true,
-  "reason": "Feature disabled: auto_dunning_enabled is OFF"
-}
+**Después**:
+```typescript
+const { data: clients } = await supabase
+  .from('clients')
+  .select('email, full_name, phone, customer_metadata')
+  .in('email', failedEmails.slice(0, 100));
 ```
 
-Esto permite que el frontend detecte que la función no falló, sino que fue omitida intencionalmente.
+**Actualizar interfaz `recoveryList`** para incluir `recovery_status`:
+```typescript
+recoveryList: Array<{
+  email: string;
+  full_name: string | null;
+  phone: string | null;
+  amount: number;
+  source: string;
+  recovery_status?: 'pending' | 'contacted' | 'paid' | 'lost'; // NUEVO
+}>;
+```
+
+---
+
+### 2. Modificar `RecoveryPage.tsx` - Lectura (Fetch)
+
+**Archivo**: `src/components/dashboard/RecoveryPage.tsx`
+
+**Cambio**: Al cargar la página, inicializar el estado `stages` con los valores guardados en `recoveryList[].recovery_status`.
+
+**Agregar `useEffect` para cargar estados** (después de línea 68):
+```typescript
+// Initialize stages from saved recovery_status in database
+useEffect(() => {
+  if (metrics.recoveryList?.length) {
+    const savedStages: Record<string, RecoveryStage> = {};
+    for (const client of metrics.recoveryList) {
+      if (client.recovery_status) {
+        savedStages[client.email] = client.recovery_status;
+      }
+    }
+    // Only update if we have saved stages to prevent overwriting local changes
+    if (Object.keys(savedStages).length > 0) {
+      setStages(prev => ({ ...savedStages, ...prev }));
+    }
+  }
+}, [metrics.recoveryList]);
+```
+
+---
+
+### 3. Modificar `RecoveryPage.tsx` - Escritura (Update)
+
+**Archivo**: `src/components/dashboard/RecoveryPage.tsx`
+
+**Cambio**: Modificar la función `setStage` para:
+1. Actualizar el estado local (ya lo hace)
+2. Guardar `recovery_status` en `customer_metadata` JSONB de la tabla `clients`
+3. Mostrar indicador de carga y toast de confirmación
+
+**Antes (función `setStage`, líneas 105-127)**:
+```typescript
+const setStage = async (email: string, stage: RecoveryStage) => {
+  setStages(prev => ({ ...prev, [email]: stage }));
+  
+  try {
+    const { data: client } = await supabase
+      .from('clients')
+      .select('id')
+      .eq('email', email)
+      .single();
+    
+    if (client) {
+      await supabase.from('client_events').insert({...});
+    }
+  } catch (e) {...}
+  
+  toast.success(`Estado actualizado a: ${stageConfig[stage].label}`);
+};
+```
+
+**Después**:
+```typescript
+const [savingStage, setSavingStage] = useState<string | null>(null);
+
+const setStage = async (email: string, stage: RecoveryStage) => {
+  // Optimistic update
+  setStages(prev => ({ ...prev, [email]: stage }));
+  setSavingStage(email);
+  
+  try {
+    // Fetch client and current metadata
+    const { data: client } = await supabase
+      .from('clients')
+      .select('id, customer_metadata')
+      .eq('email', email)
+      .single();
+    
+    if (client) {
+      // Merge recovery_status into existing metadata
+      const currentMetadata = (client.customer_metadata as Record<string, unknown>) || {};
+      const updatedMetadata = {
+        ...currentMetadata,
+        recovery_status: stage,
+        recovery_status_updated_at: new Date().toISOString(),
+      };
+      
+      // Save to database
+      const { error } = await supabase
+        .from('clients')
+        .update({ customer_metadata: updatedMetadata })
+        .eq('id', client.id);
+      
+      if (error) throw error;
+      
+      // Log event (existing logic)
+      await supabase.from('client_events').insert({
+        client_id: client.id,
+        event_type: 'custom',
+        metadata: { action: 'recovery_stage_change', stage, timestamp: new Date().toISOString() },
+      });
+      
+      toast.success(`Estado guardado: ${stageConfig[stage].label}`);
+    } else {
+      toast.warning('Cliente no encontrado en la base de datos');
+    }
+  } catch (e) {
+    console.error('Error saving recovery status:', e);
+    // Revert optimistic update on error
+    setStages(prev => {
+      const newStages = { ...prev };
+      delete newStages[email];
+      return newStages;
+    });
+    toast.error('Error guardando el estado');
+  } finally {
+    setSavingStage(null);
+  }
+};
+```
+
+---
+
+### 4. UI: Indicador de Guardado
+
+**Archivo**: `src/components/dashboard/RecoveryPage.tsx`
+
+**Cambio**: Mostrar un pequeño `Loader2` cuando se está guardando el estado de un cliente específico.
+
+**En el Badge del dropdown (líneas ~421-436)**:
+```typescript
+<Badge 
+  variant="outline" 
+  className={`cursor-pointer text-[10px] px-1 h-4 shrink-0 ${config.color}`}
+>
+  {savingStage === client.email ? (
+    <Loader2 className="h-2 w-2 mr-0.5 animate-spin" />
+  ) : (
+    <StageIcon className="h-2 w-2 mr-0.5" />
+  )}
+  {config.label}
+</Badge>
+```
+
+---
+
+## Flujo de Datos Post-Implementación
+
+```text
+┌─────────────────────────────────────────────────────────────────────┐
+│                     FLUJO DE PERSISTENCIA                           │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  1. CARGA INICIAL (Fetch)                                           │
+│     ┌───────────────────┐                                           │
+│     │   useMetrics()    │                                           │
+│     │   fetchMetrics()  │                                           │
+│     └─────────┬─────────┘                                           │
+│               │                                                     │
+│               ▼                                                     │
+│     SELECT email, full_name, phone, customer_metadata               │
+│     FROM clients WHERE email IN (failed_emails)                     │
+│               │                                                     │
+│               ▼                                                     │
+│     Extrae recovery_status de customer_metadata                     │
+│               │                                                     │
+│               ▼                                                     │
+│     RecoveryPage: setStages({ email: status, ... })                 │
+│                                                                     │
+│  ─────────────────────────────────────────────────────────────────  │
+│                                                                     │
+│  2. CAMBIO DE ESTADO (Update)                                       │
+│     ┌───────────────────┐                                           │
+│     │ Usuario cambia    │                                           │
+│     │ estado a "Pagó"   │                                           │
+│     └─────────┬─────────┘                                           │
+│               │                                                     │
+│               ▼                                                     │
+│     setStage(email, 'paid')                                         │
+│        ├─ Optimistic: setStages(local)                              │
+│        ├─ DB: UPDATE clients SET customer_metadata = {...}          │
+│        ├─ Log: INSERT INTO client_events                            │
+│        └─ Toast: "Estado guardado: Pagó"                            │
+│                                                                     │
+│  ─────────────────────────────────────────────────────────────────  │
+│                                                                     │
+│  3. RECARGA DE PÁGINA                                               │
+│     ┌───────────────────┐                                           │
+│     │  Usuario recarga  │  →  useMetrics() →  Estados preservados   │
+│     │     (F5/Refresh)  │                                           │
+│     └───────────────────┘                                           │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
 
 ---
 
 ## Archivos a Modificar
 
-| Archivo | Toggle que Respeta | Línea de Inserción |
-|---------|-------------------|-------------------|
-| `automated-dunning/index.ts` | `auto_dunning_enabled` | ~Línea 48 (después de crear supabase client) |
-| `fetch-stripe/index.ts` | `sync_paused` | ~Línea 488 (después de crear supabase client) |
-| `fetch-paypal/index.ts` | `sync_paused` | ~Línea 309 (después de crear supabase client) |
-| `recover-revenue/index.ts` | `auto_dunning_enabled` | ~Línea 278 (después de crear supabase client) |
-| `sync-command-center/index.ts` | `sync_paused` | ~Línea 167 (después de autenticación) |
+| Archivo | Cambio |
+|---------|--------|
+| `src/hooks/useMetrics.ts` | Incluir `customer_metadata` en query, extraer `recovery_status` |
+| `src/components/dashboard/RecoveryPage.tsx` | Cargar estados guardados, persistir cambios a DB |
 
 ---
 
-## Comportamiento Esperado Post-Implementación
+## Consideraciones Técnicas
 
-### Escenario: Usuario desactiva "Auto-Dunning" en el Panel
-1. Toggle se guarda en `system_settings` como `auto_dunning_enabled = 'false'`
-2. `automated-dunning` Edge Function es invocada (vía cron o manualmente)
-3. Función consulta `system_settings` → detecta que está deshabilitada
-4. Retorna `{ skipped: true, reason: "Auto-dunning is disabled globally" }`
-5. No se envían mensajes de cobro automático
-
-### Escenario: Usuario activa "Pausar Sincronización"
-1. Toggle se guarda como `sync_paused = 'true'`
-2. Usuario intenta sincronizar Stripe desde el UI
-3. `fetch-stripe` consulta `system_settings` → detecta pausa activa
-4. Retorna `{ status: 'skipped', reason: "Sync is paused globally" }`
-5. UI muestra mensaje informativo en lugar de error
-
----
-
-## Consideraciones de Seguridad
-
-- Los toggles solo pueden ser modificados por usuarios autenticados con permisos de admin
-- Las Edge Functions usan `SUPABASE_SERVICE_ROLE_KEY` para leer la configuración, garantizando acceso
-- El patrón es "fail-open" por defecto (si no existe la configuración, se asume habilitado) para evitar bloquear funcionalidad crítica
+1. **Deep Merge de Metadata**: Usamos spread operator para preservar otros datos en `customer_metadata`
+2. **Optimistic Updates**: UI se actualiza inmediatamente, revierte si falla la DB
+3. **Compatibilidad**: Clientes sin `recovery_status` guardado aparecen como `pending` (comportamiento actual)
+4. **No requiere migración**: Usa campo JSONB existente
 
 ---
 
 ## Testing Post-Implementación
 
-1. **Test Manual**: Desactivar cada toggle y verificar que las funciones retornen `skipped: true`
-2. **Test de Logs**: Verificar que los logs de Edge Functions muestren el mensaje de "Feature disabled"
-3. **Test de UI**: Confirmar que el UI maneja correctamente las respuestas `skipped`
+1. Cambiar el estado de un deudor de "Pendiente" a "Contactado"
+2. Verificar que aparece el toast "Estado guardado: Contactado"
+3. Recargar la página (F5)
+4. Confirmar que el deudor sigue apareciendo como "Contactado"
+5. Verificar en la base de datos que `customer_metadata.recovery_status = 'contacted'`
+
