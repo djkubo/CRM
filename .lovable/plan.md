@@ -1,152 +1,214 @@
 
+# Plan: Rediseño Visual Estilo VRP (Stripe Dark Mode)
 
-# Plan: Actualización del Motor de IA a GPT-5.2 / Lovable AI
+## Resumen del Problema
 
-## Resumen del Análisis
+La página de "Importar / Sincronizar" tiene un **arcoíris de colores** que rompe la identidad visual:
 
-Se escanearon todas las Edge Functions en `supabase/functions/`. Se identificaron **2 funciones que usan IA**:
+| Elemento | Color Actual | Problema |
+|----------|-------------|----------|
+| Botón "Últimas 24h" | Verde esmeralda | Choca con VRP Red |
+| Botón "Todo Historial" Stripe | Morado | Fuera de paleta |
+| Botón "Todo Historial" PayPal | Amarillo | Fuera de paleta |
+| Botón ManyChat | Azul | Fuera de paleta |
+| Botón GHL | Verde | Fuera de paleta |
+| Iconos de servicios | Colores variados | Sin consistencia |
+| Barras de progreso | Colores por servicio | Sin unidad |
 
-| Función | Motor Actual | API Actual | Temperatura | Estado |
-|---------|-------------|------------|-------------|--------|
-| `analyze-business` | `gpt-4o` | OpenAI directo | 0.7 | Requiere migración |
-| `generate-chat-summary` | `gemini-2.5-flash` | Lovable AI Gateway | 0.7 | Ya modernizado |
+## Solución: Paleta Monocromática (Zinc + VRP Red)
 
-Las demás funciones (`vrp-brain-api`, `execute-flow`, `automated-dunning`, `recover-revenue`, `send-broadcast`, etc.) **no usan modelos de IA** - son funciones de integración, procesamiento de datos o webhooks.
+### Reglas de Diseño Estrictas
 
----
-
-## Cambios a Implementar
-
-### 1. Migrar `analyze-business` a Lovable AI + GPT-5.2
-
-Cambios en el archivo `supabase/functions/analyze-business/index.ts`:
-
-**Antes:**
-```typescript
-const openaiApiKey = Deno.env.get('OPENAI_API_KEY');
-// ...
-const aiResponse = await fetch('https://api.openai.com/v1/chat/completions', {
-  headers: { 'Authorization': `Bearer ${openaiApiKey}` },
-  body: JSON.stringify({
-    model: 'gpt-4o',
-    temperature: 0.7,
-    // ...
-  })
-});
+```text
+┌─────────────────────────────────────────────────────────────┐
+│  JERARQUÍA DE COLORES VRP                                   │
+├─────────────────────────────────────────────────────────────┤
+│  1. Fondo General    → #09090b (zinc-950)                   │
+│  2. Tarjetas         → #18181b (zinc-900) + border zinc-800 │
+│  3. Botones Primarios→ #AA0601 (VRP Red) hover: #8a0501     │
+│  4. Botones Secundarios → transparent + border-zinc-700     │
+│  5. Texto Principal  → #fafafa (white)                      │
+│  6. Texto Secundario → #71717a (zinc-500)                   │
+│  7. Progress Bar     → track: zinc-800, fill: VRP Red       │
+└─────────────────────────────────────────────────────────────┘
 ```
-
-**Después:**
-```typescript
-const lovableApiKey = Deno.env.get('LOVABLE_API_KEY');
-// ...
-const aiResponse = await fetch('https://ai.gateway.lovable.dev/v1/chat/completions', {
-  headers: { 'Authorization': `Bearer ${lovableApiKey}` },
-  body: JSON.stringify({
-    model: 'openai/gpt-5.2',
-    temperature: 0.2,  // Más preciso para análisis de datos
-    // ...
-  })
-});
-```
-
-### 2. Actualizar `generate-chat-summary` a GPT-5.2
-
-Esta función ya usa Lovable AI Gateway. Solo cambiaremos el modelo:
-
-**Antes:**
-```typescript
-model: "google/gemini-2.5-flash"
-```
-
-**Después:**
-```typescript
-model: "openai/gpt-5.2"
-```
-
-### 3. Ajustar Temperaturas según Función
-
-| Función | Propósito | Temperatura Recomendada |
-|---------|-----------|------------------------|
-| `analyze-business` | Análisis de datos/métricas | 0.2 (preciso) |
-| `generate-chat-summary` | Inteligencia de ventas | 0.3 (balance precisión/creatividad) |
-
-### 4. Eliminar instrucciones manuales de CoT
-
-El modelo GPT-5.2 razona mejor de forma nativa. Se eliminarán instrucciones como:
-- "piensa paso a paso"
-- "analiza primero... luego..."
-
-Los prompts se simplificarán manteniendo solo las instrucciones esenciales.
-
----
-
-## Detalle Técnico de Cambios por Archivo
-
-### `supabase/functions/analyze-business/index.ts`
-
-| Línea | Cambio |
-|-------|--------|
-| 75 | Cambiar `OPENAI_API_KEY` → `LOVABLE_API_KEY` |
-| 77-79 | Actualizar mensaje de error |
-| 337 | Cambiar URL de API a Lovable Gateway |
-| 340 | Cambiar header de autorización |
-| 344 | Cambiar modelo a `openai/gpt-5.2` |
-| 352 | Cambiar temperatura a `0.2` |
-| 357-371 | Agregar manejo de errores 402 (Payment Required) |
-
-### `supabase/functions/generate-chat-summary/index.ts`
-
-| Línea | Cambio |
-|-------|--------|
-| 358 | Cambiar modelo a `openai/gpt-5.2` |
-| 365 | Cambiar temperatura a `0.3` |
-| 368-375 | Agregar manejo de error 402 |
-
----
-
-## Beneficios Esperados
-
-1. **Análisis más profundo**: GPT-5.2 tiene razonamiento superior para métricas complejas
-2. **Mejor detección de patrones**: En análisis de ventas y objeciones
-3. **Respuestas más estructuradas**: Mejor formato JSON sin errores
-4. **Consistencia**: Ambas funciones usarán el mismo proveedor (Lovable AI)
-5. **Sin costo adicional de API key**: LOVABLE_API_KEY ya está configurado
-
----
-
-## Verificación de Secretos
-
-| Secret | Estado | Uso |
-|--------|--------|-----|
-| `LOVABLE_API_KEY` | Configurado | Será usado para ambas funciones |
-| `OPENAI_API_KEY` | Configurado | Ya no será necesario para IA (puede eliminarse) |
-
----
-
-## Funciones Sin IA (No requieren cambios)
-
-Las siguientes funciones fueron analizadas y NO contienen llamadas a modelos de IA:
-
-- `vrp-brain-api` - API Gateway para Python backend
-- `execute-flow` - Ejecutor de flujos de automatización
-- `automated-dunning` - Cobranza automática
-- `recover-revenue` - Recuperación de pagos
-- `send-broadcast` - Envío de difusiones
-- `notify-ghl` - Notificaciones GoHighLevel
-- `send-sms` - Envío de SMS
-- Todas las demás funciones de sync, webhooks e integraciones
 
 ---
 
 ## Archivos a Modificar
 
-```text
-supabase/functions/
-├── analyze-business/
-│   └── index.ts         (migrar OpenAI → Lovable AI + gpt-5.2)
-└── generate-chat-summary/
-    └── index.ts         (actualizar modelo a gpt-5.2)
+### 1. `src/components/dashboard/APISyncPanel.tsx`
+
+**Cambios principales:**
+
+- **Stripe Card** (líneas 918-986):
+  - Icono: cambiar `bg-purple-500/20` → `bg-zinc-800`
+  - Botón "24h": eliminar `border-emerald-500/50 text-emerald-400 hover:bg-emerald-500/10` → `border-zinc-700 text-white hover:bg-zinc-800`
+  - Botón "Todo Historial": eliminar `bg-purple-600 hover:bg-purple-700` → `bg-primary hover:bg-primary/90`
+
+- **PayPal Card** (líneas 988-1057):
+  - Icono: cambiar `bg-yellow-500/20` → `bg-zinc-800`
+  - Botón "24h": eliminar colores verdes → usar zinc
+  - Botón "Todo Historial": eliminar `bg-yellow-600 hover:bg-yellow-700` → `bg-primary hover:bg-primary/90`
+
+- **Facturas Card** (líneas 1059-1113):
+  - Borde: eliminar `border-cyan-500/30` → `border-zinc-800`
+  - Icono: cambiar `bg-cyan-500/20` → `bg-zinc-800`
+  - Botones: colores cyan → zinc/primary
+
+- **ManyChat Card** (líneas 1115-1163):
+  - Borde: eliminar `border-blue-500/30` → `border-zinc-800`
+  - Botón: eliminar `bg-blue-600 hover:bg-blue-700` → `bg-primary hover:bg-primary/90`
+
+- **GHL Card** (líneas 1165-1216):
+  - Borde: eliminar `border-green-500/30` → `border-zinc-800`
+  - Botón: eliminar `bg-green-600 hover:bg-green-700` → `bg-primary hover:bg-primary/90`
+
+- **Sync All Button** (líneas 1218-1235):
+  - Eliminar gradiente `from-purple-600 to-yellow-600` → `bg-primary hover:bg-primary/90`
+
+- **Progress Indicators** (líneas 813-915):
+  - Eliminar fondos de colores (purple, blue, cyan, pink, amber) → usar `bg-zinc-800/50 border-zinc-700`
+  - Texto de estado: color neutro (white) en lugar de colores
+
+### 2. `src/components/dashboard/ImportSyncPage.tsx`
+
+**Cambios:**
+- Icono del header: cambiar `text-cyan-500` → `text-primary` (línea 31)
+
+### 3. `src/components/dashboard/SyncResultsPanel.tsx`
+
+**Cambios:**
+- SOURCE_CONFIG (líneas 52-61): Cambiar colores de iconos a zinc/white
+- Badges de estado: Mantener verde para OK, rojo para Error (son informativos, no decorativos)
+- Kill Switch button: Mantener color amber (es una advertencia)
+
+### 4. `src/components/dashboard/SmartRecoveryCard.tsx`
+
+**Cambios:**
+- Ya usa paleta roja, solo ajustes menores en botones de rango
+- Mantener rojo porque es la sección de "Recovery" (acción crítica)
+
+### 5. `src/components/dashboard/SyncOrchestrator.tsx`
+
+**Cambios principales:**
+- Badges de estado (líneas 758-771): Cambiar azul/verde/naranja → tonos más neutros
+- Cards de servicios (líneas 819-958): 
+  - Botones de sync → `bg-primary` en lugar de colores específicos
+- Progress bar → usar colores neutros
+
+### 6. `src/components/ui/progress.tsx`
+
+**Cambios:**
+- Actualizar el indicador para usar el color VRP Red por defecto
+- Track: `bg-zinc-800` (oscuro pero visible)
+- Fill: `bg-primary` (VRP Red)
+
+---
+
+## Detalle de Cambios por Componente
+
+### APISyncPanel.tsx - Botones Estandarizados
+
+**Antes (ejemplo Stripe):**
+```tsx
+<Button className="gap-2 border-emerald-500/50 text-emerald-400 hover:bg-emerald-500/10">
+<Button className="gap-2 bg-purple-600 hover:bg-purple-700">
 ```
 
-**Total: 2 archivos a modificar**
+**Después:**
+```tsx
+<Button variant="outline" className="gap-2 border-zinc-700 text-white hover:bg-zinc-800">
+<Button className="gap-2 bg-primary hover:bg-primary/90">
+```
 
+### APISyncPanel.tsx - Tarjetas de Servicios
+
+**Antes:**
+```tsx
+<div className="p-4 bg-background rounded-lg border border-green-500/30 space-y-3">
+  <div className="w-10 h-10 rounded-lg bg-green-500/20 flex items-center justify-center">
+```
+
+**Después:**
+```tsx
+<div className="p-4 bg-card rounded-lg border border-zinc-800 space-y-3">
+  <div className="w-10 h-10 rounded-lg bg-zinc-800 flex items-center justify-center">
+```
+
+### Progress Indicators
+
+**Antes:**
+```tsx
+<div className="p-3 bg-purple-500/10 rounded-lg border border-purple-500/30">
+  <span className="text-purple-400">Stripe: ...</span>
+```
+
+**Después:**
+```tsx
+<div className="p-3 bg-zinc-800/50 rounded-lg border border-zinc-700">
+  <span className="text-white">Stripe: ...</span>
+```
+
+### SyncOrchestrator.tsx - Cards de Fase 1
+
+**Antes:**
+```tsx
+<Button className="w-full mt-2 bg-orange-500 hover:bg-orange-600">
+```
+
+**Después:**
+```tsx
+<Button className="w-full mt-2 bg-primary hover:bg-primary/90">
+```
+
+---
+
+## Resultado Visual Esperado
+
+```text
+┌────────────────────────────────────────────────────────────────┐
+│  IMPORTAR / SINCRONIZAR                         [zinc-950 bg]  │
+├────────────────────────────────────────────────────────────────┤
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │  [S]  Stripe                              [zinc-900 card] │  │
+│  │       Sincroniza desde Stripe API                         │  │
+│  │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────────┐ │  │
+│  │  │  24h     │ │  31 días │ │  6 meses │ │Todo Historial│ │  │
+│  │  │[zinc-700]│ │[zinc-700]│ │[zinc-700]│ │ [VRP RED]    │ │  │
+│  │  └──────────┘ └──────────┘ └──────────┘ └──────────────┘ │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                                                                 │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │  [P]  PayPal                              [zinc-900 card] │  │
+│  │       ... (mismo patrón)                                  │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                                                                 │
+│  ┌──────────────────────────────────────────────────────────────┐
+│  │  Progress Bar: ████████████░░░░░░░░  [zinc-800 track]       │
+│  │                [VRP RED fill]                                │
+│  └──────────────────────────────────────────────────────────────┘
+└────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Archivos a Modificar (Total: 5)
+
+| Archivo | Cambios |
+|---------|---------|
+| `src/components/dashboard/APISyncPanel.tsx` | ~50 líneas de estilos de botones y cards |
+| `src/components/dashboard/ImportSyncPage.tsx` | 1 línea (color del icono header) |
+| `src/components/dashboard/SyncResultsPanel.tsx` | ~15 líneas (colores de iconos y badges) |
+| `src/components/dashboard/SyncOrchestrator.tsx` | ~30 líneas (botones y badges) |
+| `src/components/ui/progress.tsx` | 2 líneas (track y fill color) |
+
+---
+
+## Principios de la Solución
+
+1. **Monocromático**: Solo zinc (grises) + VRP Red (#AA0601)
+2. **Jerarquía clara**: Botones principales = VRP Red, secundarios = bordes zinc
+3. **Profundidad**: Cards `bg-card` con `border-zinc-800` para separación
+4. **Legibilidad**: Texto siempre blanco o zinc-500 (nunca colores)
+5. **Consistencia**: Todos los servicios con el mismo tratamiento visual
