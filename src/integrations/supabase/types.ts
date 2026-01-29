@@ -14,6 +14,48 @@ export type Database = {
   }
   public: {
     Tables: {
+      agents: {
+        Row: {
+          avatar_url: string | null
+          created_at: string
+          current_chats: number
+          email: string | null
+          id: string
+          last_seen_at: string | null
+          max_chats: number
+          name: string
+          status: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          avatar_url?: string | null
+          created_at?: string
+          current_chats?: number
+          email?: string | null
+          id?: string
+          last_seen_at?: string | null
+          max_chats?: number
+          name: string
+          status?: string
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          avatar_url?: string | null
+          created_at?: string
+          current_chats?: number
+          email?: string | null
+          id?: string
+          last_seen_at?: string | null
+          max_chats?: number
+          name?: string
+          status?: string
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
       ai_insights: {
         Row: {
           created_at: string
@@ -359,6 +401,61 @@ export type Database = {
           },
         ]
       }
+      chat_assignments: {
+        Row: {
+          agent_id: string
+          assigned_at: string
+          assigned_by: string | null
+          conversation_id: string
+          id: string
+          notes: string | null
+          reason: string | null
+          unassigned_at: string | null
+        }
+        Insert: {
+          agent_id: string
+          assigned_at?: string
+          assigned_by?: string | null
+          conversation_id: string
+          id?: string
+          notes?: string | null
+          reason?: string | null
+          unassigned_at?: string | null
+        }
+        Update: {
+          agent_id?: string
+          assigned_at?: string
+          assigned_by?: string | null
+          conversation_id?: string
+          id?: string
+          notes?: string | null
+          reason?: string | null
+          unassigned_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "chat_assignments_agent_id_fkey"
+            columns: ["agent_id"]
+            isOneToOne: false
+            referencedRelation: "agents"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "chat_assignments_assigned_by_fkey"
+            columns: ["assigned_by"]
+            isOneToOne: false
+            referencedRelation: "agents"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "chat_assignments_conversation_id_fkey"
+            columns: ["conversation_id"]
+            isOneToOne: false
+            referencedRelation: "conversations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       chat_events: {
         Row: {
           contact_id: string
@@ -590,6 +687,71 @@ export type Database = {
             columns: ["client_id"]
             isOneToOne: false
             referencedRelation: "clients"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      conversations: {
+        Row: {
+          assigned_agent_id: string | null
+          assigned_at: string | null
+          contact_id: string
+          created_at: string
+          first_message_at: string | null
+          id: string
+          is_bot_active: boolean
+          last_customer_message_at: string | null
+          last_message_at: string | null
+          metadata: Json | null
+          platform: string
+          priority: string
+          status: string
+          tags: string[] | null
+          unread_count: number
+          updated_at: string
+        }
+        Insert: {
+          assigned_agent_id?: string | null
+          assigned_at?: string | null
+          contact_id: string
+          created_at?: string
+          first_message_at?: string | null
+          id?: string
+          is_bot_active?: boolean
+          last_customer_message_at?: string | null
+          last_message_at?: string | null
+          metadata?: Json | null
+          platform?: string
+          priority?: string
+          status?: string
+          tags?: string[] | null
+          unread_count?: number
+          updated_at?: string
+        }
+        Update: {
+          assigned_agent_id?: string | null
+          assigned_at?: string | null
+          contact_id?: string
+          created_at?: string
+          first_message_at?: string | null
+          id?: string
+          is_bot_active?: boolean
+          last_customer_message_at?: string | null
+          last_message_at?: string | null
+          metadata?: Json | null
+          platform?: string
+          priority?: string
+          status?: string
+          tags?: string[] | null
+          unread_count?: number
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "conversations_assigned_agent_id_fkey"
+            columns: ["assigned_agent_id"]
+            isOneToOne: false
+            referencedRelation: "agents"
             referencedColumns: ["id"]
           },
         ]
