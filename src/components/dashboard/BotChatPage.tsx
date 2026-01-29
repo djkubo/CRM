@@ -6,6 +6,7 @@ import {
   type ChatContact,
   type ChatEvent 
 } from "@/hooks/useChatEvents";
+import { useCurrentAgent } from "@/hooks/useAgents";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -22,6 +23,7 @@ import {
   Send,
   PanelRightClose,
   PanelRightOpen,
+  UserPlus,
 } from "lucide-react";
 import { formatDistanceToNow, format } from "date-fns";
 import { es } from "date-fns/locale";
@@ -29,6 +31,8 @@ import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { ChatCustomerPanel } from "./ChatCustomerPanel";
 import { ChatQuickTemplates, fillTemplateVariables, type ChatTemplate } from "./ChatQuickTemplates";
+import { AgentStatusPanel } from "./AgentStatusPanel";
+import { ConversationFilters, type ConversationFilter, type ConversationStatusFilter } from "./ConversationFilters";
 
 // Sentiment analysis helper - analyze last messages to determine mood
 function analyzeSentiment(messages: ChatEvent[]): "positive" | "negative" | "neutral" {
@@ -94,12 +98,15 @@ export default function BotChatPage() {
   const [replyMessage, setReplyMessage] = useState("");
   const [sendingReply, setSendingReply] = useState(false);
   const [showCustomerPanel, setShowCustomerPanel] = useState(true);
+  const [agentFilter, setAgentFilter] = useState<ConversationFilter>("all");
+  const [statusFilter, setStatusFilter] = useState<ConversationStatusFilter>("all");
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const { toast } = useToast();
 
   // Enable realtime
   useChatEventsRealtime();
 
+  const { data: currentAgent } = useCurrentAgent();
   const { data: contacts, isLoading: loadingContacts } = useChatContacts();
   const { data: messages, isLoading: loadingMessages } = useChatMessages(selectedContact?.contact_id);
 
@@ -235,6 +242,13 @@ export default function BotChatPage() {
     return "neutral";
   };
 
+  // Calculate filter counts
+  const filterCounts = {
+    all: contacts?.length || 0,
+    mine: 0, // Would be populated if we had agent assignment data
+    unassigned: 0,
+  };
+
   return (
     <TooltipProvider>
       <div className="flex h-[calc(100vh-8rem)] md:h-[calc(100vh-7rem)] gap-0 md:gap-4">
@@ -243,7 +257,7 @@ export default function BotChatPage() {
           "w-full md:w-80 lg:w-96 flex flex-col border-0 md:border rounded-none md:rounded-xl",
           selectedContact && "hidden md:flex"
         )}>
-          <CardHeader className="pb-3 px-3 md:px-6">
+          <CardHeader className="pb-2 px-3 md:px-6">
             <CardTitle className="flex items-center gap-2 text-base md:text-lg">
               <Bot className="h-4 w-4 md:h-5 md:w-5 text-primary" />
               Chat Bot IA
@@ -258,6 +272,16 @@ export default function BotChatPage() {
               />
             </div>
           </CardHeader>
+
+          {/* Agent Filters */}
+          <ConversationFilters
+            filter={agentFilter}
+            onFilterChange={setAgentFilter}
+            statusFilter={statusFilter}
+            onStatusFilterChange={setStatusFilter}
+            counts={filterCounts}
+          />
+
           <CardContent className="flex-1 p-0 overflow-hidden">
             <ScrollArea className="h-full">
               {loadingContacts ? (
@@ -520,6 +544,9 @@ export default function BotChatPage() {
                 clientPhone={null}
               />
             </CardContent>
+
+            {/* Agent Status at bottom */}
+            <AgentStatusPanel />
           </Card>
         )}
       </div>
