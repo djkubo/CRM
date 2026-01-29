@@ -1,148 +1,136 @@
 
-# Plan: Hacer Visible el Historial de Sincronización
+# Rediseño Total UI/UX: Premium SaaS (Estilo Linear/Stripe)
 
-## Resumen Ejecutivo
-El componente `SyncResultsPanel` ya existe y es completamente funcional - tiene su propia lógica para consultar la tabla `sync_runs`, mostrar sincronizaciones activas con progreso en tiempo real, y listar las ejecuciones recientes con sus resultados. Sin embargo, NO está siendo renderizado en `ImportSyncPage.tsx`.
+## Diagnóstico del Problema
+El diseño actual tiene varios problemas:
+- Fondo #121212 causa bajo contraste con paneles #1A1A1A
+- Uso excesivo del rojo VRP en bordes y elementos decorativos
+- Tipografía Barlow Condensed usada en menús/tablas donde debería ser Inter
+- Radio de esquinas muy pequeño (0.25rem) que se ve "gamey"
+- Falta de sombras difusas que dan profundidad profesional
+- Headers con efectos glass que no aportan legibilidad
 
-La solución es simple: importar y renderizar el componente.
+## Sistema de Diseño Nuevo
 
----
-
-## Análisis del Componente SyncResultsPanel
-
-### Características Actuales
-- Auto-contenido (no requiere props)
-- Polling automático cada 5 segundos a `sync_runs`
-- Suscripción a cambios en tiempo real via Supabase Realtime
-- Muestra sincronizaciones activas con:
-  - Barra de progreso animada
-  - Tiempo transcurrido
-  - Contador de registros procesados
-  - Botón "Cancelar todo"
-- Muestra historial reciente (última hora) con:
-  - Estado (OK, Con errores, Error)
-  - Duración total
-  - Registros sincronizados/nuevos
-  - Mensajes de error si los hay
-- Se oculta automáticamente si no hay syncs activos ni recientes
-
----
-
-## Cambio a Implementar
-
-### Archivo: `src/components/dashboard/ImportSyncPage.tsx`
-
-**1. Agregar importación** (línea 9):
-```typescript
-import { SyncResultsPanel } from './SyncResultsPanel';
+### Paleta de Colores (Zinc 950)
+```
+Fondo App:        #09090b (zinc-950) - No negro absoluto
+Fondo Cards:      #18181b (zinc-900) con borde #27272a (zinc-800)
+Texto Principal:  #fafafa (zinc-50) - Blanco suave
+Texto Secundario: #71717a (zinc-500) - Gris medio
+Acento (10%):     #AA0601 - Solo botones principales y alertas
 ```
 
-**2. Renderizar el componente** después del header y antes de los Tabs:
-```typescript
-{/* Sync Status - Always visible */}
-<SyncResultsPanel />
-```
+### Tipografía
+- **Todo el UI**: Inter (cuerpo, tablas, menús, botones)
+- **Solo H1 y números grandes**: Barlow Condensed (opcional uppercase)
+
+### Componentes
+- **Botones Principales**: Rojo sólido, rounded-md, text-sm font-medium
+- **Botones Secundarios**: Fondo transparente, borde zinc-700, text-white
+- **Cards**: p-6 mínimo, sombras difusas, sin bordes rojos
+- **Tablas**: Headers transparentes, texto zinc-500, hover:bg-white/5
+- **Inputs**: bg-zinc-800, border-transparent, focus:ring-red-500/30
 
 ---
 
-## Ubicación del Componente
+## Plan de Implementación
 
-```text
-┌─────────────────────────────────────────────────────────────────────┐
-│  📥 Importar / Sincronizar                                          │
-│  Importa datos por CSV o sincroniza desde APIs                      │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                     │
-│  ┌─────────────────────────────────────────────────────────────┐   │
-│  │  🔄 Estado de Sincronización          [Cancelar todo]       │   │
-│  │  ───────────────────────────────────────────────────────────│   │
-│  │  En progreso:                                               │   │
-│  │    💳 Stripe    ⏱ 2m 34s • 1,245 registros  ⟳              │   │
-│  │    ███████████████████░░░░░░░░░░░░░ 65%                     │   │
-│  │                                                              │   │
-│  │  Recientes:                                                  │   │
-│  │    💳 PayPal     15:32 • 45s    892 (12 nuevos)    ✅ OK    │   │
-│  │    📄 Facturas   15:28 • 2m     3,421 (0 nuevos)   ✅ OK    │   │
-│  │    👥 ManyChat   15:15 • 1m 23s 567 (45 nuevos)    ⚠️ Error│   │
-│  │                                                              │   │
-│  │  ManyChat: Rate limit exceeded, retrying in 60s              │   │
-│  └─────────────────────────────────────────────────────────────┘   │
-│                                                                     │
-│  ┌──────────────┬──────────────┬──────────────┬──────────────┐     │
-│  │  API Sync    │     CSV      │   Recovery   │   Unificar   │     │
-│  └──────────────┴──────────────┴──────────────┴──────────────┘     │
-│                                                                     │
-│  [Contenido del tab seleccionado...]                                │
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
-```
+### Fase 1: Tokens de Diseño Base
+**Archivos**: `tailwind.config.ts`, `src/index.css`
+
+Cambios principales:
+- Actualizar variables CSS con nueva paleta zinc-950
+- Cambiar --background a #09090b
+- Cambiar --card a #18181b
+- Cambiar --border a #27272a
+- Actualizar --muted-foreground a zinc-500
+- Cambiar --radius a 0.375rem (rounded-md)
+- Eliminar font-heading de h2, h3 - solo en h1
+- Remover efectos .btn-vrp y .vrp-table-header innecesarios
+- Añadir sombras difusas como utility classes
+
+### Fase 2: Layout Principal
+**Archivos**: `src/pages/Index.tsx`, `src/components/dashboard/Sidebar.tsx`
+
+Cambios:
+- Eliminar el efecto radial-gradient rojo del fondo
+- Sidebar: Fondo limpio zinc-950, sin borde rojo decorativo
+- Sidebar items: Texto Inter regular, sin uppercase
+- Logo: Mantener arriba izquierda, sin efectos
+- Active state: bg-zinc-800, sin borde-izquierdo rojo
+- Espaciado generoso entre elementos
+
+### Fase 3: Componentes UI Core
+**Archivos**: `src/components/ui/button.tsx`, `src/components/ui/card.tsx`, `src/components/ui/input.tsx`
+
+Cambios:
+- Button: rounded-md por defecto, font-medium (no heading)
+- Card: shadow-sm por defecto, sin efectos hover rojos
+- Input: bg-zinc-800, border-transparent, focus:border-zinc-600
+
+### Fase 4: Pages y Paneles
+**Archivos**: `src/pages/Login.tsx`, `src/components/dashboard/DashboardHome.tsx`, `src/components/dashboard/Header.tsx`
+
+Cambios:
+- Login: Fondo limpio sin patrones grid, card centrada con sombra suave
+- DashboardHome: Cards con p-6, sombras difusas, sin bordes de color
+- Header: Tipografía Inter, sin uppercase en subtítulos
+- Remover todas las referencias a font-heading excepto en títulos principales
+
+### Fase 5: Tablas y Datos
+**Archivos**: Múltiples componentes de tabla
+
+Principios:
+- Headers con bg-transparent, text-zinc-500, font-medium
+- Filas con hover:bg-white/5 sutil
+- Sin alternating row colors agresivos
+- Badges con colores suaves y bordes sutiles
 
 ---
 
-## Código Final
+## Especificaciones Técnicas
 
-```typescript
-import { useState } from 'react';
-import { Upload, RefreshCw, FileText, Database, Users } from 'lucide-react';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { CSVUploader } from './CSVUploader';
-import { APISyncPanel } from './APISyncPanel';
-import { SmartRecoveryCard } from './SmartRecoveryCard';
-import { SyncOrchestrator } from './SyncOrchestrator';
-import { SyncResultsPanel } from './SyncResultsPanel';  // ← NUEVO
-import { useQueryClient } from '@tanstack/react-query';
+### Variables CSS Nuevas (index.css)
+```css
+:root {
+  --background: 240 10% 3.9%;      /* #09090b */
+  --foreground: 0 0% 98%;           /* #fafafa */
+  --card: 240 10% 9.4%;             /* #18181b */
+  --border: 240 5.2% 15.1%;         /* #27272a */
+  --muted-foreground: 240 4% 46%;   /* #71717a */
+  --radius: 0.375rem;               /* rounded-md */
+}
+```
 
-export function ImportSyncPage() {
-  const queryClient = useQueryClient();
+### Sombras Difusas (tailwind extend)
+```js
+boxShadow: {
+  'soft': '0 2px 8px -2px rgba(0,0,0,0.3)',
+  'elevated': '0 4px 16px -4px rgba(0,0,0,0.4)',
+}
+```
 
-  const handleProcessingComplete = () => {
-    // ... existing code ...
-  };
+### Tipografía (index.css)
+```css
+/* Solo H1 usa Barlow */
+h1, .text-display { 
+  font-family: 'Barlow Condensed'; 
+}
 
-  return (
-    <div className="space-y-4 sm:space-y-6">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-        {/* ... existing header ... */}
-      </div>
-
-      {/* Sync Status Panel - Shows active and recent syncs */}
-      <SyncResultsPanel />  {/* ← NUEVO */}
-
-      <Tabs defaultValue="api" className="space-y-4 sm:space-y-6">
-        {/* ... existing tabs ... */}
-      </Tabs>
-    </div>
-  );
+/* Todo lo demás usa Inter */
+body, h2, h3, h4, h5, h6, button, input, table {
+  font-family: 'Inter';
 }
 ```
 
 ---
 
-## Comportamiento Esperado
-
-| Escenario | Resultado |
-|-----------|-----------|
-| Hay sync activo | Panel visible con progreso en tiempo real |
-| Hay syncs recientes (última hora) | Panel visible con historial |
-| No hay syncs activos ni recientes | Panel se oculta automáticamente |
-| Usuario recarga página | Ve estado actual de sincronizaciones |
-| Sync termina mientras usuario mira | Se actualiza automáticamente (realtime) |
-
----
-
-## Archivo a Modificar
-
-| Archivo | Cambio |
-|---------|--------|
-| `src/components/dashboard/ImportSyncPage.tsx` | + import SyncResultsPanel, + renderizar antes de Tabs |
-
----
-
-## Testing Post-Implementación
-
-1. Navegar a la página "Importar / Sincronizar"
-2. Verificar que aparece el panel "Estado de Sincronización" si hay syncs recientes
-3. Iniciar una sincronización (ej: Stripe) y verificar que aparece con progreso
-4. Esperar a que termine y confirmar que aparece en historial con resultado
-5. Si hubo errores, verificar que se muestra el mensaje de error
+## Resultado Esperado
+Un dashboard financiero de clase mundial:
+- Limpio y monocromático (escala de grises)
+- Rojo solo como acento (10% máximo)
+- Tipografía profesional y legible
+- Espaciado generoso que transmite lujo
+- Sombras suaves que dan profundidad
+- Sin efectos decorativos innecesarios
