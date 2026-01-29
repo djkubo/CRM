@@ -1,213 +1,178 @@
 
 
-# Plan: Persistencia de Estados de Recuperación (Fix Amnesia)
+# Plan: Campañas Reales - Email Funcional y Variables Dinámicas
 
 ## Resumen Ejecutivo
-Actualmente, el estado de recuperación de cada deudor (`pending`, `contacted`, `paid`, `lost`) se almacena en un `useState` local en `RecoveryPage.tsx`. Al recargar la página, todos los estados se pierden y los clientes vuelven a aparecer como "Pendientes". Implementaremos persistencia real en la base de datos para que el progreso de seguimiento se conserve permanentemente.
+La función `send-campaign` tiene dos problemas críticos que la hacen "de mentira":
+1. **Email no implementado**: El canal `email` está en el UI pero la Edge Function no tiene lógica para enviarlo
+2. **Variables hardcodeadas**: `{{amount}}` siempre muestra `$0.00` y `{{days_left}}` siempre muestra `3`
+
+Implementaremos envío real de emails via Resend y cálculo dinámico de variables basado en datos reales de deuda del cliente.
+
+---
 
 ## Análisis del Problema
 
-### Estado Actual
+### Estado Actual de la Función
 ```text
-┌───────────────────────────────────────────────────────────────┐
-│                  RecoveryPage.tsx                             │
-├───────────────────────────────────────────────────────────────┤
-│  const [stages, setStages] = useState({})                     │
-│       ↑                                                       │
-│   Vacío al cargar → Todos aparecen como 'pending'             │
-│                                                               │
-│  setStage(email, stage):                                      │
-│    1. ✅ Actualiza estado local                               │
-│    2. ✅ Registra evento en client_events                     │
-│    3. ❌ NO guarda en clients table                           │
-│    4. ❌ NO se recupera al recargar                           │
-└───────────────────────────────────────────────────────────────┘
+Línea 168: message = message.replace(/\{\{amount\}\}/g, '$0.00');  // ← HARDCODED
+Línea 169: message = message.replace(/\{\{days_left\}\}/g, '3');    // ← HARDCODED
+
+Canales implementados:
+  ✅ WhatsApp (Twilio) - Líneas 176-201
+  ✅ SMS (Twilio) - Líneas 202-227
+  ✅ Messenger (ManyChat) - Líneas 228-259
+  ❌ Email - NO EXISTE
 ```
 
-### Solución Propuesta
-Almacenaremos `recovery_status` dentro del campo JSONB `customer_metadata` de la tabla `clients`, ya que:
-- La tabla `clients` ya tiene campos JSONB (`customer_metadata`)
-- No requiere migración de esquema (menos riesgoso)
-- El campo ya se usa para datos adicionales de clientes
+### Secretos Disponibles
+- ✅ TWILIO_* (3 secretos) - Configurados
+- ✅ MANYCHAT_API_KEY - Configurado
+- ❌ RESEND_API_KEY - **NO EXISTE** (necesario para email)
 
 ---
 
 ## Cambios a Implementar
 
-### 1. Modificar `useMetrics.ts` - Incluir `recovery_status` en la consulta
+### 1. Agregar Secret: RESEND_API_KEY
 
-**Archivo**: `src/hooks/useMetrics.ts`
+Antes de implementar el código, necesitaremos que configures el API key de Resend:
+- Crear cuenta en https://resend.com (gratis hasta 100 emails/día)
+- Crear API key en https://resend.com/api-keys
+- Verificar dominio en https://resend.com/domains (o usar dominio de pruebas)
 
-**Cambio**: Al consultar los clientes para el `recoveryList`, incluir el campo `customer_metadata` para extraer el `recovery_status` guardado.
+### 2. Implementar Cálculo de Variables Dinámicas
 
-**Antes (líneas 159-162)**:
+**Archivo**: `supabase/functions/send-campaign/index.ts`
+
+**Nueva función helper** para calcular deuda real del cliente:
+
 ```typescript
-const { data: clients } = await supabase
-  .from('clients')
-  .select('email, full_name, phone')
-  .in('email', failedEmails.slice(0, 100));
-```
+async function getClientDebtInfo(
+  supabase: SupabaseClient, 
+  clientEmail: string
+): Promise<{ totalDebt: number; daysUntilDue: number | null }> {
+  // 1. Buscar facturas abiertas del cliente
+  const { data: openInvoices } = await supabase
+    .from('invoices')
+    .select('amount_due, due_date')
+    .eq('customer_email', clientEmail)
+    .in('status', ['open', 'past_due', 'draft'])
+    .order('due_date', { ascending: true });
 
-**Después**:
-```typescript
-const { data: clients } = await supabase
-  .from('clients')
-  .select('email, full_name, phone, customer_metadata')
-  .in('email', failedEmails.slice(0, 100));
-```
+  // 2. Calcular monto total de deuda
+  const totalDebt = (openInvoices || []).reduce(
+    (sum, inv) => sum + (inv.amount_due || 0), 
+    0
+  );
 
-**Actualizar interfaz `recoveryList`** para incluir `recovery_status`:
-```typescript
-recoveryList: Array<{
-  email: string;
-  full_name: string | null;
-  phone: string | null;
-  amount: number;
-  source: string;
-  recovery_status?: 'pending' | 'contacted' | 'paid' | 'lost'; // NUEVO
-}>;
-```
-
----
-
-### 2. Modificar `RecoveryPage.tsx` - Lectura (Fetch)
-
-**Archivo**: `src/components/dashboard/RecoveryPage.tsx`
-
-**Cambio**: Al cargar la página, inicializar el estado `stages` con los valores guardados en `recoveryList[].recovery_status`.
-
-**Agregar `useEffect` para cargar estados** (después de línea 68):
-```typescript
-// Initialize stages from saved recovery_status in database
-useEffect(() => {
-  if (metrics.recoveryList?.length) {
-    const savedStages: Record<string, RecoveryStage> = {};
-    for (const client of metrics.recoveryList) {
-      if (client.recovery_status) {
-        savedStages[client.email] = client.recovery_status;
-      }
-    }
-    // Only update if we have saved stages to prevent overwriting local changes
-    if (Object.keys(savedStages).length > 0) {
-      setStages(prev => ({ ...savedStages, ...prev }));
-    }
+  // 3. Calcular días hasta vencimiento (de la factura más próxima)
+  let daysUntilDue: number | null = null;
+  if (openInvoices?.length && openInvoices[0].due_date) {
+    const dueDate = new Date(openInvoices[0].due_date);
+    const today = new Date();
+    daysUntilDue = Math.ceil(
+      (dueDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24)
+    );
   }
-}, [metrics.recoveryList]);
+
+  return { totalDebt, daysUntilDue };
+}
+```
+
+**Modificar reemplazo de variables** (líneas 165-169):
+
+```typescript
+// Antes (hardcoded):
+message = message.replace(/\{\{amount\}\}/g, '$0.00');
+message = message.replace(/\{\{days_left\}\}/g, '3');
+
+// Después (dinámico):
+const debtInfo = await getClientDebtInfo(supabase, client.email);
+const formattedAmount = `$${(debtInfo.totalDebt / 100).toFixed(2)}`;
+const daysLeft = debtInfo.daysUntilDue !== null 
+  ? Math.max(0, debtInfo.daysUntilDue).toString() 
+  : 'N/A';
+
+message = message.replace(/\{\{amount\}\}/g, formattedAmount);
+message = message.replace(/\{\{days_left\}\}/g, daysLeft);
 ```
 
 ---
 
-### 3. Modificar `RecoveryPage.tsx` - Escritura (Update)
+### 3. Implementar Canal de Email (Resend)
 
-**Archivo**: `src/components/dashboard/RecoveryPage.tsx`
+**Archivo**: `supabase/functions/send-campaign/index.ts`
 
-**Cambio**: Modificar la función `setStage` para:
-1. Actualizar el estado local (ya lo hace)
-2. Guardar `recovery_status` en `customer_metadata` JSONB de la tabla `clients`
-3. Mostrar indicador de carga y toast de confirmación
+**Agregar Resend API key** (después de línea 68):
 
-**Antes (función `setStage`, líneas 105-127)**:
 ```typescript
-const setStage = async (email: string, stage: RecoveryStage) => {
-  setStages(prev => ({ ...prev, [email]: stage }));
-  
-  try {
-    const { data: client } = await supabase
-      .from('clients')
-      .select('id')
-      .eq('email', email)
-      .single();
-    
-    if (client) {
-      await supabase.from('client_events').insert({...});
-    }
-  } catch (e) {...}
-  
-  toast.success(`Estado actualizado a: ${stageConfig[stage].label}`);
-};
+const RESEND_API_KEY = Deno.env.get('RESEND_API_KEY');
 ```
 
-**Después**:
-```typescript
-const [savingStage, setSavingStage] = useState<string | null>(null);
+**Agregar validación de email** (junto a la validación de teléfono, línea 92):
 
-const setStage = async (email: string, stage: RecoveryStage) => {
-  // Optimistic update
-  setStages(prev => ({ ...prev, [email]: stage }));
-  setSavingStage(email);
-  
-  try {
-    // Fetch client and current metadata
-    const { data: client } = await supabase
-      .from('clients')
-      .select('id, customer_metadata')
-      .eq('email', email)
-      .single();
-    
-    if (client) {
-      // Merge recovery_status into existing metadata
-      const currentMetadata = (client.customer_metadata as Record<string, unknown>) || {};
-      const updatedMetadata = {
-        ...currentMetadata,
-        recovery_status: stage,
-        recovery_status_updated_at: new Date().toISOString(),
-      };
-      
-      // Save to database
-      const { error } = await supabase
-        .from('clients')
-        .update({ customer_metadata: updatedMetadata })
-        .eq('id', client.id);
-      
-      if (error) throw error;
-      
-      // Log event (existing logic)
-      await supabase.from('client_events').insert({
-        client_id: client.id,
-        event_type: 'custom',
-        metadata: { action: 'recovery_stage_change', stage, timestamp: new Date().toISOString() },
-      });
-      
-      toast.success(`Estado guardado: ${stageConfig[stage].label}`);
-    } else {
-      toast.warning('Cliente no encontrado en la base de datos');
-    }
-  } catch (e) {
-    console.error('Error saving recovery status:', e);
-    // Revert optimistic update on error
-    setStages(prev => {
-      const newStages = { ...prev };
-      delete newStages[email];
-      return newStages;
+```typescript
+// No email check for email channel
+if (!exclusionReason && campaign.channel === 'email' && !client.email) {
+  exclusionReason = 'no_email';
+}
+```
+
+**Agregar bloque de envío de Email** (después de línea 259, antes del else final):
+
+```typescript
+} else if (campaign.channel === 'email') {
+  // Check for email provider configuration
+  if (!RESEND_API_KEY) {
+    console.error('Email provider not configured: RESEND_API_KEY missing');
+    await supabase.from('campaign_recipients').update({
+      status: 'failed',
+      exclusion_reason: 'email_provider_not_configured',
+    }).eq('id', recipient.id);
+    failedCount++;
+    results.push({ 
+      client_id: client.id, 
+      status: 'failed', 
+      reason: 'Email provider not configured' 
     });
-    toast.error('Error guardando el estado');
-  } finally {
-    setSavingStage(null);
+    continue;
   }
-};
-```
 
----
+  if (!client.email) {
+    exclusionReason = 'no_email';
+  } else {
+    // Build email subject from template or campaign name
+    const emailSubject = campaign.template?.subject || campaign.name || 'Mensaje importante';
+    
+    // Send via Resend API
+    const resendResponse = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${RESEND_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        from: 'Cobranza <noreply@tudominio.com>', // TODO: Make configurable
+        to: [client.email],
+        subject: emailSubject,
+        html: `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <p>${message.replace(/\n/g, '<br>')}</p>
+        </div>`,
+        text: message,
+      }),
+    });
 
-### 4. UI: Indicador de Guardado
-
-**Archivo**: `src/components/dashboard/RecoveryPage.tsx`
-
-**Cambio**: Mostrar un pequeño `Loader2` cuando se está guardando el estado de un cliente específico.
-
-**En el Badge del dropdown (líneas ~421-436)**:
-```typescript
-<Badge 
-  variant="outline" 
-  className={`cursor-pointer text-[10px] px-1 h-4 shrink-0 ${config.color}`}
->
-  {savingStage === client.email ? (
-    <Loader2 className="h-2 w-2 mr-0.5 animate-spin" />
-  ) : (
-    <StageIcon className="h-2 w-2 mr-0.5" />
-  )}
-  {config.label}
-</Badge>
+    const resendResult = await resendResponse.json();
+    
+    if (resendResponse.ok && resendResult.id) {
+      sendSuccess = true;
+      externalMessageId = resendResult.id;
+    } else {
+      console.error('Resend error:', resendResult);
+    }
+  }
+}
 ```
 
 ---
@@ -216,76 +181,77 @@ const setStage = async (email: string, stage: RecoveryStage) => {
 
 ```text
 ┌─────────────────────────────────────────────────────────────────────┐
-│                     FLUJO DE PERSISTENCIA                           │
+│              FLUJO DE CAMPAÑA CON VARIABLES REALES                  │
 ├─────────────────────────────────────────────────────────────────────┤
 │                                                                     │
-│  1. CARGA INICIAL (Fetch)                                           │
-│     ┌───────────────────┐                                           │
-│     │   useMetrics()    │                                           │
-│     │   fetchMetrics()  │                                           │
-│     └─────────┬─────────┘                                           │
-│               │                                                     │
-│               ▼                                                     │
-│     SELECT email, full_name, phone, customer_metadata               │
-│     FROM clients WHERE email IN (failed_emails)                     │
-│               │                                                     │
-│               ▼                                                     │
-│     Extrae recovery_status de customer_metadata                     │
-│               │                                                     │
-│               ▼                                                     │
-│     RecoveryPage: setStages({ email: status, ... })                 │
+│  1. Usuario crea campaña con template:                              │
+│     "Hola {{name}}, debes {{amount}}. Tienes {{days_left}} días."   │
 │                                                                     │
-│  ─────────────────────────────────────────────────────────────────  │
+│  2. send-campaign procesa cada destinatario:                        │
 │                                                                     │
-│  2. CAMBIO DE ESTADO (Update)                                       │
-│     ┌───────────────────┐                                           │
-│     │ Usuario cambia    │                                           │
-│     │ estado a "Pagó"   │                                           │
-│     └─────────┬─────────┘                                           │
-│               │                                                     │
-│               ▼                                                     │
-│     setStage(email, 'paid')                                         │
-│        ├─ Optimistic: setStages(local)                              │
-│        ├─ DB: UPDATE clients SET customer_metadata = {...}          │
-│        ├─ Log: INSERT INTO client_events                            │
-│        └─ Toast: "Estado guardado: Pagó"                            │
+│     ┌─────────────────────────────────────────────────────┐         │
+│     │  getClientDebtInfo(supabase, 'juan@email.com')      │         │
+│     │    ↓                                                │         │
+│     │  SELECT amount_due, due_date FROM invoices          │         │
+│     │  WHERE customer_email = 'juan@email.com'            │         │
+│     │  AND status IN ('open', 'past_due')                 │         │
+│     │    ↓                                                │         │
+│     │  return { totalDebt: 15000, daysUntilDue: 5 }       │         │
+│     └─────────────────────────────────────────────────────┘         │
 │                                                                     │
-│  ─────────────────────────────────────────────────────────────────  │
+│  3. Variables reemplazadas:                                         │
+│     {{name}} → "Juan Pérez"                                         │
+│     {{amount}} → "$150.00"  (15000 cents / 100)                     │
+│     {{days_left}} → "5"                                             │
 │                                                                     │
-│  3. RECARGA DE PÁGINA                                               │
-│     ┌───────────────────┐                                           │
-│     │  Usuario recarga  │  →  useMetrics() →  Estados preservados   │
-│     │     (F5/Refresh)  │                                           │
-│     └───────────────────┘                                           │
+│  4. Mensaje final enviado:                                          │
+│     "Hola Juan Pérez, debes $150.00. Tienes 5 días."                │
 │                                                                     │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## Archivos a Modificar
+## Archivo a Modificar
 
-| Archivo | Cambio |
-|---------|--------|
-| `src/hooks/useMetrics.ts` | Incluir `customer_metadata` en query, extraer `recovery_status` |
-| `src/components/dashboard/RecoveryPage.tsx` | Cargar estados guardados, persistir cambios a DB |
+| Archivo | Cambios |
+|---------|---------|
+| `supabase/functions/send-campaign/index.ts` | + helper getClientDebtInfo(), + canal email con Resend, + variables dinámicas |
 
 ---
 
-## Consideraciones Técnicas
+## Variables Soportadas Post-Implementación
 
-1. **Deep Merge de Metadata**: Usamos spread operator para preservar otros datos en `customer_metadata`
-2. **Optimistic Updates**: UI se actualiza inmediatamente, revierte si falla la DB
-3. **Compatibilidad**: Clientes sin `recovery_status` guardado aparecen como `pending` (comportamiento actual)
-4. **No requiere migración**: Usa campo JSONB existente
+| Variable | Fuente | Ejemplo |
+|----------|--------|---------|
+| `{{name}}` | `client.full_name` | "María López" |
+| `{{amount}}` | Suma de `invoices.amount_due` donde status = open/past_due | "$247.50" |
+| `{{days_left}}` | Días hasta `invoices.due_date` más próximo | "3" o "N/A" |
+
+---
+
+## Manejo de Errores
+
+1. **Sin RESEND_API_KEY**: Retorna error claro `"Email provider not configured"` y marca como `failed`
+2. **Cliente sin email**: Marca como `excluded` con razón `no_email`
+3. **Cliente sin deuda**: Muestra `$0.00` (comportamiento correcto)
+4. **Sin fecha de vencimiento**: Muestra `N/A` en lugar de número
+
+---
+
+## Requisito Previo
+
+Para que el canal de email funcione, necesitarás configurar:
+
+1. **RESEND_API_KEY**: API key de Resend para envío de emails
+2. **Dominio verificado** (opcional pero recomendado): Para que los emails no lleguen a spam
 
 ---
 
 ## Testing Post-Implementación
 
-1. Cambiar el estado de un deudor de "Pendiente" a "Contactado"
-2. Verificar que aparece el toast "Estado guardado: Contactado"
-3. Recargar la página (F5)
-4. Confirmar que el deudor sigue apareciendo como "Contactado"
-5. Verificar en la base de datos que `customer_metadata.recovery_status = 'contacted'`
+1. **Test de Variables**: Crear campaña de prueba para cliente con deuda conocida, verificar que muestre monto real
+2. **Test Email (Dry Run)**: Ejecutar campaña con `dry_run: true` para ver que el canal email está disponible
+3. **Test Email Real**: Una vez configurado RESEND_API_KEY, enviar campaña de prueba a email propio
+4. **Test Sin Deuda**: Verificar que clientes sin facturas abiertas muestren `$0.00`
 
