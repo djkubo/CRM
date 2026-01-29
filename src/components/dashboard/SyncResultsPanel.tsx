@@ -181,61 +181,58 @@ export function SyncResultsPanel() {
   const handleCancelSync = async (source: string) => {
     setIsCancelling(true);
     try {
-      // If 'all' is passed, cancel ALL syncs from ALL sources
+      // STEP 1: Force cancel via database update for ALL running syncs
+      const { data: runningData, error: runningError } = await supabase
+        .from('sync_runs')
+        .update({
+          status: 'canceled',
+          completed_at: new Date().toISOString(),
+          error_message: 'Cancelado por el usuario'
+        })
+        .in('status', ['running', 'continuing'])
+        .select();
+      
+      if (runningError) {
+        console.error('Error cancelling via DB:', runningError);
+      }
+      
+      const cancelledCount = runningData?.length || 0;
+      
+      // STEP 2: Also call edge functions to stop any in-flight processing
       if (source === 'all') {
-        const cancelResults = await Promise.allSettled([
-          invokeWithAdminKey<{ success: boolean; cancelled: number }, { forceCancel: boolean }>(
-            'fetch-stripe',
-            { forceCancel: true }
-          ),
-          invokeWithAdminKey<{ success: boolean; cancelled: number }, { forceCancel: boolean }>(
-            'fetch-paypal',
-            { forceCancel: true }
-          ),
-          invokeWithAdminKey<{ ok: boolean; cancelled: number }, { forceCancel: boolean }>(
-            'sync-ghl',
-            { forceCancel: true }
-          ),
-          invokeWithAdminKey<{ ok: boolean; cancelled: number }, { forceCancel: boolean }>(
-            'sync-manychat',
-            { forceCancel: true }
-          ),
+        // Call cancel endpoints in parallel but don't wait for all
+        Promise.allSettled([
+          invokeWithAdminKey<{ success: boolean }, { forceCancel: boolean }>('fetch-stripe', { forceCancel: true }).catch(() => {}),
+          invokeWithAdminKey<{ success: boolean }, { forceCancel: boolean }>('fetch-paypal', { forceCancel: true }).catch(() => {}),
+          invokeWithAdminKey<{ ok: boolean }, { forceCancel: boolean }>('sync-ghl', { forceCancel: true }).catch(() => {}),
+          invokeWithAdminKey<{ ok: boolean }, { forceCancel: boolean }>('sync-manychat', { forceCancel: true }).catch(() => {}),
         ]);
         
-        let totalCancelled = 0;
-        for (const result of cancelResults) {
-          if (result.status === 'fulfilled' && result.value) {
-            const val = result.value as { cancelled?: number };
-            totalCancelled += val.cancelled || 0;
-          }
-        }
-        
-        toast.success('Todos los syncs cancelados', {
-          description: `Se cancelaron ${totalCancelled} sincronizaciones`,
+        toast.success('Sincronizaciones canceladas', {
+          description: `${cancelledCount} proceso(s) marcados como cancelados`,
         });
-        fetchRuns();
-        return;
-      }
-      
-      // Otherwise, cancel specific source
-      let endpoint = 'fetch-stripe';
-      if (source === 'paypal') endpoint = 'fetch-paypal';
-      else if (source === 'ghl') endpoint = 'sync-ghl';
-      else if (source === 'manychat') endpoint = 'sync-manychat';
-      
-      const result = await invokeWithAdminKey<{ success: boolean; cancelled: number; message?: string }, { forceCancel: boolean }>(
-        endpoint,
-        { forceCancel: true }
-      );
-      
-      if (result?.success || (result as any)?.ok) {
-        toast.success('Sync cancelado', {
-          description: result?.message || `Sincronización de ${source} cancelada`,
+      } else if (source === 'bulk_unify') {
+        // For bulk_unify, just update the database - the edge function checks status
+        toast.success('Unificación Masiva cancelada', {
+          description: 'El proceso se detendrá en el próximo chunk',
         });
-        fetchRuns();
       } else {
-        toast.error('Error al cancelar');
+        // Cancel specific source
+        let endpoint = 'fetch-stripe';
+        if (source === 'paypal') endpoint = 'fetch-paypal';
+        else if (source === 'ghl') endpoint = 'sync-ghl';
+        else if (source === 'manychat') endpoint = 'sync-manychat';
+        
+        invokeWithAdminKey<{ success: boolean }, { forceCancel: boolean }>(endpoint, { forceCancel: true }).catch(() => {});
+        
+        toast.success('Sync cancelado', {
+          description: `Sincronización de ${getSourceConfig(source).label} cancelada`,
+        });
       }
+      
+      // Refresh the list
+      fetchRuns();
+      
     } catch (error) {
       console.error('Cancel sync error:', error);
       toast.error('Error al cancelar', {
