@@ -146,3 +146,6 @@ verify_jwt = false
 
 [functions.create-portal-session-public]
 verify_jwt = false
+
+[functions.execute-flow]
+verify_jwt = false
