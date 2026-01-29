@@ -728,14 +728,15 @@ async function processChunk(
     while ((Date.now() - startTime) < MAX_EXECUTION_TIME_MS) {
       iterations++;
       
-      // Check if cancelled
+      // Check if cancelled (support both spellings)
       const { data: syncCheck } = await supabase
         .from('sync_runs')
         .select('status')
         .eq('id', syncRunId)
         .single();
       
-      if ((syncCheck as { status: string } | null)?.status === 'cancelled') {
+      const currentStatus = (syncCheck as { status: string } | null)?.status;
+      if (currentStatus === 'cancelled' || currentStatus === 'canceled') {
         log('info', 'Unification cancelled by user');
         return;
       }
