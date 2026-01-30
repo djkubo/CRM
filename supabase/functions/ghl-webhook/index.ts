@@ -239,38 +239,67 @@ Deno.serve(async (req: Request) => {
 
     const supabase = createClient(supabaseUrl, supabaseKey);
 
-    // Call unify_identity RPC
-    const timer = logger.timer("unify_identity RPC");
-    const { data, error } = await supabase.rpc("unify_identity", unifyParams);
-    timer();
+    // OPTIMIZACIÓN: Insertar en tabla de staging en lugar de llamar RPC bloqueante
+    // Esto evita timeouts de 60-120 segundos
+    // La tabla usa: external_id (text), payload (jsonb), fetched_at, processed_at
+    const stagingRecord = {
+      external_id: unifyParams.p_ghl_contact_id,
+      payload: {
+        email: unifyParams.p_email,
+        phone: unifyParams.p_phone,
+        full_name: unifyParams.p_full_name,
+        tags: unifyParams.p_tags,
+        opt_in: unifyParams.p_opt_in,
+        tracking_data: unifyParams.p_tracking_data,
+        source: 'ghl',
+        event_type: eventType,
+      },
+      fetched_at: new Date().toISOString(),
+      processed_at: null, // Será procesado por batch job
+    };
 
-    if (error) {
-      logger.error("RPC error", error as Error, { 
+    // Intentar insertar en staging (rápido, no bloquea)
+    const { error: stagingError } = await supabase
+      .from('ghl_contacts_raw')
+      .upsert(stagingRecord, { 
+        onConflict: 'external_id',
+        ignoreDuplicates: false 
+      });
+
+    if (stagingError) {
+      logger.warn("Staging insert failed, trying background RPC", { 
         requestId, 
-        code: error.code,
-        details: error.details,
+        error: stagingError.message 
       });
-      // Still return 200 to prevent retries
-      return new Response(JSON.stringify({ 
-        success: false, 
-        error: error.message,
-        code: error.code,
-      }), {
-        status: 200,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+      
+      // Fallback: procesar en background con EdgeRuntime.waitUntil
+      // @ts-ignore - EdgeRuntime disponible en Deno
+      if (typeof EdgeRuntime !== 'undefined' && EdgeRuntime.waitUntil) {
+        // @ts-ignore
+        EdgeRuntime.waitUntil((async () => {
+          try {
+            const { error } = await supabase.rpc("unify_identity", unifyParams);
+            if (error) {
+              logger.error("Background RPC failed", error as Error, { requestId });
+            } else {
+              logger.info("Background unification completed", { requestId });
+            }
+          } catch (e) {
+            logger.error("Background processing error", e as Error, { requestId });
+          }
+        })());
+        
+        logger.info("Scheduled background processing", { requestId });
+      }
+    } else {
+      logger.info("Staged for batch processing", { requestId, ghlContactId: unifyParams.p_ghl_contact_id });
     }
 
-    logger.info("Contact unified successfully", { 
-      requestId, 
-      result: data,
-      eventType,
-    });
-
+    // Responder inmediatamente (< 1 segundo)
     return new Response(JSON.stringify({ 
       success: true, 
-      action: data?.action || "processed",
-      client_id: data?.client_id,
+      action: "queued",
+      ghl_contact_id: unifyParams.p_ghl_contact_id,
       event_type: eventType,
     }), {
       status: 200,
