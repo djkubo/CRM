@@ -1,4 +1,5 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { supabase } from '@/integrations/supabase/client';
 import { useDailyKPIs, TimeFilter } from '@/hooks/useDailyKPIs';
 import { useMetrics } from '@/hooks/useMetrics';
@@ -96,12 +97,20 @@ function getSyncDateRange(range: SyncRange): { startDate: Date; endDate: Date; f
   }
 }
 
-interface DashboardHomeProps {
-  lastSync?: Date | null;
-  onNavigate?: (page: string) => void;
-}
+// Route mapping for navigation
+const routeMap: Record<string, string> = {
+  analytics: "/analytics",
+  movements: "/movements",
+  clients: "/clients",
+  subscriptions: "/subscriptions",
+  recovery: "/recovery",
+  invoices: "/invoices",
+  campaigns: "/campaigns",
+};
 
-export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
+export function DashboardHome() {
+  const navigate = useNavigate();
+  const [lastSync, setLastSync] = useState<Date | null>(null);
   const [filter, setFilter] = useState<TimeFilter>('today');
   const { kpis, isLoading, refetch } = useDailyKPIs(filter);
   const { metrics } = useMetrics();
@@ -111,6 +120,48 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
   const [syncProgress, setSyncProgress] = useState<string>('');
   const [syncStatus, setSyncStatus] = useState<'ok' | 'warning' | null>(null);
   const queryClient = useQueryClient();
+
+  // Helper for navigation
+  const handleNavigate = (page: string) => {
+    const route = routeMap[page] || `/${page}`;
+    navigate(route);
+  };
+
+  // Fetch last sync on mount
+  useEffect(() => {
+    const fetchLastSync = async () => {
+      const { data } = await supabase
+        .from('sync_runs')
+        .select('completed_at')
+        .eq('status', 'completed')
+        .order('completed_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      
+      if (data?.completed_at) {
+        setLastSync(new Date(data.completed_at));
+      }
+    };
+
+    fetchLastSync();
+
+    // Subscribe to sync_runs changes for real-time updates
+    const channel = supabase
+      .channel('sync-status-dashboard')
+      .on('postgres_changes', 
+        { event: '*', schema: 'public', table: 'sync_runs' },
+        (payload) => {
+          if (payload.eventType === 'UPDATE' && (payload.new as any).status === 'completed') {
+            setLastSync(new Date((payload.new as any).completed_at));
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []);
 
   const filterLabels: Record<TimeFilter, string> = {
     today: 'Hoy',
@@ -461,7 +512,7 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
             <Button
               size="sm"
               variant="outline"
-              onClick={() => onNavigate?.('campaigns')}
+              onClick={() => handleNavigate('campaigns')}
               className="gap-1.5 text-xs md:text-sm touch-feedback"
             >
               <Megaphone className="h-4 w-4" />
@@ -536,7 +587,7 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
           return (
             <div
               key={index}
-              onClick={() => card.navigateTo && onNavigate?.(card.navigateTo)}
+              onClick={() => card.navigateTo && handleNavigate(card.navigateTo)}
               className={`rounded-lg border ${
                 isWarningCard 
                   ? 'border-red-500/30 bg-red-500/5' 
@@ -579,7 +630,7 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
               <AlertTriangle className="h-4 w-4 text-primary" />
               <h3 className="text-sm font-medium text-foreground">Fallos con Tel</h3>
             </div>
-            <Button variant="ghost" size="sm" onClick={() => onNavigate?.('recovery')} className="text-xs gap-1 touch-feedback">
+            <Button variant="ghost" size="sm" onClick={() => handleNavigate('recovery')} className="text-xs gap-1 touch-feedback">
               Ver <ChevronRight className="h-3 w-3" />
             </Button>
           </div>
@@ -617,7 +668,7 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
               <FileText className="h-4 w-4 text-primary" />
               <h3 className="text-sm font-medium text-foreground">Por Cobrar</h3>
             </div>
-            <Button variant="ghost" size="sm" onClick={() => onNavigate?.('invoices')} className="text-xs gap-1 touch-feedback">
+            <Button variant="ghost" size="sm" onClick={() => handleNavigate('invoices')} className="text-xs gap-1 touch-feedback">
               Ver <ChevronRight className="h-3 w-3" />
             </Button>
           </div>
@@ -659,7 +710,7 @@ export function DashboardHome({ lastSync, onNavigate }: DashboardHomeProps) {
               <CreditCard className="h-4 w-4 text-primary" />
               <h3 className="text-sm font-medium text-foreground">Trials por Vencer</h3>
             </div>
-            <Button variant="ghost" size="sm" onClick={() => onNavigate?.('subscriptions')} className="text-xs gap-1 touch-feedback">
+            <Button variant="ghost" size="sm" onClick={() => handleNavigate('subscriptions')} className="text-xs gap-1 touch-feedback">
               Ver <ChevronRight className="h-3 w-3" />
             </Button>
           </div>
