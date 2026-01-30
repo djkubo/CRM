@@ -1,113 +1,96 @@
 
-# Plan: Arreglar RPCs que No Devuelven Datos Correctos
+
+# Plan: Arreglar Error 406 - Proyecto Supabase Incorrecto
 
 ## Problema Detectado
 
-El frontend muestra los logs:
+El error en consola muestra:
 ```
-kpi_sales_summary RPC not available, using limited fallback
-dashboard_metrics RPC not available: undefined
+GET https://qskmzaxzhkrlchycbria.supabase.co/rest/v1/agents... 406 (Not Acceptable)
 ```
 
-### Causa Raíz
+Pero el proyecto actual de Lovable Cloud usa:
+```
+https://sbexeqqizazjfsbsgrbd.supabase.co
+```
 
-Los RPCs **existen y funcionan**, pero hay un **desajuste de formato**:
+**Diagnóstico:** El navegador está ejecutando código viejo que apunta a un proyecto Supabase diferente.
 
-| Aspecto | Frontend espera | RPC devuelve |
-|---------|-----------------|--------------|
-| Tipo de retorno | Array `[{...}]` | Objeto JSON `{...}` |
-| Campo ventas | `sales_usd` | `total_usd` |
-| Campo ventas MXN | `sales_mxn` | `total_mxn` |
+---
 
-**Código problemático en useMetrics.ts línea 93-96:**
+## Causa Raíz
+
+| Archivo | URL en código | Problema |
+|---------|---------------|----------|
+| `.env` | `sbexeqqizazjfsbsgrbd` | ✅ Correcto |
+| `import-all-csvs.js` | `qskmzaxzhkrlchycbria` | ❌ URL vieja hardcodeada |
+| `docs/pasos_conexion_supabase.md` | `qskmzaxzhkrlchycbria` | ❌ Documentación obsoleta |
+| `docs/obtener_credenciales_rapido.md` | `qskmzaxzhkrlchycbria` | ❌ Documentación obsoleta |
+
+El Service Worker de PWA está cacheando el bundle viejo que apunta al proyecto incorrecto.
+
+---
+
+## Solución
+
+### Fase 1: Limpiar URLs Hardcodeadas
+
+**Archivo: `import-all-csvs.js`**
+```javascript
+// Antes:
+const SUPABASE_URL = process.env.VITE_SUPABASE_URL || 'https://qskmzaxzhkrlchycbria.supabase.co';
+
+// Después - sin fallback hardcodeado:
+const SUPABASE_URL = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
+if (!SUPABASE_URL) {
+  console.error('❌ VITE_SUPABASE_URL no está configurada');
+  process.exit(1);
+}
+```
+
+**Archivos de documentación:** Actualizar para usar variables de entorno en lugar de URLs específicas.
+
+### Fase 2: Forzar Actualización del Service Worker
+
+Agregar un script que invalide el Service Worker viejo:
+
+**Archivo: `index.html`** (agregar antes de `</body>`):
+```html
+<script>
+  // Force SW update on load
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.getRegistrations().then(registrations => {
+      registrations.forEach(registration => {
+        registration.update();
+      });
+    });
+  }
+</script>
+```
+
+### Fase 3: Incrementar Versión del PWA
+
+El cache del PWA persiste entre deploys. Forzar nueva versión:
+
+**Archivo: `vite.config.ts`** (en configuración de PWA):
 ```typescript
-const { data: salesSummary } = await supabase.rpc('kpi_sales_summary');
-if (salesSummary && Array.isArray(salesSummary) && salesSummary.length > 0) {
-  const summary = salesSummary[0] as { sales_usd?: number; ... }
-```
-
-El frontend verifica `Array.isArray(salesSummary)` pero el RPC devuelve un objeto JSON directo, por lo que la condición falla y usa el fallback lento.
-
----
-
-## Solución: Actualizar RPCs para Retornar Arrays
-
-Modificar ambos RPCs para:
-1. Devolver un array con un solo objeto (formato que el frontend espera)
-2. Renombrar `total_usd` → `sales_usd` y `total_mxn` → `sales_mxn`
-
-### Nueva Migración SQL
-
-```sql
--- ================================================
--- ARREGLAR RPCs para retornar formato de array
--- ================================================
-
--- 1. Recrear kpi_sales_summary con formato correcto
-DROP FUNCTION IF EXISTS kpi_sales_summary();
-CREATE FUNCTION kpi_sales_summary()
-RETURNS JSON AS $$
-BEGIN
-  RETURN (
-    SELECT json_agg(row_to_json(t))
-    FROM (
-      SELECT 
-        COALESCE(month_usd, 0) as sales_usd,
-        COALESCE(month_mxn, 0) as sales_mxn,
-        COALESCE(today_usd, 0) as today_usd,
-        COALESCE(today_mxn, 0) as today_mxn,
-        COALESCE(refunds_usd, 0) as refunds_usd,
-        COALESCE(refunds_mxn, 0) as refunds_mxn
-      FROM mv_sales_summary
-      LIMIT 1
-    ) t
-  );
-END;
-$$ LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public;
-
--- 2. Recrear dashboard_metrics con formato correcto  
-DROP FUNCTION IF EXISTS dashboard_metrics();
-CREATE FUNCTION dashboard_metrics()
-RETURNS JSON AS $$
-BEGIN
-  RETURN (
-    SELECT json_agg(row_to_json(t))
-    FROM (
-      SELECT 
-        COALESCE(lead_count, 0) as lead_count,
-        COALESCE(trial_count, 0) as trial_count,
-        COALESCE(customer_count, 0) as customer_count,
-        COALESCE(churn_count, 0) as churn_count,
-        (SELECT COUNT(*) FROM clients WHERE converted_at IS NOT NULL) as converted_count,
-        '[]'::json as recovery_list
-      FROM mv_client_lifecycle_counts
-      LIMIT 1
-    ) t
-  );
-END;
-$$ LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public;
+manifest: {
+  name: "ZEN Admin",
+  short_name: "ZEN",
+  version: "2.0.0", // Incrementar versión
+  // ...
+}
 ```
 
 ---
 
-## Verificación Esperada
+## Pasos para el Usuario
 
-Después del cambio, los RPCs retornarán:
+Después de aplicar los cambios, el usuario debe:
 
-**kpi_sales_summary():**
-```json
-[{"sales_usd": 326515, "sales_mxn": 11976, "today_usd": 0, ...}]
-```
-
-**dashboard_metrics():**
-```json
-[{"lead_count": 218674, "trial_count": 1, "customer_count": 2435, ...}]
-```
-
-Esto cumple con:
-- ✅ `Array.isArray()` retorna `true`
-- ✅ `data[0].sales_usd` existe
-- ✅ `data[0].lead_count` existe
+1. **Limpiar cache del navegador** o abrir en ventana privada
+2. **O** desregistrar el Service Worker manualmente:
+   - Abrir DevTools → Application → Service Workers → Unregister
 
 ---
 
@@ -115,12 +98,18 @@ Esto cumple con:
 
 | Archivo | Cambio |
 |---------|--------|
-| Nueva migración SQL | Recrear ambos RPCs con formato array |
+| `import-all-csvs.js` | Eliminar URL hardcodeada |
+| `docs/pasos_conexion_supabase.md` | Actualizar a usar variables |
+| `docs/obtener_credenciales_rapido.md` | Actualizar a usar variables |
+| `index.html` | Script para actualizar SW |
+| `vite.config.ts` | Incrementar versión PWA |
 
 ---
 
 ## Impacto
 
-- **Antes:** Dashboard usa fallback lento (500+ queries limitadas)
-- **Después:** Dashboard usa RPCs instantáneos (~50ms cada uno)
-- Los logs de "RPC not available" desaparecerán
+- ✅ Nuevos deploys no tendrán URLs hardcodeadas
+- ✅ Service Worker se actualizará automáticamente
+- ✅ Cache viejo será invalidado
+- ✅ Error 406 desaparecerá
+
