@@ -117,7 +117,7 @@ export function useSubscriptions() {
       return data as SyncRun;
     },
     enabled: !!activeSyncId,
-    refetchInterval: activeSyncId ? 2000 : false, // Poll every 2 seconds
+    refetchInterval: activeSyncId ? 5000 : false, // OPTIMIZATION: Reduced from 2s to 5s
   });
 
   // Handle sync completion

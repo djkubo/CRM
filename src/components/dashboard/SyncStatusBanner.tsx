@@ -83,8 +83,27 @@ export function SyncStatusBanner() {
 
   useEffect(() => {
     fetchSyncStatus();
-    const interval = setInterval(fetchSyncStatus, 3000);
+    // OPTIMIZATION: Reduced polling from 3s to 15s - use Realtime for updates
+    const interval = setInterval(fetchSyncStatus, 15000);
     return () => clearInterval(interval);
+  }, [fetchSyncStatus]);
+
+  // Use Realtime for instant updates instead of aggressive polling
+  useEffect(() => {
+    const channel = supabase
+      .channel('sync_status_banner')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'sync_runs' },
+        () => {
+          fetchSyncStatus();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [fetchSyncStatus]);
 
   // Auto-dismiss completed after 10 seconds

@@ -70,6 +70,7 @@ export function useClients() {
       if (error) throw error;
       return count || 0;
     },
+    staleTime: 60000, // OPTIMIZATION: Cache for 1 minute
   });
 
   // Query for paginated clients
@@ -101,6 +102,7 @@ export function useClients() {
       if (error) throw error;
       return data as Client[];
     },
+    staleTime: 60000, // OPTIMIZATION: Cache for 1 minute
   });
 
   const refetch = () => {

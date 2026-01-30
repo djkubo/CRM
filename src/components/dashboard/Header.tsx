@@ -1,6 +1,7 @@
 import { Search, Bell, Plus, RefreshCw } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { SystemHealthIndicator } from "./SystemHealthIndicator";
 
 interface HeaderProps {
   title: string;
@@ -25,15 +26,19 @@ export function Header({
     <header className="flex flex-col gap-4">
       {/* Title row */}
       <div className="flex items-start justify-between">
-        <div>
-          <h1 className="text-xl md:text-2xl font-display text-foreground uppercase tracking-wide">
-            {title}
-          </h1>
-          {subtitle && (
-            <p className="mt-1 text-sm text-muted-foreground">
-              {subtitle}
-            </p>
-          )}
+        <div className="flex items-center gap-3">
+          <div>
+            <h1 className="text-xl md:text-2xl font-display text-foreground uppercase tracking-wide">
+              {title}
+            </h1>
+            {subtitle && (
+              <p className="mt-1 text-sm text-muted-foreground">
+                {subtitle}
+              </p>
+            )}
+          </div>
+          {/* System health indicator */}
+          <SystemHealthIndicator />
         </div>
         
         {/* Action buttons */}

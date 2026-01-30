@@ -57,7 +57,7 @@ export function StagingContactsPanel() {
       if (error) throw error;
       return data as ImportRun[];
     },
-    refetchInterval: 5000 // Auto-refresh every 5s
+    refetchInterval: 30000 // OPTIMIZATION: Reduced from 5s to 30s
   });
 
   // Fetch staged contacts for selected import
