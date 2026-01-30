@@ -1,56 +1,75 @@
 
-# Plan de Emergencia: Detener Queries Pesadas en useMetrics.ts
+# Plan: Corregir Parsing de dashboard_metrics RPC
 
-## Problema Crítico Identificado
+## Problema Identificado
 
-El archivo `useMetrics.ts` ejecuta **5 queries COUNT paralelas** contra la tabla `clients` (221k+ registros):
+El RPC `dashboard_metrics` devuelve campos con nombres **diferentes** a los que el código espera:
 
+| Campo del RPC (real) | Campo en código (incorrecto) |
+|---------------------|------------------------------|
+| `lead_count` | `leads_count` |
+| `trial_count` | `trials_count` |
+| `customer_count` | `customers_count` |
+| `churn_count` | `churn_count` (correcto) |
+| `converted_count` | `converted_count` (correcto) |
+
+## Solución
+
+Modificar `src/hooks/useMetrics.ts` para:
+
+1. **Agregar console.log de depuración** para ver exactamente qué devuelve el RPC
+2. **Corregir los nombres de campos** para que coincidan con lo que devuelve el RPC
+3. **Garantizar que setIsLoading(false) siempre se ejecute** incluso con datos vacíos
+
+## Cambios en código
+
+Archivo: `src/hooks/useMetrics.ts`
+
+### Cambio 1: Agregar console.log de depuración (línea ~230)
 ```typescript
-// Líneas ~47-71 - CAUSANDO 503 TIMEOUTS
-const [leadsResult, trialsResult, customersResult, ...] = await Promise.all([
-  supabase.from('clients').select('*', { count: 'exact', head: true }).eq('lifecycle_stage', 'LEAD'),
-  supabase.from('clients').select('*', { count: 'exact', head: true }).eq('lifecycle_stage', 'TRIAL'),
-  supabase.from('clients').select('*', { count: 'exact', head: true }).eq('lifecycle_stage', 'CUSTOMER'),
-  supabase.from('clients').select('*', { count: 'exact', head: true }).eq('lifecycle_stage', 'CHURN'),
-  supabase.from('clients').select('*', { count: 'exact', head: true }).eq('lifecycle_stage', 'AT_RISK'),
-]);
+const { data: dashboardData, error: dashboardError } = await supabase.rpc('dashboard_metrics' as any);
+
+// DEBUG: Ver qué devuelve el RPC
+console.log('dashboard_metrics RPC response:', { dashboardData, dashboardError });
 ```
 
-## Solución Inmediata
-
-Reemplazar las 5 queries por UNA sola llamada al RPC `dashboard_metrics` que **YA EXISTE** en la base de datos.
-
-## Cambio Exacto en useMetrics.ts
-
-**ELIMINAR** (líneas ~47-71):
-- Las 5 llamadas paralelas a `supabase.from('clients')`
-
-**REEMPLAZAR CON**:
+### Cambio 2: Corregir mapeo de campos (líneas ~233-244)
 ```typescript
-const { data: dashboardData } = await supabase.rpc('dashboard_metrics');
-const metrics = dashboardData?.[0] || {};
+// ANTES (incorrecto):
+const dbMetrics = dashboardData[0] as {
+  leads_count?: number;    // ❌ No existe
+  trials_count?: number;   // ❌ No existe
+  customers_count?: number; // ❌ No existe
+  churn_count?: number;
+  converted_count?: number;
+};
+finalLeadCount = dbMetrics.leads_count || 0;
 
-// Extraer conteos del RPC
-const leadsCount = metrics.leads_count || 0;
-const trialsCount = metrics.trials_count || 0;
-const customersCount = metrics.customers_count || 0;
-const churnCount = metrics.churn_count || 0;
-const atRiskCount = metrics.at_risk_count || 0;
+// DESPUÉS (correcto):
+const dbMetrics = dashboardData[0] as {
+  lead_count?: number;     // ✅ Nombre real
+  trial_count?: number;    // ✅ Nombre real  
+  customer_count?: number; // ✅ Nombre real
+  churn_count?: number;
+  converted_count?: number;
+};
+finalLeadCount = dbMetrics.lead_count || 0;
+finalTrialCount = dbMetrics.trial_count || 0;
+finalCustomerCount = dbMetrics.customer_count || 0;
 ```
+
+## Resumen Técnico
+
+| Archivo | Líneas | Cambio |
+|---------|--------|--------|
+| `src/hooks/useMetrics.ts` | ~230-250 | Corregir nombres de campos del RPC (singular vs plural) |
 
 ## Impacto
 
-| Antes | Después |
-|-------|---------|
-| 5 queries × 221k registros = TIMEOUT | 1 RPC optimizado = <200ms |
-| Base de datos bloqueada | Base de datos respira |
+- El dashboard cargará correctamente mostrando los conteos de lifecycle (Leads, Trials, Customers, Churn)
+- El círculo de loading desaparecerá al completar la carga
+- Los KPIs mostrarán los valores reales de la base de datos
 
-## Archivo a Modificar
+## Siguiente Paso
 
-| Archivo | Acción |
-|---------|--------|
-| `src/hooks/useMetrics.ts` | Reemplazar 5 COUNT queries por llamada a `dashboard_metrics` RPC |
-
----
-
-**Al aprobar este plan, saldré del modo READ-ONLY y ejecutaré el cambio inmediatamente.**
+Al aprobar este plan, modificaré inmediatamente el archivo para corregir el parsing y eliminar el loading infinito.
