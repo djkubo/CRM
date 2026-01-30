@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { NavLink, useLocation } from "react-router-dom";
 import { cn } from "@/lib/utils";
 import { 
   LayoutDashboard, 
@@ -26,10 +27,24 @@ import {
 } from "lucide-react";
 import vrpLogo from "@/assets/vrp-logo.png";
 
-interface SidebarProps {
-  activeItem?: string;
-  onItemClick?: (item: string) => void;
-}
+// Route mapping for each menu item
+const routeMap: Record<string, string> = {
+  dashboard: "/",
+  movements: "/movements",
+  analytics: "/analytics",
+  messages: "/messages",
+  campaigns: "/campaigns",
+  broadcast: "/broadcast",
+  flows: "/flows",
+  "whatsapp-direct": "/whatsapp",
+  clients: "/clients",
+  invoices: "/invoices",
+  subscriptions: "/subscriptions",
+  recovery: "/recovery",
+  import: "/import",
+  diagnostics: "/diagnostics",
+  settings: "/settings",
+};
 
 // Navigation structure organized in 4 logical modules
 const navigationGroups = [
@@ -78,8 +93,9 @@ const navigationGroups = [
   },
 ];
 
-export function Sidebar({ activeItem = "dashboard", onItemClick }: SidebarProps) {
+export function Sidebar() {
   const [isOpen, setIsOpen] = useState(false);
+  const location = useLocation();
 
   useEffect(() => {
     const handleEscape = (e: KeyboardEvent) => {
@@ -97,10 +113,10 @@ export function Sidebar({ activeItem = "dashboard", onItemClick }: SidebarProps)
     };
   }, [isOpen]);
 
-  const handleItemClick = (itemId: string) => {
-    onItemClick?.(itemId);
+  // Close mobile menu on navigation
+  useEffect(() => {
     setIsOpen(false);
-  };
+  }, [location.pathname]);
 
   return (
     <>
@@ -176,25 +192,30 @@ export function Sidebar({ activeItem = "dashboard", onItemClick }: SidebarProps)
                 <div className="space-y-1">
                   {group.items.map((item) => {
                     const Icon = item.icon;
-                    const isActive = activeItem === item.id;
+                    const to = routeMap[item.id] || "/";
                     
                     return (
-                      <button
+                      <NavLink
                         key={item.id}
-                        onClick={() => handleItemClick(item.id)}
-                        className={cn(
+                        to={to}
+                        end={to === "/"}
+                        className={({ isActive }) => cn(
                           "flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-all duration-150 touch-feedback relative",
                           isActive
                             ? "bg-accent text-foreground active-indicator"
                             : "text-muted-foreground hover:bg-accent/50 hover:text-foreground"
                         )}
                       >
-                        <Icon className={cn(
-                          "h-4 w-4 flex-shrink-0 transition-colors",
-                          isActive && "text-primary"
-                        )} />
-                        <span className="truncate">{item.label}</span>
-                      </button>
+                        {({ isActive }) => (
+                          <>
+                            <Icon className={cn(
+                              "h-4 w-4 flex-shrink-0 transition-colors",
+                              isActive && "text-primary"
+                            )} />
+                            <span className="truncate">{item.label}</span>
+                          </>
+                        )}
+                      </NavLink>
                     );
                   })}
                 </div>
