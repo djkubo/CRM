@@ -1,289 +1,126 @@
 
-# Plan: Optimización de Velocidad - 5 Problemas Detectados
+# Plan: Arreglar RPCs que No Devuelven Datos Correctos
 
-## Resumen de Problemas
+## Problema Detectado
 
-| Problema | Ahorro Estimado | Causa Principal |
-|----------|-----------------|-----------------|
-| **JavaScript no usado** | 299 KiB | Librerías pesadas (recharts, xyflow) cargadas en bundle principal |
-| **Cache ineficiente** | 456 KiB | Sin headers de cache en config de Vite |
-| **Render blocking** | 120 ms | Fuentes de Google cargadas síncronamente |
-| **CSS no usado** | 17 KiB | Tailwind sin purge optimizado |
-| **Cadena de dependencias** | - | Imports síncronos de componentes pesados |
+El frontend muestra los logs:
+```
+kpi_sales_summary RPC not available, using limited fallback
+dashboard_metrics RPC not available: undefined
+```
+
+### Causa Raíz
+
+Los RPCs **existen y funcionan**, pero hay un **desajuste de formato**:
+
+| Aspecto | Frontend espera | RPC devuelve |
+|---------|-----------------|--------------|
+| Tipo de retorno | Array `[{...}]` | Objeto JSON `{...}` |
+| Campo ventas | `sales_usd` | `total_usd` |
+| Campo ventas MXN | `sales_mxn` | `total_mxn` |
+
+**Código problemático en useMetrics.ts línea 93-96:**
+```typescript
+const { data: salesSummary } = await supabase.rpc('kpi_sales_summary');
+if (salesSummary && Array.isArray(salesSummary) && salesSummary.length > 0) {
+  const summary = salesSummary[0] as { sales_usd?: number; ... }
+```
+
+El frontend verifica `Array.isArray(salesSummary)` pero el RPC devuelve un objeto JSON directo, por lo que la condición falla y usa el fallback lento.
 
 ---
 
-## Fase 1: Reducir JavaScript No Usado (299 KiB)
+## Solución: Actualizar RPCs para Retornar Arrays
 
-### 1.1 Lazy Loading de Páginas Pesadas
+Modificar ambos RPCs para:
+1. Devolver un array con un solo objeto (formato que el frontend espera)
+2. Renombrar `total_usd` → `sales_usd` y `total_mxn` → `sales_mxn`
 
-Actualmente solo `AnalyticsPanel` y componentes de Settings usan lazy loading. Las páginas con librerías pesadas deben cargarse bajo demanda:
+### Nueva Migración SQL
 
-**Páginas a convertir en lazy:**
-- `FlowsPage` - usa `@xyflow/react` (librería muy pesada ~150KB)
-- `MovementsPage` - usa tablas con muchos datos
-- `CampaignControlCenter` - componente complejo
-- `BroadcastListsPage` - listas de difusión
-- `DiagnosticsPanel` - herramientas de diagnóstico
+```sql
+-- ================================================
+-- ARREGLAR RPCs para retornar formato de array
+-- ================================================
 
-**Cambio en `src/App.tsx`:**
-```typescript
-// Lazy load pages with heavy dependencies
-const FlowsPage = lazy(() => 
-  import("@/components/dashboard/FlowsPage").then(m => ({ default: m.FlowsPage }))
-);
-const MovementsPage = lazy(() => 
-  import("@/components/dashboard/MovementsPage").then(m => ({ default: m.MovementsPage }))
-);
-const CampaignControlCenter = lazy(() => 
-  import("@/components/dashboard/CampaignControlCenter").then(m => ({ default: m.CampaignControlCenter }))
-);
-const DiagnosticsPanel = lazy(() => 
-  import("@/components/dashboard/DiagnosticsPanel")
-);
-```
+-- 1. Recrear kpi_sales_summary con formato correcto
+DROP FUNCTION IF EXISTS kpi_sales_summary();
+CREATE FUNCTION kpi_sales_summary()
+RETURNS JSON AS $$
+BEGIN
+  RETURN (
+    SELECT json_agg(row_to_json(t))
+    FROM (
+      SELECT 
+        COALESCE(month_usd, 0) as sales_usd,
+        COALESCE(month_mxn, 0) as sales_mxn,
+        COALESCE(today_usd, 0) as today_usd,
+        COALESCE(today_mxn, 0) as today_mxn,
+        COALESCE(refunds_usd, 0) as refunds_usd,
+        COALESCE(refunds_mxn, 0) as refunds_mxn
+      FROM mv_sales_summary
+      LIMIT 1
+    ) t
+  );
+END;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public;
 
-### 1.2 Code Splitting en Vite
-
-Configurar Vite para separar chunks automáticamente por vendor:
-
-**Cambio en `vite.config.ts`:**
-```typescript
-build: {
-  rollupOptions: {
-    output: {
-      manualChunks: {
-        'vendor-react': ['react', 'react-dom', 'react-router-dom'],
-        'vendor-charts': ['recharts'],
-        'vendor-flow': ['@xyflow/react'],
-        'vendor-query': ['@tanstack/react-query'],
-        'vendor-supabase': ['@supabase/supabase-js'],
-        'vendor-ui': [
-          '@radix-ui/react-dialog',
-          '@radix-ui/react-dropdown-menu',
-          '@radix-ui/react-popover',
-          '@radix-ui/react-select',
-          '@radix-ui/react-tabs',
-          '@radix-ui/react-tooltip',
-        ],
-      },
-    },
-  },
-  chunkSizeWarningLimit: 500,
-},
-```
-
----
-
-## Fase 2: Eliminar Render Blocking (120 ms)
-
-### 2.1 Optimizar Carga de Fuentes
-
-El problema está en `src/index.css` línea 6:
-```css
-@import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800&family=Inter:wght@300;400;500;600;700&display=swap');
-```
-
-Esta línea bloquea el renderizado. Se debe:
-
-1. Mover la carga de fuentes al `index.html` con `preconnect` y `preload`
-2. Usar `font-display: swap` ya está correcto
-
-**Cambio en `index.html` (agregar en `<head>`):**
-```html
-<!-- Preconnect to Google Fonts -->
-<link rel="preconnect" href="https://fonts.googleapis.com" />
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-
-<!-- Load fonts asynchronously -->
-<link 
-  rel="stylesheet" 
-  href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800&family=Inter:wght@300;400;500;600;700&display=swap"
-  media="print" 
-  onload="this.media='all'" 
-/>
-```
-
-**Cambio en `src/index.css`:**
-Eliminar la línea `@import url(...)` ya que ahora se carga en HTML.
-
----
-
-## Fase 3: Optimizar Cache (456 KiB)
-
-### 3.1 Configurar Headers de Cache en Vite
-
-Agregar configuración de assets con hash para cache largo:
-
-**Cambio en `vite.config.ts`:**
-```typescript
-build: {
-  rollupOptions: {
-    output: {
-      // Agregar hash a nombres de archivos para cache busting
-      entryFileNames: 'assets/[name]-[hash].js',
-      chunkFileNames: 'assets/[name]-[hash].js',
-      assetFileNames: 'assets/[name]-[hash].[ext]',
-      // ... manualChunks ya definido
-    },
-  },
-},
-```
-
-### 3.2 Mejorar Workbox en PWA
-
-El cache de PWA ya está configurado pero se puede mejorar:
-
-```typescript
-workbox: {
-  globPatterns: ["**/*.{js,css,html,ico,png,svg,woff2}"],
-  maximumFileSizeToCacheInBytes: 5 * 1024 * 1024, // 5MB
-  runtimeCaching: [
-    {
-      urlPattern: /^https:\/\/fonts\.googleapis\.com\/.*/i,
-      handler: "CacheFirst",
-      options: {
-        cacheName: "google-fonts-cache",
-        expiration: {
-          maxEntries: 10,
-          maxAgeSeconds: 60 * 60 * 24 * 365, // 1 año
-        },
-        cacheableResponse: {
-          statuses: [0, 200],
-        },
-      },
-    },
-    {
-      urlPattern: /^https:\/\/fonts\.gstatic\.com\/.*/i,
-      handler: "CacheFirst",
-      options: {
-        cacheName: "google-fonts-webfonts",
-        expiration: {
-          maxEntries: 30,
-          maxAgeSeconds: 60 * 60 * 24 * 365,
-        },
-        cacheableResponse: {
-          statuses: [0, 200],
-        },
-      },
-    },
-  ],
-},
+-- 2. Recrear dashboard_metrics con formato correcto  
+DROP FUNCTION IF EXISTS dashboard_metrics();
+CREATE FUNCTION dashboard_metrics()
+RETURNS JSON AS $$
+BEGIN
+  RETURN (
+    SELECT json_agg(row_to_json(t))
+    FROM (
+      SELECT 
+        COALESCE(lead_count, 0) as lead_count,
+        COALESCE(trial_count, 0) as trial_count,
+        COALESCE(customer_count, 0) as customer_count,
+        COALESCE(churn_count, 0) as churn_count,
+        (SELECT COUNT(*) FROM clients WHERE converted_at IS NOT NULL) as converted_count,
+        '[]'::json as recovery_list
+      FROM mv_client_lifecycle_counts
+      LIMIT 1
+    ) t
+  );
+END;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public;
 ```
 
 ---
 
-## Fase 4: Reducir CSS No Usado (17 KiB)
+## Verificación Esperada
 
-### 4.1 Optimizar Tailwind Config
+Después del cambio, los RPCs retornarán:
 
-Verificar que `tailwind.config.ts` tenga purge correctamente configurado:
-
-```typescript
-content: [
-  "./index.html",
-  "./src/**/*.{js,ts,jsx,tsx}",
-],
+**kpi_sales_summary():**
+```json
+[{"sales_usd": 326515, "sales_mxn": 11976, "today_usd": 0, ...}]
 ```
 
-Esto ya está configurado correctamente. El CSS no usado probablemente viene de:
-- Clases definidas en `@layer components` que no se usan
-- Variantes de dark mode duplicadas
-
-### 4.2 Limpiar CSS Duplicado
-
-En `src/index.css` hay definiciones duplicadas de variables para `.dark` y `:root`. Se puede simplificar:
-
-```css
-/* Eliminar .dark {} ya que las variables son idénticas a :root */
-/* El tema es siempre oscuro */
+**dashboard_metrics():**
+```json
+[{"lead_count": 218674, "trial_count": 1, "customer_count": 2435, ...}]
 ```
 
----
-
-## Fase 5: Romper Cadenas de Dependencias
-
-### 5.1 Precargar Módulos Críticos
-
-Agregar hints de preload para módulos críticos:
-
-**Cambio en `index.html`:**
-```html
-<link rel="modulepreload" href="/src/main.tsx" />
-```
-
-### 5.2 Diferir Componentes No Críticos
-
-Los componentes como `Toaster`, `Sonner`, `OfflineBanner` pueden cargarse después del primer render:
-
-```typescript
-// En App.tsx - cargar después de mount
-const [mounted, setMounted] = useState(false);
-useEffect(() => setMounted(true), []);
-
-// Render condicional
-{mounted && (
-  <>
-    <Toaster />
-    <Sonner />
-    <OfflineBanner />
-    <QueryErrorHandler />
-  </>
-)}
-```
+Esto cumple con:
+- ✅ `Array.isArray()` retorna `true`
+- ✅ `data[0].sales_usd` existe
+- ✅ `data[0].lead_count` existe
 
 ---
 
 ## Archivos a Modificar
 
-| Archivo | Cambios |
-|---------|---------|
-| `vite.config.ts` | Code splitting con manualChunks, asset naming |
-| `index.html` | Preconnect fonts, font loading async, modulepreload |
-| `src/index.css` | Eliminar @import de fonts, limpiar CSS duplicado |
-| `src/App.tsx` | Lazy loading de páginas pesadas, diferir no-críticos |
-| `tailwind.config.ts` | Verificar content paths (ya correcto) |
+| Archivo | Cambio |
+|---------|--------|
+| Nueva migración SQL | Recrear ambos RPCs con formato array |
 
 ---
 
-## Impacto Esperado
+## Impacto
 
-| Métrica | Antes | Después |
-|---------|-------|---------|
-| JavaScript inicial | ~800KB | ~400KB (-50%) |
-| Tiempo de render | +120ms | 0ms (no blocking) |
-| Cache efficiency | 0% | 90%+ |
-| First Contentful Paint | ~2s | ~1.2s |
-
----
-
-## Sección Técnica
-
-### Build Output con Code Splitting
-
-```text
-dist/assets/
-├── index-[hash].js          # Core app (~150KB)
-├── vendor-react-[hash].js   # React libs (~50KB)
-├── vendor-charts-[hash].js  # Recharts (~180KB) - lazy
-├── vendor-flow-[hash].js    # XYFlow (~150KB) - lazy
-├── vendor-ui-[hash].js      # Radix components (~80KB)
-└── ...page chunks
-```
-
-### Cache Strategy
-
-```text
-Static Assets (JS/CSS/Images)
-├── Cache-Control: public, max-age=31536000, immutable
-└── Versionado con hash en filename
-
-Fonts (Google Fonts)
-├── Preconnect para DNS prefetch
-├── CacheFirst strategy en Service Worker
-└── TTL: 1 año
-
-API Calls (Supabase)
-├── NetworkFirst strategy
-└── Fallback a cache si offline
-```
+- **Antes:** Dashboard usa fallback lento (500+ queries limitadas)
+- **Después:** Dashboard usa RPCs instantáneos (~50ms cada uno)
+- Los logs de "RPC not available" desaparecerán
