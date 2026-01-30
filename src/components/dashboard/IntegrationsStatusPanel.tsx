@@ -12,7 +12,6 @@ interface Integration {
   icon: React.ElementType;
   secrets: string[];
   testEndpoint?: string;
-  color: string;
 }
 
 const integrations: Integration[] = [
@@ -22,7 +21,6 @@ const integrations: Integration[] = [
     icon: CreditCard,
     secrets: ['STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET'],
     testEndpoint: 'fetch-stripe',
-    color: 'purple',
   },
   {
     id: 'paypal',
@@ -30,14 +28,12 @@ const integrations: Integration[] = [
     icon: CreditCard,
     secrets: ['PAYPAL_CLIENT_ID', 'PAYPAL_SECRET', 'PAYPAL_WEBHOOK_ID'],
     testEndpoint: 'fetch-paypal',
-    color: 'blue',
   },
   {
     id: 'twilio',
     name: 'Twilio',
     icon: MessageCircle,
     secrets: ['TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN', 'TWILIO_PHONE_NUMBER'],
-    color: 'red',
   },
   {
     id: 'ghl',
@@ -45,7 +41,6 @@ const integrations: Integration[] = [
     icon: Users,
     secrets: ['GHL_API_KEY', 'GHL_LOCATION_ID'],
     testEndpoint: 'sync-ghl',
-    color: 'green',
   },
   {
     id: 'manychat',
@@ -53,7 +48,6 @@ const integrations: Integration[] = [
     icon: Bot,
     secrets: ['MANYCHAT_API_KEY'],
     testEndpoint: 'sync-manychat',
-    color: 'cyan',
   },
 ];
 
@@ -95,7 +89,7 @@ export function IntegrationsStatusPanel() {
     
     if (!status || status === 'unknown') {
       return (
-        <Badge variant="outline" className="bg-muted/50 text-muted-foreground border-muted">
+        <Badge variant="neutral">
           Sin probar
         </Badge>
       );
@@ -103,7 +97,7 @@ export function IntegrationsStatusPanel() {
     
     if (status === 'connected') {
       return (
-        <Badge variant="outline" className="bg-emerald-500/10 text-emerald-400 border-emerald-500/30">
+        <Badge variant="success">
           <CheckCircle className="h-3 w-3 mr-1" />
           Conectado
         </Badge>
@@ -111,26 +105,15 @@ export function IntegrationsStatusPanel() {
     }
     
     return (
-      <Badge variant="outline" className="bg-red-500/10 text-red-400 border-red-500/30">
+      <Badge variant="error">
         <XCircle className="h-3 w-3 mr-1" />
         Error
       </Badge>
     );
   };
 
-  const getColorClasses = (color: string) => {
-    const colors: Record<string, string> = {
-      purple: 'text-purple-400',
-      blue: 'text-blue-400',
-      red: 'text-red-400',
-      green: 'text-green-400',
-      cyan: 'text-cyan-400',
-    };
-    return colors[color] || 'text-primary';
-  };
-
   return (
-    <Card className="bg-card border-border/50">
+    <Card className="card-base">
       <CardHeader className="pb-3">
         <CardTitle className="text-lg flex items-center gap-2">
           <Zap className="h-5 w-5 text-primary" />
@@ -149,7 +132,7 @@ export function IntegrationsStatusPanel() {
               className="flex items-center justify-between p-3 rounded-lg bg-muted/30 border border-border/30"
             >
               <div className="flex items-center gap-3">
-                <Icon className={`h-5 w-5 ${getColorClasses(integration.color)}`} />
+                <Icon className="h-5 w-5 text-zinc-400" />
                 <div>
                   <p className="font-medium text-foreground">{integration.name}</p>
                   <p className="text-xs text-muted-foreground">
