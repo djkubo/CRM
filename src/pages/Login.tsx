@@ -13,8 +13,8 @@ import { Lock } from "lucide-react";
 const emailSchema = z.string().email("Email inválido");
 const passwordSchema = z.string().min(6, "La contraseña debe tener al menos 6 caracteres");
 
-// Admin email - only this user can access the dashboard
-const ADMIN_EMAIL = "djkubo@live.com.mx";
+// Security: Admin validation is handled server-side via app_admins table and is_admin() function
+// Client-side checks were removed to prevent credential exposure
 
 export default function Login() {
   const [email, setEmail] = useState("");
@@ -45,17 +45,8 @@ export default function Login() {
       }
     }
 
-    // Check if email is admin
-    if (email.toLowerCase().trim() !== ADMIN_EMAIL.toLowerCase()) {
-      toast({
-        title: "Acceso denegado",
-        description: "No tienes permisos para acceder a esta aplicación.",
-        variant: "destructive",
-      });
-      setIsLoading(false);
-      return;
-    }
-
+    // Authentication is handled server-side by Supabase Auth
+    // Authorization is enforced by RLS policies using is_admin() function
     try {
       const result = await signIn(email, password);
       if (result.error) {
@@ -114,7 +105,7 @@ export default function Login() {
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="admin@vrp.com"
+                placeholder="tu@email.com"
                 required
                 disabled={isLoading}
               />
