@@ -5,6 +5,7 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Skeleton } from '@/components/ui/skeleton';
 import { Settings2, Loader2, Save, Bell, Pause, Clock, Building } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
@@ -39,7 +40,33 @@ const timezones = [
   { value: 'UTC', label: 'UTC' },
 ];
 
-export function SystemTogglesPanel() {
+// Skeleton de carga para mejor UX
+function SettingsSkeleton() {
+  return (
+    <Card className="card-base">
+      <CardHeader className="pb-3">
+        <Skeleton className="h-6 w-48" />
+        <Skeleton className="h-4 w-64 mt-2" />
+      </CardHeader>
+      <CardContent className="space-y-6">
+        {[1, 2, 3, 4, 5].map((i) => (
+          <div key={i} className="flex items-center justify-between p-3 rounded-lg bg-muted/30 border border-border/30">
+            <div className="flex items-center gap-3">
+              <Skeleton className="h-5 w-5 rounded" />
+              <div className="space-y-1">
+                <Skeleton className="h-4 w-24" />
+                <Skeleton className="h-3 w-40" />
+              </div>
+            </div>
+            <Skeleton className="h-6 w-12 rounded-full" />
+          </div>
+        ))}
+      </CardContent>
+    </Card>
+  );
+}
+
+export default function SystemTogglesPanel() {
   const [settings, setSettings] = useState<SystemSettings>(defaultSettings);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
@@ -111,17 +138,11 @@ export function SystemTogglesPanel() {
   };
 
   if (isLoading) {
-    return (
-      <Card className="bg-card border-border/50">
-        <CardContent className="py-12 flex items-center justify-center">
-          <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-        </CardContent>
-      </Card>
-    );
+    return <SettingsSkeleton />;
   }
 
   return (
-    <Card className="bg-card border-border/50">
+    <Card className="card-base">
       <CardHeader className="pb-3">
         <CardTitle className="text-lg flex items-center gap-2">
           <Settings2 className="h-5 w-5 text-primary" />
@@ -135,7 +156,7 @@ export function SystemTogglesPanel() {
         {/* Auto Dunning Toggle */}
         <div className="flex items-center justify-between p-3 rounded-lg bg-muted/30 border border-border/30">
           <div className="flex items-center gap-3">
-            <Bell className="h-5 w-5 text-emerald-400" />
+            <Bell className="h-5 w-5 text-zinc-400" />
             <div>
               <Label className="font-medium">Auto-Dunning</Label>
               <p className="text-xs text-muted-foreground">
@@ -152,7 +173,7 @@ export function SystemTogglesPanel() {
         {/* Sync Paused Toggle */}
         <div className="flex items-center justify-between p-3 rounded-lg bg-muted/30 border border-border/30">
           <div className="flex items-center gap-3">
-            <Pause className="h-5 w-5 text-amber-400" />
+            <Pause className="h-5 w-5 text-zinc-400" />
             <div>
               <Label className="font-medium">Pausar Sincronización</Label>
               <p className="text-xs text-muted-foreground">
@@ -169,7 +190,7 @@ export function SystemTogglesPanel() {
         {/* Quiet Hours */}
         <div className="p-3 rounded-lg bg-muted/30 border border-border/30 space-y-3">
           <div className="flex items-center gap-3">
-            <Clock className="h-5 w-5 text-blue-400" />
+            <Clock className="h-5 w-5 text-zinc-400" />
             <div>
               <Label className="font-medium">Horario Silencioso</Label>
               <p className="text-xs text-muted-foreground">
@@ -182,14 +203,14 @@ export function SystemTogglesPanel() {
               type="time"
               value={settings.quiet_hours_start}
               onChange={(e) => updateSetting('quiet_hours_start', e.target.value)}
-              className="w-28 bg-background"
+              className="w-28 input-base"
             />
             <span className="text-muted-foreground">—</span>
             <Input
               type="time"
               value={settings.quiet_hours_end}
               onChange={(e) => updateSetting('quiet_hours_end', e.target.value)}
-              className="w-28 bg-background"
+              className="w-28 input-base"
             />
           </div>
         </div>
@@ -197,7 +218,7 @@ export function SystemTogglesPanel() {
         {/* Company Name */}
         <div className="p-3 rounded-lg bg-muted/30 border border-border/30 space-y-3">
           <div className="flex items-center gap-3">
-            <Building className="h-5 w-5 text-purple-400" />
+            <Building className="h-5 w-5 text-zinc-400" />
             <div>
               <Label className="font-medium">Nombre de Empresa</Label>
               <p className="text-xs text-muted-foreground">
@@ -209,14 +230,14 @@ export function SystemTogglesPanel() {
             value={settings.company_name}
             onChange={(e) => updateSetting('company_name', e.target.value)}
             placeholder="Mi Empresa S.A."
-            className="ml-8 w-auto bg-background"
+            className="ml-8 w-auto input-base"
           />
         </div>
 
         {/* Timezone */}
         <div className="p-3 rounded-lg bg-muted/30 border border-border/30 space-y-3">
           <div className="flex items-center gap-3">
-            <Clock className="h-5 w-5 text-cyan-400" />
+            <Clock className="h-5 w-5 text-zinc-400" />
             <div>
               <Label className="font-medium">Zona Horaria</Label>
               <p className="text-xs text-muted-foreground">
@@ -228,7 +249,7 @@ export function SystemTogglesPanel() {
             value={settings.timezone}
             onValueChange={(value) => updateSetting('timezone', value)}
           >
-            <SelectTrigger className="ml-8 w-64 bg-background">
+            <SelectTrigger className="ml-8 w-64 input-base">
               <SelectValue placeholder="Selecciona zona horaria" />
             </SelectTrigger>
             <SelectContent>
@@ -246,7 +267,7 @@ export function SystemTogglesPanel() {
           <Button
             onClick={saveSettings}
             disabled={!hasChanges || isSaving}
-            className="gap-2"
+            className="btn-primary gap-2"
           >
             {isSaving ? (
               <Loader2 className="h-4 w-4 animate-spin" />
@@ -260,3 +281,6 @@ export function SystemTogglesPanel() {
     </Card>
   );
 }
+
+// Named export for backwards compatibility
+export { SystemTogglesPanel };

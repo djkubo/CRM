@@ -1,12 +1,48 @@
+import { Suspense, lazy } from 'react';
 import { Settings, LogOut } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { GHLSettingsPanel } from './GHLSettingsPanel';
-import { IntegrationsStatusPanel } from './IntegrationsStatusPanel';
-import { SystemTogglesPanel } from './SystemTogglesPanel';
+import { Skeleton } from '@/components/ui/skeleton';
 import { useAuth } from '@/hooks/useAuth';
+
+// Lazy load heavy components for better performance
+const SystemTogglesPanel = lazy(() => import('./SystemTogglesPanel'));
+const IntegrationsStatusPanel = lazy(() => import('./IntegrationsStatusPanel').then(m => ({ default: m.IntegrationsStatusPanel })));
+const GHLSettingsPanel = lazy(() => import('./GHLSettingsPanel'));
 
 interface SettingsPageProps {
   onLogout?: () => void;
+}
+
+// Skeleton de carga premium
+function SettingsSkeleton() {
+  return (
+    <div className="space-y-4 md:space-y-6">
+      {/* Skeleton for each panel */}
+      {[1, 2, 3].map((i) => (
+        <div key={i} className="card-base p-6">
+          <div className="flex items-center gap-3 mb-4">
+            <Skeleton className="h-5 w-5 rounded" />
+            <Skeleton className="h-5 w-40" />
+          </div>
+          <Skeleton className="h-4 w-64 mb-6" />
+          <div className="space-y-4">
+            {[1, 2, 3].map((j) => (
+              <div key={j} className="flex items-center justify-between p-3 rounded-lg bg-muted/30 border border-border/30">
+                <div className="flex items-center gap-3">
+                  <Skeleton className="h-5 w-5 rounded" />
+                  <div className="space-y-1">
+                    <Skeleton className="h-4 w-28" />
+                    <Skeleton className="h-3 w-48" />
+                  </div>
+                </div>
+                <Skeleton className="h-6 w-12 rounded-full" />
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
 }
 
 export function SettingsPage({ onLogout }: SettingsPageProps) {
@@ -37,14 +73,17 @@ export function SettingsPage({ onLogout }: SettingsPageProps) {
         )}
       </div>
 
-      {/* System Toggles - New */}
-      <SystemTogglesPanel />
+      {/* Panels with Suspense for lazy loading */}
+      <Suspense fallback={<SettingsSkeleton />}>
+        {/* System Toggles */}
+        <SystemTogglesPanel />
 
-      {/* Integrations Status - New */}
-      <IntegrationsStatusPanel />
+        {/* Integrations Status */}
+        <IntegrationsStatusPanel />
 
-      {/* GHL Integration - Existing */}
-      <GHLSettingsPanel />
+        {/* GHL Integration */}
+        <GHLSettingsPanel />
+      </Suspense>
     </div>
   );
 }
