@@ -1,185 +1,289 @@
 
-# Plan: Arreglar Todos los Problemas de Seguridad
+# Plan: Optimización de Velocidad - 5 Problemas Detectados
 
-## Resumen de Problemas Detectados
+## Resumen de Problemas
 
-| Problema | Severidad | Causa |
-|----------|-----------|-------|
-| Email admin hardcodeado | ALTO | `ADMIN_EMAIL = "djkubo@live.com.mx"` en Login.tsx |
-| Políticas RLS "Always True" | ALTO | 2 tablas con acceso público |
-| Functions sin search_path | MEDIO | 8 funciones vulnerables a inyección de esquema |
-| Vistas materializadas expuestas | BAJO | 2 vistas accesibles via API |
-| Extension en public | BAJO | `vector` instalada en public schema |
-| Leaked Password Protection | BAJO | Deshabilitado en config de auth |
+| Problema | Ahorro Estimado | Causa Principal |
+|----------|-----------------|-----------------|
+| **JavaScript no usado** | 299 KiB | Librerías pesadas (recharts, xyflow) cargadas en bundle principal |
+| **Cache ineficiente** | 456 KiB | Sin headers de cache en config de Vite |
+| **Render blocking** | 120 ms | Fuentes de Google cargadas síncronamente |
+| **CSS no usado** | 17 KiB | Tailwind sin purge optimizado |
+| **Cadena de dependencias** | - | Imports síncronos de componentes pesados |
 
 ---
 
-## Fase 1: Eliminar Email Hardcodeado (CRÍTICO)
+## Fase 1: Reducir JavaScript No Usado (299 KiB)
 
-### Cambio en `src/pages/Login.tsx`
+### 1.1 Lazy Loading de Páginas Pesadas
 
-Eliminar la validación client-side del email admin. La seguridad real ya está implementada server-side en la tabla `app_admins` y la función `is_admin()`.
+Actualmente solo `AnalyticsPanel` y componentes de Settings usan lazy loading. Las páginas con librerías pesadas deben cargarse bajo demanda:
 
-**Antes:**
+**Páginas a convertir en lazy:**
+- `FlowsPage` - usa `@xyflow/react` (librería muy pesada ~150KB)
+- `MovementsPage` - usa tablas con muchos datos
+- `CampaignControlCenter` - componente complejo
+- `BroadcastListsPage` - listas de difusión
+- `DiagnosticsPanel` - herramientas de diagnóstico
+
+**Cambio en `src/App.tsx`:**
 ```typescript
-const ADMIN_EMAIL = "djkubo@live.com.mx";
-
-// Check if email is admin
-if (email.toLowerCase().trim() !== ADMIN_EMAIL.toLowerCase()) {
-  toast({ title: "Acceso denegado", ... });
-  return;
-}
+// Lazy load pages with heavy dependencies
+const FlowsPage = lazy(() => 
+  import("@/components/dashboard/FlowsPage").then(m => ({ default: m.FlowsPage }))
+);
+const MovementsPage = lazy(() => 
+  import("@/components/dashboard/MovementsPage").then(m => ({ default: m.MovementsPage }))
+);
+const CampaignControlCenter = lazy(() => 
+  import("@/components/dashboard/CampaignControlCenter").then(m => ({ default: m.CampaignControlCenter }))
+);
+const DiagnosticsPanel = lazy(() => 
+  import("@/components/dashboard/DiagnosticsPanel")
+);
 ```
 
-**Después:**
-- Eliminar la constante `ADMIN_EMAIL`
-- Eliminar el bloque de validación client-side
-- Dejar que Supabase Auth maneje la autenticación
-- Las RLS policies con `is_admin()` protegen los datos server-side
+### 1.2 Code Splitting en Vite
 
-Esto es correcto porque:
-1. La autenticación real es via Supabase Auth (email + password)
-2. El acceso a datos está protegido por RLS + `is_admin()`
-3. El check client-side solo expone el email admin y da falsa seguridad
+Configurar Vite para separar chunks automáticamente por vendor:
 
----
-
-## Fase 2: Arreglar Políticas RLS Permisivas
-
-### Tabla: `payment_update_links`
-
-La política actual permite a cualquiera ver todos los tokens de pago:
-```sql
--- PROBLEMA: "Public can validate own token" con qual=true
-```
-
-**Solución:** Cambiar para que solo permita validar un token específico pasado como parámetro, no listar todos:
-
-```sql
-DROP POLICY IF EXISTS "Public can validate own token" ON public.payment_update_links;
-
--- Nueva política: Solo permite SELECT cuando se proporciona un token específico
-CREATE POLICY "Validate specific token only" ON public.payment_update_links
-  FOR SELECT TO anon
-  USING (
-    -- Solo permite leer si el request viene con el token correcto
-    -- Esto se valida en el edge function, no expone lista completa
-    false
-  );
-
--- Admin puede ver todo
-CREATE POLICY "Admin full access payment_update_links" ON public.payment_update_links
-  FOR ALL TO authenticated USING (public.is_admin()) WITH CHECK (public.is_admin());
-
--- Service role para edge functions
-CREATE POLICY "Service role payment_update_links" ON public.payment_update_links
-  FOR ALL TO service_role USING (true) WITH CHECK (true);
-```
-
-### Tabla: `scheduled_messages`
-
-```sql
-DROP POLICY IF EXISTS "Anyone can view scheduled messages" ON public.scheduled_messages;
-
-CREATE POLICY "Admin can manage scheduled_messages" ON public.scheduled_messages
-  FOR ALL TO authenticated USING (public.is_admin()) WITH CHECK (public.is_admin());
-
-CREATE POLICY "Service role scheduled_messages" ON public.scheduled_messages
-  FOR ALL TO service_role USING (true) WITH CHECK (true);
+**Cambio en `vite.config.ts`:**
+```typescript
+build: {
+  rollupOptions: {
+    output: {
+      manualChunks: {
+        'vendor-react': ['react', 'react-dom', 'react-router-dom'],
+        'vendor-charts': ['recharts'],
+        'vendor-flow': ['@xyflow/react'],
+        'vendor-query': ['@tanstack/react-query'],
+        'vendor-supabase': ['@supabase/supabase-js'],
+        'vendor-ui': [
+          '@radix-ui/react-dialog',
+          '@radix-ui/react-dropdown-menu',
+          '@radix-ui/react-popover',
+          '@radix-ui/react-select',
+          '@radix-ui/react-tabs',
+          '@radix-ui/react-tooltip',
+        ],
+      },
+    },
+  },
+  chunkSizeWarningLimit: 500,
+},
 ```
 
 ---
 
-## Fase 3: Arreglar Funciones sin search_path
+## Fase 2: Eliminar Render Blocking (120 ms)
 
-Las siguientes funciones necesitan `SET search_path = public`:
+### 2.1 Optimizar Carga de Fuentes
 
-1. `cleanup_old_financial_data`
-2. `get_staging_counts_accurate` 
-3. `kpi_invoices_at_risk`
-4. `kpi_invoices_summary`
-5. `kpi_mrr_summary`
-6. `refresh_lifecycle_counts`
-7. `update_recovery_queue_updated_at`
-8. `update_updated_at_column`
-
-Para cada función, se ejecutará:
-```sql
-ALTER FUNCTION public.function_name() SET search_path = public;
+El problema está en `src/index.css` línea 6:
+```css
+@import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800&family=Inter:wght@300;400;500;600;700&display=swap');
 ```
 
-Esto previene ataques de inyección de esquema donde un atacante podría crear funciones maliciosas con el mismo nombre en un esquema diferente.
+Esta línea bloquea el renderizado. Se debe:
+
+1. Mover la carga de fuentes al `index.html` con `preconnect` y `preload`
+2. Usar `font-display: swap` ya está correcto
+
+**Cambio en `index.html` (agregar en `<head>`):**
+```html
+<!-- Preconnect to Google Fonts -->
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+
+<!-- Load fonts asynchronously -->
+<link 
+  rel="stylesheet" 
+  href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800&family=Inter:wght@300;400;500;600;700&display=swap"
+  media="print" 
+  onload="this.media='all'" 
+/>
+```
+
+**Cambio en `src/index.css`:**
+Eliminar la línea `@import url(...)` ya que ahora se carga en HTML.
 
 ---
 
-## Fase 4: Proteger Vistas Materializadas
+## Fase 3: Optimizar Cache (456 KiB)
 
-Las vistas `mv_client_lifecycle_counts` y `mv_sales_summary` están expuestas via API.
+### 3.1 Configurar Headers de Cache en Vite
 
-**Solución:** Revocar acceso anónimo:
+Agregar configuración de assets con hash para cache largo:
 
-```sql
-REVOKE ALL ON public.mv_client_lifecycle_counts FROM anon;
-REVOKE ALL ON public.mv_sales_summary FROM anon;
-GRANT SELECT ON public.mv_client_lifecycle_counts TO authenticated;
-GRANT SELECT ON public.mv_sales_summary TO authenticated;
+**Cambio en `vite.config.ts`:**
+```typescript
+build: {
+  rollupOptions: {
+    output: {
+      // Agregar hash a nombres de archivos para cache busting
+      entryFileNames: 'assets/[name]-[hash].js',
+      chunkFileNames: 'assets/[name]-[hash].js',
+      assetFileNames: 'assets/[name]-[hash].[ext]',
+      // ... manualChunks ya definido
+    },
+  },
+},
+```
+
+### 3.2 Mejorar Workbox en PWA
+
+El cache de PWA ya está configurado pero se puede mejorar:
+
+```typescript
+workbox: {
+  globPatterns: ["**/*.{js,css,html,ico,png,svg,woff2}"],
+  maximumFileSizeToCacheInBytes: 5 * 1024 * 1024, // 5MB
+  runtimeCaching: [
+    {
+      urlPattern: /^https:\/\/fonts\.googleapis\.com\/.*/i,
+      handler: "CacheFirst",
+      options: {
+        cacheName: "google-fonts-cache",
+        expiration: {
+          maxEntries: 10,
+          maxAgeSeconds: 60 * 60 * 24 * 365, // 1 año
+        },
+        cacheableResponse: {
+          statuses: [0, 200],
+        },
+      },
+    },
+    {
+      urlPattern: /^https:\/\/fonts\.gstatic\.com\/.*/i,
+      handler: "CacheFirst",
+      options: {
+        cacheName: "google-fonts-webfonts",
+        expiration: {
+          maxEntries: 30,
+          maxAgeSeconds: 60 * 60 * 24 * 365,
+        },
+        cacheableResponse: {
+          statuses: [0, 200],
+        },
+      },
+    },
+  ],
+},
 ```
 
 ---
 
-## Fase 5: Mover Extension a Schema Dedicado
+## Fase 4: Reducir CSS No Usado (17 KiB)
 
-La extensión `vector` está en `public`. Moverla a un schema dedicado:
+### 4.1 Optimizar Tailwind Config
 
-```sql
--- Crear schema para extensiones
-CREATE SCHEMA IF NOT EXISTS extensions;
+Verificar que `tailwind.config.ts` tenga purge correctamente configurado:
 
--- Nota: Mover la extensión vector requiere recrearla
--- lo cual puede ser disruptivo. Una alternativa es ignorar
--- este warning ya que el riesgo es menor.
+```typescript
+content: [
+  "./index.html",
+  "./src/**/*.{js,ts,jsx,tsx}",
+],
 ```
 
-**Decisión:** Ignorar este warning. Mover `vector` requeriría recrear todos los índices vectoriales y es un cambio de alto riesgo para un beneficio menor. El warning es informativo.
+Esto ya está configurado correctamente. El CSS no usado probablemente viene de:
+- Clases definidas en `@layer components` que no se usan
+- Variantes de dark mode duplicadas
+
+### 4.2 Limpiar CSS Duplicado
+
+En `src/index.css` hay definiciones duplicadas de variables para `.dark` y `:root`. Se puede simplificar:
+
+```css
+/* Eliminar .dark {} ya que las variables son idénticas a :root */
+/* El tema es siempre oscuro */
+```
 
 ---
 
-## Fase 6: Habilitar Leaked Password Protection
+## Fase 5: Romper Cadenas de Dependencias
 
-Usar la herramienta de configuración de auth para habilitar la protección contra contraseñas filtradas.
+### 5.1 Precargar Módulos Críticos
+
+Agregar hints de preload para módulos críticos:
+
+**Cambio en `index.html`:**
+```html
+<link rel="modulepreload" href="/src/main.tsx" />
+```
+
+### 5.2 Diferir Componentes No Críticos
+
+Los componentes como `Toaster`, `Sonner`, `OfflineBanner` pueden cargarse después del primer render:
+
+```typescript
+// En App.tsx - cargar después de mount
+const [mounted, setMounted] = useState(false);
+useEffect(() => setMounted(true), []);
+
+// Render condicional
+{mounted && (
+  <>
+    <Toaster />
+    <Sonner />
+    <OfflineBanner />
+    <QueryErrorHandler />
+  </>
+)}
+```
 
 ---
 
 ## Archivos a Modificar
 
-| Archivo | Cambio |
-|---------|--------|
-| `src/pages/Login.tsx` | Eliminar ADMIN_EMAIL y validación client-side |
-| Nueva migración SQL | Arreglar RLS, functions, y vistas |
+| Archivo | Cambios |
+|---------|---------|
+| `vite.config.ts` | Code splitting con manualChunks, asset naming |
+| `index.html` | Preconnect fonts, font loading async, modulepreload |
+| `src/index.css` | Eliminar @import de fonts, limpiar CSS duplicado |
+| `src/App.tsx` | Lazy loading de páginas pesadas, diferir no-críticos |
+| `tailwind.config.ts` | Verificar content paths (ya correcto) |
 
 ---
 
-## Orden de Implementación
+## Impacto Esperado
 
-1. Crear migración SQL para:
-   - Arreglar políticas de `payment_update_links`
-   - Arreglar políticas de `scheduled_messages`
-   - Agregar search_path a 8 funciones
-   - Revocar acceso a vistas materializadas
-
-2. Modificar `Login.tsx` eliminando email hardcodeado
-
-3. Habilitar Leaked Password Protection via auth config
-
-4. Marcar hallazgos de seguridad como resueltos
+| Métrica | Antes | Después |
+|---------|-------|---------|
+| JavaScript inicial | ~800KB | ~400KB (-50%) |
+| Tiempo de render | +120ms | 0ms (no blocking) |
+| Cache efficiency | 0% | 90%+ |
+| First Contentful Paint | ~2s | ~1.2s |
 
 ---
 
-## Verificación Post-Implementación
+## Sección Técnica
 
-Después de aplicar los cambios:
-- El escaneo de seguridad debe mostrar 0 errores críticos
-- Los warnings restantes serán:
-  - Extension in Public (ignorado intencionalmente)
-  - Service role policies (aceptables para edge functions)
+### Build Output con Code Splitting
 
+```text
+dist/assets/
+├── index-[hash].js          # Core app (~150KB)
+├── vendor-react-[hash].js   # React libs (~50KB)
+├── vendor-charts-[hash].js  # Recharts (~180KB) - lazy
+├── vendor-flow-[hash].js    # XYFlow (~150KB) - lazy
+├── vendor-ui-[hash].js      # Radix components (~80KB)
+└── ...page chunks
+```
+
+### Cache Strategy
+
+```text
+Static Assets (JS/CSS/Images)
+├── Cache-Control: public, max-age=31536000, immutable
+└── Versionado con hash en filename
+
+Fonts (Google Fonts)
+├── Preconnect para DNS prefetch
+├── CacheFirst strategy en Service Worker
+└── TTL: 1 año
+
+API Calls (Supabase)
+├── NetworkFirst strategy
+└── Fallback a cache si offline
+```
