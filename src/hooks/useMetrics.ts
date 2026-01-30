@@ -218,28 +218,37 @@ export function useMetrics() {
       // Sort by amount descending
       recoveryList.sort((a, b) => b.amount - a.amount);
 
-      // Fetch lifecycle stage counts from clients table
-      // OPTIMIZATION: Use count queries instead of fetching all rows
-      const [
-        { count: leadCount },
-        { count: trialCount },
-        { count: customerCount },
-        { count: churnCount },
-        { count: convertedCount }
-      ] = await Promise.all([
-        supabase.from('clients').select('*', { count: 'exact', head: true }).eq('lifecycle_stage', 'LEAD'),
-        supabase.from('clients').select('*', { count: 'exact', head: true }).eq('lifecycle_stage', 'TRIAL'),
-        supabase.from('clients').select('*', { count: 'exact', head: true }).eq('lifecycle_stage', 'CUSTOMER'),
-        supabase.from('clients').select('*', { count: 'exact', head: true }).eq('lifecycle_stage', 'CHURN'),
-        supabase.from('clients').select('*', { count: 'exact', head: true }).not('converted_at', 'is', null),
-      ]);
+      // OPTIMIZATION: Use dashboard_metrics RPC instead of 5 parallel COUNT queries
+      // This reduces 5 heavy queries (221k+ rows each) to 1 server-side aggregation
+      let finalLeadCount = 0;
+      let finalTrialCount = 0;
+      let finalCustomerCount = 0;
+      let finalChurnCount = 0;
+      let finalConvertedCount = 0;
       
-      // Use counts from parallel queries
-      const finalLeadCount = leadCount || 0;
-      const finalTrialCount = trialCount || 0;
-      const finalCustomerCount = customerCount || 0;
-      const finalChurnCount = churnCount || 0;
-      const finalConvertedCount = convertedCount || 0;
+      try {
+        const { data: dashboardData, error: dashboardError } = await supabase.rpc('dashboard_metrics' as any);
+        
+        if (!dashboardError && dashboardData && Array.isArray(dashboardData) && dashboardData.length > 0) {
+          const dbMetrics = dashboardData[0] as {
+            leads_count?: number;
+            trials_count?: number;
+            customers_count?: number;
+            churn_count?: number;
+            converted_count?: number;
+          };
+          finalLeadCount = dbMetrics.leads_count || 0;
+          finalTrialCount = dbMetrics.trials_count || 0;
+          finalCustomerCount = dbMetrics.customers_count || 0;
+          finalChurnCount = dbMetrics.churn_count || 0;
+          finalConvertedCount = dbMetrics.converted_count || 0;
+        } else {
+          console.warn('dashboard_metrics RPC not available or returned no data');
+        }
+      } catch (rpcError) {
+        console.error('Error calling dashboard_metrics RPC:', rpcError);
+      }
+      
       const conversionRate = finalTrialCount > 0 ? (finalConvertedCount / finalTrialCount) * 100 : 0;
 
       setMetrics({
