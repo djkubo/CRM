@@ -1,205 +1,168 @@
 
-# Plan: Reparación de Secciones Importar/Sync y Ajustes
+# Plan de Emergencia: Reparación de Estabilidad Backend
 
-## Diagnóstico del Estado Actual
+## Diagnóstico Crítico
 
-Tras revisar exhaustivamente el código, encontré lo siguiente:
+### Problema Principal
+La base de datos está **completamente saturada** por queries sin límites ejecutándose desde el frontend:
 
-### APISyncPanel.tsx (Importar/Sync)
-- **Estado**: Ya está correctamente estilizado con la paleta VRP
-- **Problema**: NO tiene colores arcoíris - ya usa `bg-zinc-800`, `border-zinc-800`, `text-white`, `bg-primary`
-- **Acción**: Solo limpieza menor y optimización
+| Tabla | Filas | Tamaño | Query Problemática |
+|-------|-------|--------|-------------------|
+| `csv_imports_raw` | 663,660 | 613 MB | Sin uso directo |
+| `clients` | 221,275 | 175 MB | `useClients` carga sin paginación inicial |
+| `transactions` | 206,817 | 366 MB | `useTransactions` descarga TODAS las filas |
+| `ghl_contacts_raw` | 188,325 | 317 MB | Temporal, sin índices |
+| `invoices` | 79,811 | 314 MB | `useInvoices` sin límite |
 
-### SettingsPage.tsx (Ajustes)
-- **Estado**: Es un wrapper simple de 50 líneas
-- **Problema Real**: Los sub-componentes tienen los colores incorrectos:
-  - `IntegrationsStatusPanel.tsx` → Usa `text-purple-400`, `text-blue-400`, `text-green-400`, `text-cyan-400` para los íconos
-  - `SystemTogglesPanel.tsx` → Usa `text-emerald-400`, `text-amber-400`, `text-blue-400`, `text-purple-400`, `text-cyan-400`
+### Errores Detectados
+
+1. **504 Gateway Timeout** - Queries exceden 8 segundos
+2. **Statement Timeout** - Postgres cancela queries lentas
+3. **React forwardRef Warning** - Componente `Skeleton` no soporta refs
+
+---
+
+## Plan de Reparación (3 Acciones)
+
+### ACCIÓN 1: Limitar Queries Críticas
+
+**Archivo: `src/hooks/useTransactions.ts`**
+
+El problema: Descarga 206,817 filas sin límite.
+
+Solución: Agregar `.limit(1000)` y paginación:
+
+```typescript
+// ANTES (línea 32-38)
+const { data, error } = await supabase
+  .from("transactions")
+  .select("*")
+  .order("stripe_created_at", { ascending: false });
+
+// DESPUÉS
+const { data, error } = await supabase
+  .from("transactions")
+  .select("*")
+  .order("stripe_created_at", { ascending: false })
+  .limit(1000); // Solo últimos 1000
+```
+
+**Archivo: `src/pages/Index.tsx`**
+
+El problema: Llama a `useClients()` y `useTransactions()` en cada render aunque no se muestran inmediatamente.
+
+Solución: Lazy loading - solo cargar datos cuando se necesitan:
+
+```typescript
+// ANTES (línea 33-34)
+const { clients } = useClients();
+const { transactions } = useTransactions();
+
+// DESPUÉS - Eliminar estos hooks del Index.tsx
+// Cada página cargará sus propios datos
+```
+
+---
+
+### ACCIÓN 2: Agregar Índices Faltantes
+
+**Nueva Migración SQL**
+
+Los queries que fallan necesitan índices para acelerar las búsquedas:
+
+```sql
+-- Índice para transactions por fecha (usado en useMetrics)
+CREATE INDEX IF NOT EXISTS idx_transactions_stripe_created_at 
+ON transactions(stripe_created_at DESC);
+
+-- Índice compuesto para sync_runs (usado en SyncStatusBanner)
+CREATE INDEX IF NOT EXISTS idx_sync_runs_status_completed 
+ON sync_runs(status, completed_at DESC);
+
+-- Índice para clients por lifecycle_stage (usado en useMetrics)
+CREATE INDEX IF NOT EXISTS idx_clients_lifecycle_stage 
+ON clients(lifecycle_stage);
+
+-- Índice para transactions por status (usado en recovery list)
+CREATE INDEX IF NOT EXISTS idx_transactions_status 
+ON transactions(status);
+```
+
+---
+
+### ACCIÓN 3: Corregir Error de forwardRef
+
+**Archivo: `src/components/ui/skeleton.tsx`**
+
+El problema: React advierte que `Skeleton` no puede recibir refs.
+
+Solución: Usar `React.forwardRef`:
+
+```typescript
+// ANTES
+function Skeleton({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
+  return <div className={cn("animate-pulse rounded-md bg-muted", className)} {...props} />;
+}
+
+// DESPUÉS
+const Skeleton = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(
+  ({ className, ...props }, ref) => {
+    return (
+      <div
+        ref={ref}
+        className={cn("animate-pulse rounded-md bg-muted", className)}
+        {...props}
+      />
+    );
+  }
+);
+Skeleton.displayName = "Skeleton";
+```
 
 ---
 
 ## Archivos a Modificar
 
-| Archivo | Problema | Acción |
-|---------|----------|--------|
-| `IntegrationsStatusPanel.tsx` | Colores arcoíris en íconos | Neutralizar a `text-zinc-400` + sutil indicador de marca |
-| `SystemTogglesPanel.tsx` | Colores semánticos en íconos | Neutralizar a `text-primary` |
-| `GHLSettingsPanel.tsx` | Colores verde/amarillo en badges | Usar `.badge-success`/`.badge-warning` globales |
-| `SettingsPage.tsx` | Sin skeleton de carga | Agregar Skeleton mientras cargan sub-componentes |
+| Archivo | Cambio |
+|---------|--------|
+| `src/hooks/useTransactions.ts` | Agregar `.limit(1000)` |
+| `src/pages/Index.tsx` | Eliminar hooks innecesarios |
+| `src/components/ui/skeleton.tsx` | Agregar `forwardRef` |
+| Nueva migración SQL | Crear 4 índices críticos |
 
 ---
 
-## Cambios Específicos
+## Resultado Esperado
 
-### 1. IntegrationsStatusPanel.tsx - Eliminar Colores de Marca
-
-**Antes (Arcoíris):**
-```tsx
-const integrations = [
-  { id: 'stripe', color: 'purple' },
-  { id: 'paypal', color: 'blue' },
-  { id: 'twilio', color: 'red' },
-  { id: 'ghl', color: 'green' },
-  { id: 'manychat', color: 'cyan' },
-];
-
-const getColorClasses = (color: string) => ({
-  purple: 'text-purple-400',
-  blue: 'text-blue-400',
-  // etc...
-});
-```
-
-**Después (Monocromático VRP):**
-```tsx
-// Eliminar la propiedad 'color' completamente
-// Todos los íconos usan text-zinc-400 o text-primary
-const integrations = [
-  { id: 'stripe', name: 'Stripe', icon: CreditCard, ... },
-  // Sin campo 'color'
-];
-
-// Ícono neutral para todos
-<Icon className="h-5 w-5 text-zinc-400" />
-```
-
-### 2. SystemTogglesPanel.tsx - Neutralizar Íconos
-
-**Antes:**
-```tsx
-<Bell className="h-5 w-5 text-emerald-400" />
-<Pause className="h-5 w-5 text-amber-400" />
-<Clock className="h-5 w-5 text-blue-400" />
-<Building className="h-5 w-5 text-purple-400" />
-<Clock className="h-5 w-5 text-cyan-400" />
-```
-
-**Después:**
-```tsx
-// Todos los íconos usan text-zinc-400 (neutral) o text-primary (acento)
-<Bell className="h-5 w-5 text-zinc-400" />
-<Pause className="h-5 w-5 text-zinc-400" />
-<Clock className="h-5 w-5 text-zinc-400" />
-<Building className="h-5 w-5 text-zinc-400" />
-<Clock className="h-5 w-5 text-zinc-400" />
-```
-
-### 3. GHLSettingsPanel.tsx - Badges Estandarizados
-
-**Antes:**
-```tsx
-<Badge className={isConfigured 
-  ? "bg-green-500/10 text-green-400 border-green-500/30" 
-  : "bg-yellow-500/10 text-yellow-400 border-yellow-500/30"
-}>
-```
-
-**Después (usando clases globales):**
-```tsx
-<Badge variant={isConfigured ? "success" : "warning"}>
-```
-
-### 4. SettingsPage.tsx - Agregar Estado de Carga
-
-**Mejora:**
-```tsx
-import { Skeleton } from '@/components/ui/skeleton';
-import { Suspense, lazy } from 'react';
-
-// Skeleton para loading states
-const SettingsSkeleton = () => (
-  <div className="space-y-4">
-    <Skeleton className="h-48 w-full rounded-xl" />
-    <Skeleton className="h-48 w-full rounded-xl" />
-    <Skeleton className="h-48 w-full rounded-xl" />
-  </div>
-);
-
-// Lazy loading de paneles pesados
-const SystemTogglesPanel = lazy(() => import('./SystemTogglesPanel'));
-const IntegrationsStatusPanel = lazy(() => import('./IntegrationsStatusPanel'));
-const GHLSettingsPanel = lazy(() => import('./GHLSettingsPanel'));
-```
-
----
-
-## Resultado Visual Esperado
-
-```text
-┌─────────────────────────────────────────────────────────┐
-│  ⚙️ AJUSTES                              [user@email]  │
-├─────────────────────────────────────────────────────────┤
-│                                                         │
-│  ┌─────────────────────────────────────────────────┐   │
-│  │  🔧 Configuración del Sistema                   │   │
-│  │  ────────────────────────────────────────────   │   │
-│  │  [🔔] Auto-Dunning          [====ON====]       │   │
-│  │  [⏸] Pausar Sync            [===OFF===]        │   │
-│  │  [⏰] Horario Silencioso     21:00 — 08:00     │   │
-│  │  [🏢] Nombre Empresa         [_________]       │   │
-│  │  [🌍] Zona Horaria           [CDMX ▼]          │   │
-│  │                               [Guardar]         │   │
-│  └─────────────────────────────────────────────────┘   │
-│                                                         │
-│  ┌─────────────────────────────────────────────────┐   │
-│  │  ⚡ Estado de Integraciones                     │   │
-│  │  ────────────────────────────────────────────   │   │
-│  │  [💳] Stripe        [Sin probar]    [🔄]       │   │
-│  │  [💳] PayPal        [Conectado✓]    [🔄]       │   │
-│  │  [💬] Twilio        [Sin probar]               │   │
-│  │  [👥] GoHighLevel   [Error✗]        [🔄]       │   │
-│  │  [🤖] ManyChat      [Sin probar]    [🔄]       │   │
-│  └─────────────────────────────────────────────────┘   │
-│                                                         │
-│  ┌─────────────────────────────────────────────────┐   │
-│  │  ⚙️ GoHighLevel Integration   [Configurado ✓]  │   │
-│  │  ────────────────────────────────────────────   │   │
-│  │  Webhook URL:                                   │   │
-│  │  [https://services.lead...          ] [💾]     │   │
-│  │                                                 │   │
-│  │  📋 ¿Cómo configurar?                          │   │
-│  │  1. En GHL → Automation → Workflows...         │   │
-│  └─────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────┘
-
-PALETA:
-- Fondo: #09090b (Zinc-950)
-- Cards: #18181b (Zinc-900) con border #27272a
-- Íconos: text-zinc-400 (neutro)
-- Acento: #AA0601 (VRP Red) solo para botón Guardar
-- Badges: Semantic (emerald=success, amber=warning, red=error)
-```
+| Antes | Después |
+|-------|---------|
+| Queries de 206K filas | Queries de 1K filas máx |
+| Timeouts constantes | Respuestas < 500ms |
+| Error de forwardRef | Sin warnings de React |
+| 504 Gateway Timeout | Página carga normal |
 
 ---
 
 ## Sección Técnica
 
-### Cambios en `IntegrationsStatusPanel.tsx`:
-1. Eliminar el campo `color` del array de integraciones
-2. Eliminar la función `getColorClasses()`
-3. Cambiar todos los íconos a `text-zinc-400`
-4. Mantener badges semánticos (success/error) solo para estados
+### Por qué fallan las queries
 
-### Cambios en `SystemTogglesPanel.tsx`:
-1. Cambiar todos los íconos de colores a `text-zinc-400`
-2. Usar `card-base` para el wrapper principal
-3. Mantener el estado de loading con Skeleton
+Supabase tiene un **statement_timeout** de 8 segundos por defecto. Cuando una query tarda más:
 
-### Cambios en `GHLSettingsPanel.tsx`:
-1. Usar `variant="success"` y `variant="warning"` del Badge
-2. Cambiar `bg-green-500/10` → `badge-success`
-3. Cambiar `bg-yellow-500/10` → `badge-warning`
+1. Postgres cancela el statement
+2. PostgREST devuelve 504 Gateway Timeout
+3. El frontend muestra "Error inesperado"
 
-### Cambios en `SettingsPage.tsx`:
-1. Agregar `Suspense` con fallback `SettingsSkeleton`
-2. Lazy-load de componentes pesados para mejor UX
+### Por qué los índices ayudan
 
----
+Sin índice: Full table scan de 206K filas = 15+ segundos
+Con índice: B-tree lookup = 10-50ms
 
-## Beneficios
+### El efecto cascada
 
-1. **Consistencia Visual**: Toda la sección Ajustes seguirá la paleta VRP monocromática
-2. **Mejor UX**: Skeletons visibles durante carga en lugar de spinners solitarios
-3. **Mantenibilidad**: Los badges usan variantes globales definidas en `badge.tsx`
-4. **Profesionalismo**: Sin colores de marca (purple Stripe, blue PayPal) - todo neutral
+Cuando `Index.tsx` monta:
+1. Llama `useClients()` → Query a 221K filas
+2. Llama `useTransactions()` → Query a 206K filas
+3. Llama `useMetrics()` → 5+ queries adicionales
 
+**Resultado**: 7+ queries pesadas en paralelo = Database overload
