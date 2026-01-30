@@ -45,7 +45,11 @@ import {
   Download,
   CalendarIcon,
   AlertTriangle,
-  Loader2
+  Loader2,
+  ChevronLeft,
+  ChevronRight,
+  ChevronsLeft,
+  ChevronsRight
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { invokeWithAdminKey } from "@/lib/adminApi";
@@ -108,17 +112,20 @@ const formatAmount = (amount: number, currency: string | null, isNegative = fals
 };
 
 const getStatusConfig = (status: string) => {
+  // VRP Design System: Use semantic colors - destructive for negative, emerald for positive
   const configs: Record<string, { label: string; icon: typeof CheckCircle2; className: string; isNegative?: boolean }> = {
     succeeded: { label: "Exitoso", icon: CheckCircle2, className: "bg-emerald-500/10 text-emerald-500 border-emerald-500/20" },
     paid: { label: "Completado", icon: CheckCircle2, className: "bg-emerald-500/10 text-emerald-500 border-emerald-500/20" },
     failed: { label: "Erróneo", icon: XCircle, className: "bg-destructive/10 text-destructive border-destructive/20" },
     requires_payment_method: { label: "Bloqueado", icon: Ban, className: "bg-amber-500/10 text-amber-500 border-amber-500/20" },
-    requires_action: { label: "En trámite", icon: Clock, className: "bg-orange-500/10 text-orange-500 border-orange-500/20" },
+    requires_action: { label: "En trámite", icon: Clock, className: "bg-amber-500/10 text-amber-500 border-amber-500/20" },
     canceled: { label: "Cancelado", icon: XCircle, className: "bg-destructive/10 text-destructive border-destructive/20" },
-    refunded: { label: "Reembolsado", icon: TrendingDown, className: "bg-purple-500/10 text-purple-500 border-purple-500/20", isNegative: true },
+    // VRP: Refunds use destructive (VRP Red) instead of purple
+    refunded: { label: "Reembolsado", icon: TrendingDown, className: "bg-destructive/10 text-destructive border-destructive/20", isNegative: true },
     pending: { label: "Pendiente", icon: Clock, className: "bg-blue-500/10 text-blue-500 border-blue-500/20" },
-    needs_response: { label: "⚠️ Disputa", icon: AlertTriangle, className: "bg-orange-500/10 text-orange-500 border-orange-500/20", isNegative: true },
-    under_review: { label: "⚠️ En revisión", icon: AlertTriangle, className: "bg-orange-500/10 text-orange-500 border-orange-500/20", isNegative: true },
+    // VRP: Disputes use amber for warning
+    needs_response: { label: "⚠️ Disputa", icon: AlertTriangle, className: "bg-amber-500/10 text-amber-400 border-amber-500/20", isNegative: true },
+    under_review: { label: "⚠️ En revisión", icon: AlertTriangle, className: "bg-amber-500/10 text-amber-400 border-amber-500/20", isNegative: true },
     won: { label: "Disputa ganada", icon: CheckCircle2, className: "bg-emerald-500/10 text-emerald-500 border-emerald-500/20" },
     lost: { label: "⚠️ Disputa perdida", icon: XCircle, className: "bg-destructive/10 text-destructive border-destructive/20", isNegative: true },
   };
@@ -189,6 +196,8 @@ const DATE_PRESETS = [
   { label: "Todo", getValue: () => undefined },
 ];
 
+const PAGE_SIZE_OPTIONS = [50, 100, 200] as const;
+
 export function MovementsPage() {
   const { toast } = useToast();
   const [movements, setMovements] = useState<Movement[]>([]);
@@ -206,6 +215,10 @@ export function MovementsPage() {
   const [isExporting, setIsExporting] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [totalCount, setTotalCount] = useState(0);
+  
+  // Server-side pagination state
+  const [page, setPage] = useState(0);
+  const [pageSize, setPageSize] = useState<typeof PAGE_SIZE_OPTIONS[number]>(100);
 
   // Debounce search
   useEffect(() => {
@@ -213,10 +226,19 @@ export function MovementsPage() {
     return () => clearTimeout(timer);
   }, [searchQuery]);
 
-  // Server-side fetch with all filters
+  // Reset page when filters change
+  useEffect(() => {
+    setPage(0);
+  }, [dateRange, sourceFilter, statusFilter, debouncedSearch, pageSize]);
+
+  // Server-side fetch with pagination
   const fetchMovements = useCallback(async () => {
     setIsLoading(true);
     try {
+      // Calculate range for server-side pagination
+      const from = page * pageSize;
+      const to = from + pageSize - 1;
+
       let txQuery = supabase
         .from("transactions")
         .select("*", { count: "exact" })
@@ -237,21 +259,23 @@ export function MovementsPage() {
         txQuery = txQuery.or(`customer_email.ilike.%${debouncedSearch}%,stripe_payment_intent_id.ilike.%${debouncedSearch}%,external_transaction_id.ilike.%${debouncedSearch}%`);
       }
 
-      txQuery = txQuery.limit(500);
+      // Server-side pagination with .range() instead of .limit()
+      txQuery = txQuery.range(from, to);
       const { data: txData, error: txError, count } = await txQuery;
       if (txError) throw txError;
       
       setMovements(txData as Movement[]);
       setTotalCount(count || 0);
 
-      // Fetch disputes
-      if (sourceFilter === "all" || sourceFilter === "dispute") {
-        let disputeQuery = supabase.from("disputes").select("*").order("created_at_external", { ascending: false });
+      // Fetch disputes (only on page 0 since they're merged client-side for now)
+      if ((sourceFilter === "all" || sourceFilter === "dispute") && page === 0) {
+        let disputeQuery = supabase.from("disputes").select("*").order("created_at_external", { ascending: false }).limit(100);
         if (dateRange?.from) disputeQuery = disputeQuery.gte("created_at_external", startOfDay(dateRange.from).toISOString());
         if (dateRange?.to) disputeQuery = disputeQuery.lte("created_at_external", endOfDay(dateRange.to).toISOString());
         const { data: disputeData } = await disputeQuery;
         setDisputes(disputeData || []);
-      } else {
+      } else if (page > 0) {
+        // Clear disputes on subsequent pages to avoid duplication
         setDisputes([]);
       }
     } catch (error) {
@@ -260,7 +284,7 @@ export function MovementsPage() {
     } finally {
       setIsLoading(false);
     }
-  }, [dateRange, sourceFilter, statusFilter, debouncedSearch, toast]);
+  }, [dateRange, sourceFilter, statusFilter, debouncedSearch, page, pageSize, toast]);
 
   useEffect(() => { fetchMovements(); }, [fetchMovements]);
 
@@ -437,21 +461,23 @@ export function MovementsPage() {
           <p className="text-xl font-bold text-destructive">{stats.failedCount}</p>
           <p className="text-xs text-destructive/70">{formatAmount(stats.totalFailed, 'usd')}</p>
         </div>
-        <div className="rounded-xl border border-purple-500/20 bg-purple-500/5 p-4">
-          <div className="flex items-center gap-2 text-purple-400 text-xs mb-2">
+        {/* VRP Design: Refunds use destructive (VRP Red) instead of purple */}
+        <div className="rounded-xl border border-destructive/20 bg-destructive/5 p-4">
+          <div className="flex items-center gap-2 text-destructive text-xs mb-2">
             <TrendingDown className="h-4 w-4" />
             Reembolsos
           </div>
-          <p className="text-xl font-bold text-purple-400">{stats.refundedCount}</p>
-          <p className="text-xs text-purple-400/70">-{formatAmount(stats.totalRefunded, 'usd')}</p>
+          <p className="text-xl font-bold text-destructive">{stats.refundedCount}</p>
+          <p className="text-xs text-destructive/70">-{formatAmount(stats.totalRefunded, 'usd')}</p>
         </div>
-        <div className="rounded-xl border border-orange-500/20 bg-orange-500/5 p-4">
-          <div className="flex items-center gap-2 text-orange-400 text-xs mb-2">
+        {/* VRP Design: Disputes use amber for warning state */}
+        <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-4">
+          <div className="flex items-center gap-2 text-amber-400 text-xs mb-2">
             <AlertTriangle className="h-4 w-4" />
             Disputas
           </div>
-          <p className="text-xl font-bold text-orange-400">{stats.disputeCount}</p>
-          <p className="text-xs text-orange-400/70">-{formatAmount(stats.totalDisputes, 'usd')}</p>
+          <p className="text-xl font-bold text-amber-400">{stats.disputeCount}</p>
+          <p className="text-xs text-amber-400/70">-{formatAmount(stats.totalDisputes, 'usd')}</p>
         </div>
         <div className="col-span-2 rounded-xl border border-primary/20 bg-primary/5 p-4">
           <div className="flex items-center gap-2 text-primary text-xs mb-2">
@@ -553,11 +579,23 @@ export function MovementsPage() {
         </Select>
       </div>
 
-      {/* Results count */}
-      <div className="text-sm text-muted-foreground">
-        Mostrando {allMovements.length} movimientos de {totalCount.toLocaleString()} en total
-        {disputes.length > 0 && ` (incluye ${disputes.length} disputas)`}
-      </div>
+      {/* Results count with pagination info */}
+      {(() => {
+        const totalPages = Math.ceil(totalCount / pageSize);
+        const startRecord = page * pageSize + 1;
+        const endRecord = Math.min((page + 1) * pageSize, totalCount);
+        return (
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-sm text-muted-foreground">
+            <span>
+              Mostrando {startRecord.toLocaleString()}-{endRecord.toLocaleString()} de {totalCount.toLocaleString()} transacciones
+              {disputes.length > 0 && page === 0 && ` (+ ${disputes.length} disputas)`}
+            </span>
+            <span className="text-xs">
+              Página {page + 1} de {totalPages.toLocaleString()}
+            </span>
+          </div>
+        );
+      })()}
 
       {/* Movements Table */}
       <div className="rounded-xl border border-border bg-card overflow-hidden">
@@ -755,6 +793,98 @@ export function MovementsPage() {
           </div>
         )}
       </div>
+
+      {/* Server-Side Pagination Controls */}
+      {(() => {
+        const totalPages = Math.ceil(totalCount / pageSize);
+        const startRecord = page * pageSize + 1;
+        const endRecord = Math.min((page + 1) * pageSize, totalCount);
+        
+        if (totalCount <= pageSize) return null;
+        
+        return (
+          <div className="flex flex-col sm:flex-row items-center justify-between gap-4 pt-2">
+            {/* Page size selector */}
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-muted-foreground">Ver</span>
+              <Select value={String(pageSize)} onValueChange={(v) => setPageSize(Number(v) as typeof pageSize)}>
+                <SelectTrigger className="w-20 h-8">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {PAGE_SIZE_OPTIONS.map((size) => (
+                    <SelectItem key={size} value={String(size)}>{size}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <span className="text-sm text-muted-foreground">por página</span>
+            </div>
+            
+            {/* Pagination controls */}
+            <div className="flex items-center gap-1">
+              {/* First page */}
+              <Button
+                variant="outline"
+                size="icon"
+                className="h-8 w-8"
+                onClick={() => setPage(0)}
+                disabled={page === 0 || isLoading}
+              >
+                <ChevronsLeft className="h-4 w-4" />
+              </Button>
+              
+              {/* Previous */}
+              <Button
+                variant="outline"
+                size="icon"
+                className="h-8 w-8"
+                onClick={() => setPage(Math.max(0, page - 1))}
+                disabled={page === 0 || isLoading}
+              >
+                <ChevronLeft className="h-4 w-4" />
+              </Button>
+              
+              {/* Page indicator */}
+              <div className="flex items-center gap-2 px-3">
+                <span className="text-sm font-medium text-foreground">
+                  Página {(page + 1).toLocaleString()}
+                </span>
+                <span className="text-sm text-muted-foreground">de</span>
+                <span className="text-sm font-medium text-foreground">
+                  {totalPages.toLocaleString()}
+                </span>
+              </div>
+              
+              {/* Next */}
+              <Button
+                variant="outline"
+                size="icon"
+                className="h-8 w-8"
+                onClick={() => setPage(Math.min(totalPages - 1, page + 1))}
+                disabled={page >= totalPages - 1 || isLoading}
+              >
+                <ChevronRight className="h-4 w-4" />
+              </Button>
+              
+              {/* Last page */}
+              <Button
+                variant="outline"
+                size="icon"
+                className="h-8 w-8"
+                onClick={() => setPage(totalPages - 1)}
+                disabled={page >= totalPages - 1 || isLoading}
+              >
+                <ChevronsRight className="h-4 w-4" />
+              </Button>
+            </div>
+            
+            {/* Record range */}
+            <div className="text-sm text-muted-foreground hidden md:block">
+              {startRecord.toLocaleString()}-{endRecord.toLocaleString()} de {totalCount.toLocaleString()}
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
