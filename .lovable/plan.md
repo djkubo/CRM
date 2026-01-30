@@ -1,332 +1,139 @@
 
 
-# Plan: Limpieza VRP Premium - Eliminación del Diseño Arcoíris
+# Plan de Emergencia: Optimización de Base de Datos para Eliminar Timeouts
 
-## Diagnóstico Completo
+## Problema Identificado
 
-Tras revisar exhaustivamente los 32+ archivos afectados, identifiqué **todos** los colores fuera de la paleta VRP.
+La base de datos está sufriendo **cascadas de statement timeouts** porque:
 
-### Estado de la Paleta VRP (Referencia)
-
-| Elemento | Color Permitido | Uso |
-|----------|-----------------|-----|
-| ✅ Activo/Pagado | `bg-emerald-500/10 text-emerald-400 border-emerald-500/30` | Estados positivos |
-| ⚠️ Pendiente/Alerta | `bg-amber-500/10 text-amber-400 border-amber-500/30` | Estados de advertencia |
-| 🔴 Error/Deuda | `bg-red-500/10 text-red-400 border-red-500/30` | Estados negativos |
-| ⚪ Neutro/Inactivo | `bg-zinc-800 text-zinc-400 border-zinc-700` | Default, marcas neutrales |
-| 🔴 Acción Principal | `bg-primary` (#AA0601) | Botones CTA principales |
+1. **221k clientes** - Las queries con `{ count: "exact" }` fuerzan full table scans
+2. **No hay índice en `subscriptions.amount`** - La query `ORDER BY amount DESC` es lenta
+3. **No hay índice en `invoices.client_id`** - Los JOINs son lentos
+4. **Los hooks del Dashboard cargan TODO** - Sin paginación server-side
 
 ---
 
-## Archivos a Modificar (Prioridad Alta → Baja)
+## Acciones Inmediatas
 
-### 1. MÓDULO FINANZAS
+### 1. Crear Índices Faltantes (Migración SQL)
 
-#### ClientsTable.tsx - Ya Cumple ✅
+```sql
+-- Índice para ORDER BY amount DESC en subscriptions
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_subscriptions_amount_desc 
+ON subscriptions (amount DESC);
+
+-- Índice para JOINs de invoices con clients
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_invoices_client_id 
+ON invoices (client_id);
+
+-- Índice compuesto para invoices por status y fecha
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_invoices_status_created 
+ON invoices (status, stripe_created_at DESC);
+
+-- Índice para transactions por status (para kpi_failed_payments)
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_transactions_status_created 
+ON transactions (status, stripe_created_at DESC);
+
+-- Índice parcial para transactions fallidas (optimiza kpi_failed_payments)
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_transactions_failed 
+ON transactions (stripe_created_at DESC, amount, currency, customer_email)
+WHERE status = 'failed' OR failure_code IS NOT NULL;
 ```
-Estado: Los badges de lifecycle ya usan paleta semántica correcta
-- LEAD: bg-zinc-800 text-zinc-400 ✅
-- CUSTOMER: bg-emerald-500/10 text-emerald-400 ✅
-- CHURN: bg-red-500/10 text-red-400 ✅
-```
 
-**Sin cambios necesarios** - Ya está alineado con VRP.
+### 2. Optimizar Hooks que Causan Timeouts
 
----
+**Archivo: `src/hooks/useSubscriptions.ts`**
 
-#### InvoicesPage.tsx - Requiere Correcciones Menores
-**Problema**: Usa colores de marca (blue, gray) en algunos lugares.
+El hook actual descarga las 5000 suscripciones con `ORDER BY amount DESC`. Solo necesitamos:
+- Agregar `{ count: "exact", head: true }` para el conteo sin descargar datos
+- Reducir el `.limit(5000)` a `.limit(100)` con paginación
 
-```text
-Línea 181: 'open': 'bg-blue-500/10 text-blue-400 border-blue-500/30'
-Línea 182: 'pending': 'bg-blue-500/10 text-blue-400 border-blue-500/30'
-Línea 180: 'draft': 'bg-gray-500/10 text-gray-400 border-gray-500/30'
-```
+**Archivo: `src/hooks/useDailyKPIs.ts`**
 
-**Corrección**:
+Líneas 122-129 descargan **TODOS** los registros de `subscriptions` y `invoices`:
+
 ```typescript
-const styles: Record<string, string> = {
-  draft: 'bg-zinc-800 text-zinc-400 border-zinc-700',           // Neutro
-  open: 'bg-amber-500/10 text-amber-400 border-amber-500/30',   // Pendiente = Amber
-  pending: 'bg-amber-500/10 text-amber-400 border-amber-500/30',
-  paid: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30',
-  void: 'bg-red-500/10 text-red-400 border-red-500/30',
-  uncollectible: 'bg-red-500/10 text-red-400 border-red-500/30', // Error, no amber
-  failed: 'bg-red-500/10 text-red-400 border-red-500/30',
-};
+// PROBLEMA: Descarga TODAS las suscripciones activas
+supabase.from('subscriptions')
+  .select('amount')
+  .eq('status', 'active'),  // Sin limit = 221k rows potenciales
+
+// PROBLEMA: Descarga TODAS las invoices abiertas
+supabase.from('invoices')
+  .select('amount_due')
+  .in('status', ['open', 'past_due']),  // Sin limit
 ```
 
----
+**Solución**: Usar agregación server-side con RPCs en lugar de descargar todo al cliente.
 
-#### SubscriptionsPage.tsx - Requiere Correcciones
-**Problema**: Usa `purple` para trials y gradiente multicolor.
+### 3. Crear RPC Optimizado para MRR y Revenue at Risk
 
-```text
-Línea 59: { label: 'Trials', color: 'purple' }
-Línea 238: bg-purple-500/10 text-purple-400 border-purple-500/30 (plan badge)
-Línea 299: bg-gradient-to-r from-purple-500 to-emerald-500 (revenue bar)
+```sql
+CREATE OR REPLACE FUNCTION kpi_mrr_summary()
+RETURNS TABLE(mrr bigint, active_count bigint, at_risk_amount bigint, at_risk_count bigint)
+LANGUAGE sql STABLE SECURITY DEFINER
+SET statement_timeout TO '10s'
+AS $$
+  SELECT 
+    COALESCE(SUM(amount) FILTER (WHERE status = 'active'), 0)::bigint AS mrr,
+    COUNT(*) FILTER (WHERE status = 'active')::bigint AS active_count,
+    COALESCE(SUM(amount) FILTER (WHERE status IN ('past_due', 'unpaid')), 0)::bigint AS at_risk_amount,
+    COUNT(*) FILTER (WHERE status IN ('past_due', 'unpaid'))::bigint AS at_risk_count
+  FROM subscriptions;
+$$;
 ```
 
-**Corrección**:
+### 4. Actualizar useDailyKPIs para Usar RPCs
+
+Reemplazar las queries directas por el nuevo RPC:
+
 ```typescript
-// Trials → Amber (pendiente/por convertir)
-{ label: 'Trials', value: funnel.trials, icon: Clock, color: 'amber' }
+// ANTES (líneas 122-129)
+supabase.from('subscriptions').select('amount').eq('status', 'active'),
+supabase.from('invoices').select('amount_due').in('status', ['open', 'past_due']),
 
-// Plan badge → Neutro
-<Badge variant="outline" className="bg-zinc-800 text-zinc-400 border-zinc-700">
-
-// Revenue bar → Monocromático con acento rojo
-<div className="h-full bg-primary" style={{ width: `${plan.percentage}%` }} />
+// DESPUÉS
+supabase.rpc('kpi_mrr_summary'),
 ```
 
 ---
 
-### 2. MÓDULO DASHBOARD
+## Archivos a Modificar
 
-#### DashboardHome.tsx - Requiere Correcciones Importantes
-**Problema**: KPIs usan colores semánticos innecesarios (cyan, blue, purple, green).
-
-```text
-Línea 353: color: 'cyan' (Nuevos)
-Línea 358: color: 'blue' (Trials)
-Línea 364: color: 'purple' (Trial→Paid)
-Línea 370: color: 'green' (Renovaciones)
-```
-
-**Corrección** - Todas las KPIs no-críticas usan neutral:
-```typescript
-const cards = [
-  { title: 'MRR', color: 'primary', ... },       // Highlight → VRP Red
-  { title: 'Ventas Netas', color: 'neutral', ... },
-  { title: 'Nuevos', color: 'neutral', ... },
-  { title: 'Trials', color: 'neutral', ... },
-  { title: 'Trial→Paid', color: 'neutral', ... },
-  { title: 'Renovaciones', color: 'neutral', ... },
-  { title: 'En Riesgo', color: 'red', isNegative: true, ... },
-  { title: 'Cancelaciones', color: 'amber', isNegative: true, ... },
-];
-
-const getColorClasses = (color: string, isNegative?: boolean) => {
-  if (color === 'red' || isNegative) {
-    return { bg: 'bg-red-500/10', text: 'text-red-400', icon: 'text-red-500', border: 'border-red-500/30' };
-  }
-  if (color === 'amber') {
-    return { bg: 'bg-amber-500/10', text: 'text-amber-400', icon: 'text-amber-500', border: 'border-amber-500/30' };
-  }
-  if (color === 'primary') {
-    return { bg: 'bg-primary/10', text: 'text-primary', icon: 'text-primary', border: 'border-primary/30' };
-  }
-  // DEFAULT: Neutral zinc
-  return { bg: 'bg-zinc-800', text: 'text-foreground', icon: 'text-zinc-400', border: 'border-zinc-700' };
-};
-```
+| Archivo | Cambio |
+|---------|--------|
+| Migración SQL | Crear 5 índices nuevos |
+| `src/hooks/useDailyKPIs.ts` | Usar RPC en lugar de queries directas |
+| `src/hooks/useSubscriptions.ts` | Reducir límite a 100 + paginación |
+| Nueva función SQL | `kpi_mrr_summary()` para agregación |
 
 ---
 
-### 3. MÓDULO COMUNICACIÓN
+## Impacto Esperado
 
-#### MessagesPage.tsx - Requiere Correcciones
-**Problema**: Channel selector usa colores de marca.
-
-```text
-Línea 517: bg-green-600 hover:bg-green-700 (WhatsApp)
-Línea 531: bg-blue-600 hover:bg-blue-700 (SMS)
-Línea 545: bg-purple-600 hover:bg-purple-700 (Native)
-Línea 314: bg-green-100 text-green-700 (Window badge - light mode!)
-```
-
-**Corrección**:
-```typescript
-// Todos los canales → VRP Red cuando activo
-<Button
-  className={cn(
-    "gap-1 h-7 text-xs px-2 md:px-3",
-    selectedChannel === "whatsapp" && "bg-primary hover:bg-primary/90"
-  )}
-/>
-
-// Window badge → Emerald sutil (es estado "activo")
-<Badge className="bg-emerald-500/10 text-emerald-400 border-emerald-500/20">
-```
-
-#### CampaignControlCenter.tsx - Ya Cumple ✅
-```
-Línea 115-119: Todos los canales usan bg-zinc-800 text-white ✅
-```
+| Métrica | Antes | Después |
+|---------|-------|---------|
+| Query `subscriptions ORDER BY amount` | 8-15s (timeout) | <100ms |
+| Query `invoices JOIN clients` | 5-10s (timeout) | <200ms |
+| `kpi_failed_payments` | 10-30s (timeout) | <500ms |
+| Dashboard load time | Infinito (crash) | <2 segundos |
 
 ---
 
-### 4. MÓDULO SISTEMA
+## Sobre el Bot de Render
 
-#### SyncCenter.tsx - Requiere Correcciones
-**Problema**: Estados de sync usan colores variados.
+El error CORS del bot en `vrp-bot-1.onrender.com` es un servicio externo que no puedo modificar desde aquí. Opciones:
 
-```text
-Línea 231: bg-blue-500/20 text-blue-400 (running)
-Línea 235: bg-yellow-500/20 text-yellow-400 (partial)
-Línea 423: text-blue-400 (updated count)
-Línea 424: text-yellow-400 (conflicts count)
-```
-
-**Corrección**:
-```typescript
-case 'running':
-  return <Badge className="bg-zinc-800 text-white"><Loader2 className="animate-spin" /> En progreso</Badge>;
-case 'partial':
-  return <Badge className="bg-amber-500/20 text-amber-400"> Parcial</Badge>;
-
-// Counts → Neutro
-<TableCell className="text-right text-zinc-400">{run.total_updated}</TableCell>
-<TableCell className="text-right text-amber-400">{run.total_conflicts}</TableCell> // Amber = warning
-```
+1. **Keep-alive automático**: Configurar un cron job que haga ping al bot cada 5 minutos
+2. **Upgrade del plan**: El free tier de Render duerme después de 15 minutos de inactividad
+3. **Mover a Edge Function**: Si el bot solo hace llamadas a APIs, podría migrarse a una Edge Function que no duerme
 
 ---
 
-#### RecoveryPage.tsx - Requiere Correcciones
-**Problema**: Source badges y botones de acción usan colores de marca.
+## Orden de Ejecución
 
-```text
-Línea 490: bg-purple-500/10 text-purple-400 (source badge)
-Línea 518: bg-blue-500/15 text-blue-400 (SMS button)
-Línea 652: bg-purple-500/10 text-purple-400 (source badge desktop)
-Línea 713: border-blue-500/30 text-blue-400 (SMS dropdown button)
-```
-
-**Corrección**:
-```typescript
-// Source badges → Neutro
-<Badge variant="outline" className="bg-zinc-800 text-white border-zinc-700">
-  {client.source}
-</Badge>
-
-// SMS buttons → Outline neutro o Secondary
-<Button variant="secondary" className="gap-1.5">
-  <Phone className="h-4 w-4" />
-  SMS
-</Button>
-```
-
----
-
-#### ClientEventsTimeline.tsx - Requiere Correcciones
-**Problema**: Eventos usan colores de marca.
-
-```text
-Línea 40: text-blue-400 (email_open)
-Línea 46: text-purple-400 (high_usage)
-Línea 47: text-blue-400 (trial_started)
-```
-
-**Corrección**:
-```typescript
-const eventConfig = {
-  email_open: { color: "text-zinc-400" },      // Neutro
-  email_click: { color: "text-zinc-400" },     // Neutro
-  email_bounce: { color: "text-red-400" },     // Error
-  payment_failed: { color: "text-red-400" },   // Error
-  payment_success: { color: "text-emerald-400" }, // Éxito
-  high_usage: { color: "text-zinc-400" },      // Neutro
-  trial_started: { color: "text-amber-400" },  // Pendiente/En proceso
-  trial_converted: { color: "text-emerald-400" }, // Éxito
-  churn_risk: { color: "text-amber-400" },     // Advertencia
-};
-```
-
----
-
-#### DiagnosticsPanel.tsx - Ya Cumple ✅
-```
-Línea 85-98: Ya usa paleta semántica correcta ✅
-- ok/completed: emerald
-- warning: amber
-- critical/error: red
-- neutral: zinc
-```
-
----
-
-#### BotChatPage.tsx - Requiere Correcciones
-**Problema**: Avatar de usuario usa blue.
-
-```text
-Línea 490: bg-blue-100 text-blue-600 (user avatar)
-```
-
-**Corrección**:
-```typescript
-<AvatarFallback className="bg-primary/20 text-primary text-xs">
-  <User className="h-3.5 w-3.5" />
-</AvatarFallback>
-```
-
----
-
-## Resumen de Cambios
-
-| Archivo | Tipo de Cambio | Prioridad |
-|---------|----------------|-----------|
-| InvoicesPage.tsx | Neutralizar badges open/draft | Alta |
-| SubscriptionsPage.tsx | Eliminar purple, simplificar colores | Alta |
-| DashboardHome.tsx | Neutralizar KPIs no-críticos | Alta |
-| MessagesPage.tsx | Canal selector → VRP Red | Alta |
-| SyncCenter.tsx | Neutralizar estados de sync | Media |
-| RecoveryPage.tsx | Neutralizar source badges y SMS buttons | Media |
-| ClientEventsTimeline.tsx | Mapear eventos a paleta semántica | Media |
-| BotChatPage.tsx | Cambiar avatar color | Baja |
-
----
-
-## Resultado Visual Final
-
-```text
-┌──────────────────────────────────────────────────────────────────────┐
-│                                                                      │
-│  🎨 PALETA VRP PREMIUM - APLICACIÓN COMPLETA                        │
-│  ─────────────────────────────────────────────────────────────────   │
-│                                                                      │
-│  ┌─────────────────────┐ ┌─────────────────────┐ ┌─────────────────┐│
-│  │ 🟤 Zinc-950         │ │ ⬜ Zinc-900 (Cards) │ │ 🔴 VRP Red      ││
-│  │ Fondo principal     │ │ Elevación sutil     │ │ Solo acciones   ││
-│  │ #09090b             │ │ #18181b             │ │ #AA0601         ││
-│  └─────────────────────┘ └─────────────────────┘ └─────────────────┘│
-│                                                                      │
-│  Estados Semánticos:                                                 │
-│  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐ ┌─────────────┐   │
-│  │ ✅ Emerald  │ │ ⚠️ Amber    │ │ 🔴 Red      │ │ ⚪ Zinc     │   │
-│  │ Activo/OK   │ │ Pendiente   │ │ Error/Deuda │ │ Neutro/Def  │   │
-│  └─────────────┘ └─────────────┘ └─────────────┘ └─────────────┘   │
-│                                                                      │
-│  ❌ PROHIBIDO: blue, purple, cyan, green-600, yellow, orange        │
-│  ✅ PERMITIDO: emerald-400, amber-400, red-400, zinc-400            │
-│                                                                      │
-└──────────────────────────────────────────────────────────────────────┘
-```
-
----
-
-## Sección Técnica
-
-### Estrategia de Cambio
-
-1. **Buscar y Reemplazar Global**:
-   - `bg-blue-500/10` → `bg-amber-500/10` (para estados pending)
-   - `text-blue-400` → `text-amber-400` (o `text-zinc-400` si es neutro)
-   - `bg-purple-500/10` → `bg-zinc-800`
-   - `text-purple-400` → `text-zinc-400`
-   - `bg-green-600` → `bg-primary`
-   - `bg-blue-600` → `bg-primary`
-
-2. **Validar cada archivo** que tenga reglas específicas de estado (ok/error/warning).
-
-3. **Los únicos colores permitidos fuera de zinc**:
-   - `emerald-400/500` → Solo para estados "exitoso", "activo", "pagado"
-   - `amber-400/500` → Solo para estados "pendiente", "advertencia", "en proceso"
-   - `red-400/500` → Solo para estados "error", "deuda", "fallido", "cancelado"
-   - `primary` (#AA0601) → Solo para botones de acción y acentos
-
-### Impacto
-
-- **13 archivos** requieren modificación
-- **~80 líneas** de cambios de color
-- **0 cambios de lógica** - Solo CSS/clases
+1. **PRIMERO**: Aplicar migración SQL con índices (efecto inmediato)
+2. **SEGUNDO**: Crear RPC `kpi_mrr_summary`
+3. **TERCERO**: Actualizar `useDailyKPIs.ts` para usar el RPC
+4. **CUARTO**: Optimizar `useSubscriptions.ts` con paginación
 
