@@ -92,16 +92,20 @@ export function useMetrics() {
         // Note: RPC may not be in types yet, using type assertion
         const { data: salesSummary, error: rpcError } = await supabase.rpc('kpi_sales_summary' as any);
         
-        if (!rpcError && salesSummary && Array.isArray(salesSummary) && salesSummary.length > 0) {
-          const summary = salesSummary[0] as { sales_usd?: number; sales_mxn?: number; refunds_usd?: number; refunds_mxn?: number; today_usd?: number; today_mxn?: number };
-          // RPC returns amounts in cents
-          salesMonthUSD = (summary.sales_usd || 0) / 100;
-          salesMonthMXN = (summary.sales_mxn || 0) / 100;
-          refundsMonthUSD = (summary.refunds_usd || 0) / 100;
-          refundsMonthMXN = (summary.refunds_mxn || 0) / 100;
-          salesTodayUSD = (summary.today_usd || 0) / 100;
-          salesTodayMXN = (summary.today_mxn || 0) / 100;
-        } else {
+        // Normalize: accept both object and array formats for compatibility
+        if (!rpcError && salesSummary) {
+          const salesArray = Array.isArray(salesSummary) ? salesSummary : [salesSummary];
+          if (salesArray.length > 0) {
+            const summary = salesArray[0] as any;
+            // RPC returns amounts in cents - accept both new (sales_usd) and legacy (total_usd) field names
+            salesMonthUSD = (summary.sales_usd ?? summary.total_usd ?? 0) / 100;
+            salesMonthMXN = (summary.sales_mxn ?? summary.total_mxn ?? 0) / 100;
+            refundsMonthUSD = (summary.refunds_usd ?? 0) / 100;
+            refundsMonthMXN = (summary.refunds_mxn ?? 0) / 100;
+            salesTodayUSD = (summary.today_usd ?? 0) / 100;
+            salesTodayMXN = (summary.today_mxn ?? 0) / 100;
+          }
+        } else if (rpcError) {
           // Fallback: Limited query (only if RPC doesn't exist yet)
           console.warn('kpi_sales_summary RPC not available, using limited fallback');
           const { data: monthlyTransactions } = await supabase
@@ -164,35 +168,32 @@ export function useMetrics() {
       try {
         const { data: dashboardData, error: dashboardError } = await supabase.rpc('dashboard_metrics' as any);
         
-        if (!dashboardError && dashboardData && Array.isArray(dashboardData) && dashboardData.length > 0) {
-          // Optimized RPC now uses materialized view - instant response (~50ms)
-          const dbMetrics = dashboardData[0] as {
-            lead_count?: number;
-            trial_count?: number;
-            customer_count?: number;
-            churn_count?: number;
-            converted_count?: number;
-            recovery_list?: Array<{ email: string; amount: number; source: string }>;
-          };
-          finalLeadCount = dbMetrics.lead_count || 0;
-          finalTrialCount = dbMetrics.trial_count || 0;
-          finalCustomerCount = dbMetrics.customer_count || 0;
-          finalChurnCount = dbMetrics.churn_count || 0;
-          finalConvertedCount = dbMetrics.converted_count || 0;
-          
-          // Use recovery list from RPC (optimized - no client JOIN)
-          if (dbMetrics.recovery_list && Array.isArray(dbMetrics.recovery_list)) {
-            recoveryList = dbMetrics.recovery_list.map(r => ({
-              email: r.email,
-              full_name: null, // Not fetched in ultra-fast mode
-              phone: null,     // Not fetched in ultra-fast mode
-              amount: r.amount,
-              source: r.source,
-              recovery_status: undefined
-            }));
+        // Normalize: accept both object and array formats for compatibility
+        if (!dashboardError && dashboardData) {
+          const metricsArray = Array.isArray(dashboardData) ? dashboardData : [dashboardData];
+          if (metricsArray.length > 0) {
+            // Optimized RPC now uses materialized view - instant response (~50ms)
+            const dbMetrics = metricsArray[0] as any;
+            finalLeadCount = dbMetrics.lead_count ?? 0;
+            finalTrialCount = dbMetrics.trial_count ?? 0;
+            finalCustomerCount = dbMetrics.customer_count ?? 0;
+            finalChurnCount = dbMetrics.churn_count ?? 0;
+            finalConvertedCount = dbMetrics.converted_count ?? 0;
+            
+            // Use recovery list from RPC (optimized - no client JOIN)
+            if (dbMetrics.recovery_list && Array.isArray(dbMetrics.recovery_list)) {
+              recoveryList = dbMetrics.recovery_list.map((r: any) => ({
+                email: r.email,
+                full_name: null, // Not fetched in ultra-fast mode
+                phone: null,     // Not fetched in ultra-fast mode
+                amount: r.amount,
+                source: r.source,
+                recovery_status: undefined
+              }));
+            }
           }
-        } else {
-          console.warn('dashboard_metrics RPC not available:', dashboardError?.message);
+        } else if (dashboardError) {
+          console.warn('dashboard_metrics RPC error:', dashboardError.message);
         }
       } catch (rpcError) {
         console.error('Error calling dashboard_metrics RPC:', rpcError);
