@@ -88,21 +88,47 @@ export function SyncStatusBanner() {
     return () => clearInterval(interval);
   }, [fetchSyncStatus]);
 
-  // Use Realtime for instant updates instead of aggressive polling
+  // OPTIMIZATION: Use safer Realtime subscription with abort handling
   useEffect(() => {
-    const channel = supabase
-      .channel('sync_status_banner')
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'sync_runs' },
-        () => {
-          fetchSyncStatus();
+    let isMounted = true;
+    let channel: ReturnType<typeof supabase.channel> | null = null;
+    
+    const setupRealtime = async () => {
+      try {
+        channel = supabase.channel('sync_status_banner');
+        
+        channel.on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'sync_runs' },
+          () => {
+            if (isMounted) {
+              fetchSyncStatus();
+            }
+          }
+        );
+        
+        if (isMounted) {
+          await channel.subscribe();
         }
-      )
-      .subscribe();
+      } catch (error) {
+        // Silently handle AbortError - it's expected during fast navigation
+        if (error instanceof Error && error.name !== 'AbortError') {
+          console.error('Realtime subscription error:', error);
+        }
+      }
+    };
+    
+    setupRealtime();
 
     return () => {
-      supabase.removeChannel(channel);
+      isMounted = false;
+      if (channel) {
+        try {
+          supabase.removeChannel(channel);
+        } catch {
+          // Ignore cleanup errors
+        }
+      }
     };
   }, [fetchSyncStatus]);
 
