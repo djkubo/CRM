@@ -251,36 +251,19 @@ export function useMetrics() {
     }
   }, []);
 
+  // Initial fetch
   useEffect(() => {
     fetchMetrics();
-
-    // OPTIMIZATION: Debounce realtime changes to prevent excessive refetches
-    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
-    const debouncedFetch = () => {
-      if (debounceTimer) clearTimeout(debounceTimer);
-      debounceTimer = setTimeout(() => {
-        console.log('🔄 Transaction change detected, refreshing metrics...');
-        fetchMetrics();
-      }, 3000); // 3 second debounce
-    };
-
-    // Subscribe to realtime changes for automatic updates
-    const channel = supabase
-      .channel('metrics-realtime')
-      .on('postgres_changes', 
-        { event: 'INSERT', schema: 'public', table: 'transactions' },
-        debouncedFetch
-      )
-      .on('postgres_changes',
-        { event: 'UPDATE', schema: 'public', table: 'transactions' },
-        debouncedFetch
-      )
-      .subscribe();
-
-    return () => {
-      if (debounceTimer) clearTimeout(debounceTimer);
-      supabase.removeChannel(channel);
-    };
+  }, [fetchMetrics]);
+  
+  // OPTIMIZATION: Use polling instead of Realtime to avoid AbortError issues
+  // Realtime was causing "signal is aborted without reason" errors
+  useEffect(() => {
+    const interval = setInterval(() => {
+      fetchMetrics();
+    }, 60000); // Refresh every 60 seconds
+    
+    return () => clearInterval(interval);
   }, [fetchMetrics]);
 
   return { metrics, isLoading, refetch: fetchMetrics };
