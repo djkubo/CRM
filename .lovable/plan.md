@@ -1,81 +1,92 @@
 
-# Plan: Corregir CORS y Estados Fantasma de Sync
+# Plan: Arreglar Modales Atascados y CORS de Reconcile
 
-## Resumen del Problema
-1. **Error CORS** en 4 Edge Functions que no tienen la URL de producción (`https://zen-admin-joy.lovable.app`) en sus origins permitidos
-2. **Estados fantasma** en la UI de sync cuando las respuestas de API fallan silenciosamente
+## Diagnóstico Confirmado
+
+### Problema 1: Error CORS en `reconcile-metrics` (Diagnostics)
+- **Causa**: La Edge Function ya tiene el código correcto con `https://zen-admin-joy.lovable.app`, pero los cambios NO están desplegados en Supabase
+- **Solución**: Desplegar manualmente la Edge Function
+
+### Problema 2: Modales "atascados" en Settings (ManyChat y GHL)  
+- **Causa**: El panel de "Probar Conexión" llama a `sync-ghl` y `sync-manychat` que ejecutan sincronizaciones completas (pueden tardar minutos)
+- **Lo que debería pasar**: Una prueba de conexión solo debería verificar que la API responde, no sincronizar datos
 
 ---
 
-## Fase 1: Corregir CORS en Edge Functions
+## Fase 1: Desplegar Edge Functions (Acción Inmediata)
 
-### Archivos a modificar:
-1. `supabase/functions/reconcile-metrics/index.ts`
-2. `supabase/functions/create-portal-session/index.ts`
-3. `supabase/functions/force-charge-invoice/index.ts`
-4. `supabase/functions/sync-clients/index.ts`
+Ejecutar deploy de las 4 Edge Functions con CORS corregido:
+1. `reconcile-metrics`
+2. `create-portal-session`
+3. `force-charge-invoice`
+4. `sync-clients`
 
-### Cambio en cada archivo:
-Agregar la URL de producción a `ALLOWED_ORIGINS`:
+---
+
+## Fase 2: Crear Modo "Test Only" para GHL y ManyChat
+
+### Cambios en `supabase/functions/sync-ghl/index.ts`:
+Agregar parámetro `testOnly: true` que solo hace un ping a la API sin sincronizar:
 
 ```typescript
-const ALLOWED_ORIGINS = [
-  "https://id-preview--9d074359-befd-41d0-9307-39b75ab20410.lovable.app",
-  "https://zen-admin-joy.lovable.app",  // <-- AGREGAR ESTA LÍNEA
-  "https://lovable.dev",
-  "http://localhost:5173",
-  "http://localhost:3000",
-];
+// Al inicio de Deno.serve, después de parsear body:
+if (body?.testOnly) {
+  // Solo verificar que la API responde
+  const testResponse = await fetch(
+    `https://services.leadconnectorhq.com/locations/${ghlLocationId}`,
+    { headers: { 'Authorization': `Bearer ${ghlApiKey}`, 'Version': '2021-07-28' } }
+  );
+  
+  return new Response(JSON.stringify({
+    ok: testResponse.ok,
+    success: testResponse.ok,
+    status: testResponse.ok ? 'connected' : 'error',
+    error: testResponse.ok ? null : `API returned ${testResponse.status}`
+  }), { headers: corsHeaders });
+}
+```
+
+### Cambios en `supabase/functions/sync-manychat/index.ts`:
+Agregar el mismo parámetro `testOnly`:
+
+```typescript
+if (body?.testOnly) {
+  // Verificar API key con endpoint de info
+  const testResponse = await fetch(
+    'https://api.manychat.com/fb/page/getInfo',
+    { headers: { 'Authorization': `Bearer ${manychatApiKey}` } }
+  );
+  
+  return new Response(JSON.stringify({
+    ok: testResponse.ok,
+    success: testResponse.ok,
+    status: testResponse.ok ? 'connected' : 'error',
+    error: testResponse.ok ? null : `API returned ${testResponse.status}`
+  }), { headers: corsHeaders });
+}
 ```
 
 ---
 
-## Fase 2: Prevenir Estados Fantasma en IntegrationsStatusPanel
+## Fase 3: Actualizar IntegrationsStatusPanel
 
 ### Archivo: `src/components/dashboard/IntegrationsStatusPanel.tsx`
 
-### Mejoras:
-1. **Timeout de seguridad** de 30 segundos para evitar spinners infinitos
-2. **Limpieza automática** del estado `testing` en caso de error de red
-3. **Mensaje de error más descriptivo** cuando hay problemas de conexión
+Cambiar el payload de prueba de conexión:
 
 ```typescript
-const testConnection = async (integration: Integration) => {
-  if (!integration.testEndpoint) {
-    toast.info('Esta integración no tiene prueba automática');
-    return;
-  }
+// ANTES
+const result = await invokeWithAdminKey<...>(
+  integration.testEndpoint,
+  { dryRun: true, limit: 1 }  // ❌ Esto ejecuta un sync completo
+);
 
-  setTesting(integration.id);
-  
-  // Timeout de seguridad
-  const timeout = setTimeout(() => {
-    setTesting(null);
-    setStatuses(prev => ({ ...prev, [integration.id]: 'error' }));
-    toast.error(`${integration.name}: Timeout - sin respuesta`);
-  }, 30000);
-  
-  try {
-    const result = await invokeWithAdminKey<...>(...);
-    clearTimeout(timeout);
-    // ... resto de la lógica
-  } catch (error) {
-    clearTimeout(timeout);
-    setTesting(null);
-    setStatuses(prev => ({ ...prev, [integration.id]: 'error' }));
-    toast.error(`Error probando ${integration.name}: ${error.message || 'Error de conexión'}`);
-  }
-};
+// DESPUÉS  
+const result = await invokeWithAdminKey<...>(
+  integration.testEndpoint,
+  { testOnly: true }  // ✅ Solo verifica la conexión
+);
 ```
-
----
-
-## Fase 3: Verificar y Limpiar SyncCenter
-
-### Archivo: `src/components/dashboard/SyncCenter.tsx`
-
-### Mejora similar:
-Agregar timeout de seguridad en las mutaciones de sync para evitar spinners infinitos.
 
 ---
 
@@ -83,17 +94,40 @@ Agregar timeout de seguridad en las mutaciones de sync para evitar spinners infi
 
 | Archivo | Cambio |
 |---------|--------|
-| `reconcile-metrics/index.ts` | Agregar URL de producción a CORS |
-| `create-portal-session/index.ts` | Agregar URL de producción a CORS |
-| `force-charge-invoice/index.ts` | Agregar URL de producción a CORS |
-| `sync-clients/index.ts` | Agregar URL de producción a CORS |
-| `IntegrationsStatusPanel.tsx` | Timeout de 30s para evitar spinners |
-| `SyncCenter.tsx` | Timeout de 30s en mutaciones |
+| Edge Functions (deploy) | Desplegar las 4 funciones con CORS actualizado |
+| `sync-ghl/index.ts` | Agregar modo `testOnly` para health check rápido |
+| `sync-manychat/index.ts` | Agregar modo `testOnly` para health check rápido |
+| `IntegrationsStatusPanel.tsx` | Cambiar `{ dryRun, limit }` a `{ testOnly: true }` |
 
 ---
 
 ## Resultado Esperado
-- Las funciones de Diagnostics (reconcile-metrics) funcionarán desde producción
-- Los modales de test de conexiones nunca quedarán atascados
-- Si algo falla, el usuario verá un mensaje claro en vez de un spinner infinito
+- **Diagnostics**: Reconciliación funcionará desde producción (CORS arreglado)
+- **Settings**: Probar conexión será instantáneo (~1 segundo) en vez de minutos
+- **No más modales atascados**: El timeout de 30s casi nunca se activará porque los tests serán rápidos
 
+---
+
+## Detalles Técnicos del Modo testOnly
+
+```text
+┌─────────────────────────────────────────────────────────────────┐
+│                    FLUJO ACTUAL (Lento)                         │
+├─────────────────────────────────────────────────────────────────┤
+│ Click "Probar"  →  sync-ghl  →  Crear sync_run  →  Fetch 100   │
+│   conexión           │           en DB             contactos    │
+│                      │                                │         │
+│                      ↓                                ↓         │
+│               Respuesta después de 10-60 segundos              │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│                    FLUJO NUEVO (Rápido)                         │
+├─────────────────────────────────────────────────────────────────┤
+│ Click "Probar"  →  sync-ghl  →  Ping API  →  Respuesta         │
+│   conexión         testOnly       solo       en <2 segundos     │
+│                      │                                          │
+│                      ↓                                          │
+│               NO toca la base de datos                         │
+└─────────────────────────────────────────────────────────────────┘
+```
