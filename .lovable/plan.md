@@ -1,143 +1,96 @@
 
-# Plan: Desactivar Completamente GoHighLevel Hasta Reinicio Manual
+# Plan: Arreglar Pruebas de Conexión que Inician Syncs Completos
 
 ## Diagnóstico Confirmado
 
-**El webhook de GHL está activo y recibiendo datos constantemente:**
-- Último contacto recibido: hace ~40 minutos
-- 54 contactos pendientes de procesar en staging
-- El webhook NO respeta el flag `sync_paused` de system_settings
+El problema es claro: cuando el usuario hace click en "Probar Conexión" en la página de Settings, **las Edge Functions inician syncs completos en lugar de solo verificar la conexión**:
 
-**Los syncs manuales no están corriendo** (la base confirma 0 syncs activos), pero los webhooks de GHL siguen entrando.
+| Integración | ¿Tiene `testOnly`? | Comportamiento actual |
+|-------------|--------------------|-----------------------|
+| Stripe | ❌ NO | Inicia sync completo |
+| PayPal | ❌ NO | Inicia sync completo |
+| GoHighLevel | ✅ SÍ | Solo verifica conexión |
+| ManyChat | ✅ SÍ | Solo verifica conexión |
+
+## Fase 1: Agregar modo `testOnly` a Stripe
+
+Modificar `supabase/functions/fetch-stripe/index.ts`:
+- Detectar `body.testOnly === true` antes de cualquier sync
+- Hacer un request mínimo a la API de Stripe (`GET /v1/balance`)
+- Retornar inmediatamente con `{ ok: true, testOnly: true }`
+
+## Fase 2: Agregar modo `testOnly` a PayPal
+
+Modificar `supabase/functions/fetch-paypal/index.ts`:
+- Detectar `body.testOnly === true` antes de cualquier sync
+- Hacer un request mínimo a la API de PayPal (token endpoint o similar)
+- Retornar inmediatamente con `{ ok: true, testOnly: true }`
+
+## Fase 3: Agregar Kill Switch Global a Syncs Manuales
+
+### Para `sync-ghl`:
+- Agregar verificación de `system_settings.ghl_paused` al inicio del sync
+- Si está pausado, retornar `{ ok: false, error: "GHL está pausado" }`
+
+### Para `sync-manychat`:
+- Agregar verificación de `system_settings.manychat_paused` (opcional, similar a GHL)
+
+## Fase 4: Agregar Toggle ManyChat en UI (Opcional)
+
+Agregar toggle `manychat_paused` similar al de GHL en `SystemTogglesPanel.tsx`
 
 ---
 
-## Fase 1: Agregar Kill Switch al Webhook de GHL (Emergencia)
+## Archivos a Modificar
 
-### Archivo: `supabase/functions/ghl-webhook/index.ts`
+| Archivo | Cambio |
+|---------|--------|
+| `supabase/functions/fetch-stripe/index.ts` | Agregar modo `testOnly` al inicio |
+| `supabase/functions/fetch-paypal/index.ts` | Agregar modo `testOnly` al inicio |
+| `supabase/functions/sync-ghl/index.ts` | Verificar `ghl_paused` antes de sync |
+| `supabase/functions/sync-manychat/index.ts` | Verificar `manychat_paused` antes de sync (opcional) |
+| `src/components/dashboard/SystemTogglesPanel.tsx` | Agregar toggle ManyChat (opcional) |
 
-Agregar verificación del flag `sync_paused` justo después del circuit breaker:
+---
+
+## Código de Ejemplo: testOnly para Stripe
 
 ```typescript
-// Después de la línea 242 (después del health check):
-
-// =========================================================================
-// KILL SWITCH - Verificar si GHL está pausado globalmente
-// =========================================================================
-const { data: pausedSetting } = await supabase
-  .from('system_settings')
-  .select('value')
-  .eq('key', 'ghl_paused')
-  .single();
-
-if (pausedSetting?.value === 'true') {
-  logger.info("🛑 GHL PAUSED - Webhook acknowledged but not processed", { requestId });
-  return new Response(JSON.stringify({ 
-    success: true, 
-    action: "paused",
-    message: "GHL integration is currently paused",
-  }), {
-    status: 200,
-    headers: { ...corsHeaders, "Content-Type": "application/json" },
-  });
+// Al inicio del handler, después de parsear el body:
+if (body.testOnly === true) {
+  logger.info('Test-only mode: Verifying Stripe API connection');
+  try {
+    const testResponse = await fetch('https://api.stripe.com/v1/balance', {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${stripeSecretKey}`,
+        'Content-Type': 'application/x-www-form-urlencoded'
+      }
+    });
+    
+    return new Response(JSON.stringify({
+      ok: testResponse.ok,
+      success: testResponse.ok,
+      status: testResponse.ok ? 'connected' : 'error',
+      apiStatus: testResponse.status,
+      testOnly: true
+    }), { status: 200, headers: corsHeaders });
+  } catch (error) {
+    return new Response(JSON.stringify({
+      ok: false,
+      success: false,
+      error: error.message,
+      testOnly: true
+    }), { status: 200, headers: corsHeaders });
+  }
 }
 ```
-
----
-
-## Fase 2: Agregar Toggle Específico para GHL en la UI
-
-### Archivo: `src/components/dashboard/SystemTogglesPanel.tsx`
-
-Agregar nuevo toggle `ghl_paused`:
-
-```typescript
-interface SystemSettings {
-  // ... existentes ...
-  ghl_paused: boolean;  // NUEVO
-}
-
-// En el JSX, nuevo toggle:
-<div className="flex items-center justify-between p-3 rounded-lg bg-destructive/10 border border-destructive/30">
-  <div className="flex items-center gap-3">
-    <Pause className="h-5 w-5 text-destructive" />
-    <div>
-      <Label className="font-medium text-destructive">Pausar GoHighLevel</Label>
-      <p className="text-xs text-muted-foreground">
-        Detiene TODOS los webhooks y syncs de GHL
-      </p>
-    </div>
-  </div>
-  <Switch
-    checked={settings.ghl_paused}
-    onCheckedChange={(checked) => updateSetting('ghl_paused', checked)}
-  />
-</div>
-```
-
----
-
-## Fase 3: Acción Inmediata - Insertar Flag en DB
-
-Ejecutar SQL para pausar GHL inmediatamente:
-
-```sql
-INSERT INTO system_settings (key, value, updated_at)
-VALUES ('ghl_paused', 'true', NOW())
-ON CONFLICT (key) DO UPDATE SET value = 'true', updated_at = NOW();
-```
-
----
-
-## Resumen de Cambios
-
-| Archivo/Acción | Descripción |
-|----------------|-------------|
-| **SQL Inmediato** | Insertar `ghl_paused = true` en system_settings |
-| `ghl-webhook/index.ts` | Agregar verificación de `ghl_paused` antes de procesar |
-| `SystemTogglesPanel.tsx` | Agregar toggle visual para pausar/reanudar GHL |
-| **Desplegar** | Deploy de `ghl-webhook` con el kill switch |
 
 ---
 
 ## Resultado Esperado
 
-1. **Inmediatamente** (después de insertar SQL): El flag existe pero el webhook viejo no lo lee
-2. **Después del deploy**: El webhook leerá el flag y responderá 200 OK sin procesar nada
-3. **Control manual**: Podrás activar/desactivar GHL desde Settings cuando quieras
-
----
-
-## Diagrama del Flujo
-
-```text
-┌─────────────────────────────────────────────────────────────────┐
-│                    FLUJO ACTUAL (Sin control)                   │
-├─────────────────────────────────────────────────────────────────┤
-│ GHL envía webhook → Edge Function → Guarda en staging → 200 OK │
-│                     (siempre procesa)                           │
-└─────────────────────────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────────────────────┐
-│                    FLUJO NUEVO (Con kill switch)                │
-├─────────────────────────────────────────────────────────────────┤
-│ GHL envía webhook → Edge Function → ¿ghl_paused?               │
-│                                        │                        │
-│                          ┌─────────────┴─────────────┐          │
-│                          ▼                           ▼          │
-│                   [YES: paused]              [NO: activo]       │
-│                          │                           │          │
-│                   Responder 200 OK         Guardar en staging   │
-│                   sin procesar nada              200 OK         │
-└─────────────────────────────────────────────────────────────────┘
-```
-
----
-
-## Para Reactivar GHL en el Futuro
-
-Simplemente ir a **Settings → Configuración del Sistema** y desactivar el toggle "Pausar GoHighLevel", o ejecutar:
-
-```sql
-UPDATE system_settings SET value = 'false' WHERE key = 'ghl_paused';
-```
+1. **Probar Conexión** → Respuesta instantánea (<2 segundos)
+2. **Sin syncs iniciados** por accidente
+3. **Control total** con toggles de pausa para GHL y ManyChat
+4. **SyncStatusBanner** no mostrará actividad cuando solo se prueba conexión
