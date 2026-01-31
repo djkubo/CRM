@@ -76,9 +76,10 @@ interface TransactionRecord {
 // ============= CONSTANTS =============
 
 const RECORDS_PER_PAGE = 100;
-const PAGES_PER_CHUNK = 15; // Process 15 pages per invocation (~1500 tx, ~180s)
-const MAX_CHUNKS = 200; // Max ~30,000 tx total
+const PAGES_PER_CHUNK = 10; // Process 10 pages per invocation (~1000 tx, ~120s) - more frequent checkpoints
+const MAX_CHUNKS = 300; // Max ~30,000 tx total
 const STRIPE_API_DELAY_MS = 30;
+const CHECKPOINT_SAVE_INTERVAL = 2; // Save checkpoint every 2 pages for more granular recovery
 
 const DECLINE_REASONS_ES: Record<string, string> = {
   'insufficient_funds': 'Fondos insuficientes',
@@ -276,18 +277,47 @@ async function processChunk(
   let totalInChunk = 0;
   let hasMore = true;
   let lastError: string | null = null;
+  let consecutiveErrors = 0;
 
   logger.info(`CHUNK ${chunkNumber} START`, { cursor: currentCursor?.slice(-10), runningTotal });
 
   for (let page = 0; page < PAGES_PER_CHUNK && hasMore; page++) {
+    const pageStart = Date.now();
     const result = await processSinglePage(supabase, stripeSecretKey, startDate, endDate, currentCursor);
 
     if (result.error) {
       lastError = result.error;
-      logger.error(`Page error`, new Error(result.error));
-      await delay(2000);
+      consecutiveErrors++;
+      logger.error(`Page error (${consecutiveErrors}/5)`, new Error(result.error));
+      
+      // If too many consecutive errors, save state and pause for manual resume
+      if (consecutiveErrors >= 5) {
+        await supabase.from('sync_runs').update({
+          status: 'paused',
+          error_message: `Pausado: ${consecutiveErrors} errores consecutivos. Último: ${result.error}`,
+          checkpoint: { 
+            cursor: currentCursor, 
+            runningTotal: runningTotal + totalInChunk, 
+            chunk: chunkNumber, 
+            page,
+            lastActivity: new Date().toISOString(),
+            canResume: true,
+            pauseReason: 'consecutive_errors',
+            startDate: startDate ? new Date(startDate * 1000).toISOString() : null,
+            endDate: endDate ? new Date(endDate * 1000).toISOString() : null
+          }
+        }).eq('id', syncRunId);
+        
+        logger.warn('Sync paused due to consecutive errors - can resume later');
+        return; // Exit gracefully, can resume
+      }
+      
+      await delay(3000 * consecutiveErrors); // Progressive backoff
       continue;
     }
+    
+    // Reset error counter on success
+    consecutiveErrors = 0;
 
     // BATCH UPSERT - No client enrichment here (deferred)
     if (result.transactions.length > 0) {
@@ -297,6 +327,23 @@ async function processChunk(
 
       if (upsertError) {
         logger.error(`Upsert error`, new Error(upsertError.message));
+        // Save checkpoint on upsert error too
+        await supabase.from('sync_runs').update({
+          status: 'paused',
+          error_message: `Pausado: Error DB - ${upsertError.message}`,
+          checkpoint: { 
+            cursor: currentCursor, 
+            runningTotal: runningTotal + totalInChunk, 
+            chunk: chunkNumber, 
+            page,
+            lastActivity: new Date().toISOString(),
+            canResume: true,
+            pauseReason: 'upsert_error',
+            startDate: startDate ? new Date(startDate * 1000).toISOString() : null,
+            endDate: endDate ? new Date(endDate * 1000).toISOString() : null
+          }
+        }).eq('id', syncRunId);
+        return;
       } else {
         totalInChunk += result.transactions.length;
       }
@@ -305,22 +352,31 @@ async function processChunk(
     currentCursor = result.nextCursor;
     hasMore = result.hasMore && currentCursor !== null;
 
-    // Update progress every page with lastActivity timestamp
-    await supabase.from('sync_runs').update({
-      total_fetched: runningTotal + totalInChunk,
-      total_inserted: runningTotal + totalInChunk,
-      checkpoint: { 
-        cursor: currentCursor, 
-        runningTotal: runningTotal + totalInChunk, 
-        chunk: chunkNumber, 
-        page: page + 1,
-        lastActivity: new Date().toISOString()
-      }
-    }).eq('id', syncRunId);
-
-    if (page % 5 === 0) {
-      logger.info(`Chunk ${chunkNumber} progress: ${totalInChunk} tx in ${page + 1} pages`);
+    // Save checkpoint every CHECKPOINT_SAVE_INTERVAL pages (more frequent = safer)
+    const shouldSaveCheckpoint = page % CHECKPOINT_SAVE_INTERVAL === 0 || page === PAGES_PER_CHUNK - 1;
+    
+    if (shouldSaveCheckpoint) {
+      await supabase.from('sync_runs').update({
+        total_fetched: runningTotal + totalInChunk,
+        total_inserted: runningTotal + totalInChunk,
+        checkpoint: { 
+          cursor: currentCursor, 
+          runningTotal: runningTotal + totalInChunk, 
+          chunk: chunkNumber, 
+          page: page + 1,
+          pagesPerChunk: PAGES_PER_CHUNK,
+          lastActivity: new Date().toISOString(),
+          canResume: true,
+          startDate: startDate ? new Date(startDate * 1000).toISOString() : null,
+          endDate: endDate ? new Date(endDate * 1000).toISOString() : null
+        }
+      }).eq('id', syncRunId);
+      
+      logger.info(`Checkpoint saved: chunk ${chunkNumber}, page ${page + 1}, total ${runningTotal + totalInChunk}`);
     }
+
+    const pageDuration = Date.now() - pageStart;
+    logger.debug(`Page ${page + 1}: ${result.transactions.length} tx in ${pageDuration}ms`);
 
     await delay(100);
   }
@@ -333,14 +389,17 @@ async function processChunk(
   if (hasMore && chunkNumber < MAX_CHUNKS) {
     logger.info(`AUTO-CHAIN: Invoking next chunk ${chunkNumber + 1}`);
 
-    // Update status to "continuing" with lastActivity for stale detection
+    // Update status to "continuing" with lastActivity for stale detection and full recovery info
     await supabase.from('sync_runs').update({
       status: 'continuing',
       checkpoint: { 
         cursor: currentCursor, 
         runningTotal: newTotal, 
         chunk: chunkNumber + 1,
-        lastActivity: new Date().toISOString()
+        lastActivity: new Date().toISOString(),
+        canResume: true,
+        startDate: startDate ? new Date(startDate * 1000).toISOString() : null,
+        endDate: endDate ? new Date(endDate * 1000).toISOString() : null
       }
     }).eq('id', syncRunId);
 
@@ -388,18 +447,20 @@ async function processChunk(
         }
       }
       
-      // All retries failed - mark sync with recoverable state
-      logger.error('All chain retries exhausted');
+      // All retries failed - mark sync with recoverable state (preserve dates for resume)
+      logger.error('All chain retries exhausted - sync paused for manual resume');
       await supabase.from('sync_runs').update({
         status: 'paused',
-        error_message: `Chain failed after 3 retries at chunk ${chunkNumber}. Can resume.`,
+        error_message: `Chain falló después de 3 reintentos en chunk ${chunkNumber}. Haz clic en "Reanudar" para continuar.`,
         checkpoint: { 
           cursor: currentCursor, 
           runningTotal: newTotal, 
           chunk: chunkNumber, 
           chainFailed: true,
           canResume: true,
-          lastActivity: new Date().toISOString()
+          lastActivity: new Date().toISOString(),
+          startDate: startDate ? new Date(startDate * 1000).toISOString() : null,
+          endDate: endDate ? new Date(endDate * 1000).toISOString() : null
         }
       }).eq('id', syncRunId);
     })());
@@ -558,13 +619,23 @@ Deno.serve(async (req) => {
     }
 
     // ========== RESUME PAUSED/FAILED SYNC ==========
-    if (body.resumeSync || body.resumeFromCursor) {
+    if (body.resumeSync || body.resumeFromCursor || body.syncRunId) {
+      // If syncRunId is passed, resume that specific sync
       // If resumeFromCursor is passed, we look for a sync with that cursor
       // If resumeSync is true, we find the most recent resumable sync
       
       let pausedSync: { id: string; checkpoint: any } | null = null;
       
-      if (body.resumeFromCursor) {
+      if (body.syncRunId) {
+        // Resume specific sync by ID
+        const { data } = await supabase
+          .from('sync_runs')
+          .select('id, checkpoint')
+          .eq('id', body.syncRunId)
+          .in('status', ['paused', 'failed'])
+          .single();
+        pausedSync = data;
+      } else if (body.resumeFromCursor) {
         // Find sync by cursor
         const { data } = await supabase
           .from('sync_runs')
@@ -603,15 +674,35 @@ Deno.serve(async (req) => {
 
       const checkpoint = pausedSync.checkpoint as any;
       
-      // Mark as running again
+      // Use dates from checkpoint if not provided in body (critical for proper resume!)
+      const startDate = body.startDate 
+        ? Math.floor(new Date(body.startDate).getTime() / 1000) 
+        : checkpoint.startDate 
+          ? Math.floor(new Date(checkpoint.startDate).getTime() / 1000)
+          : null;
+      const endDate = body.endDate 
+        ? Math.floor(new Date(body.endDate).getTime() / 1000) 
+        : checkpoint.endDate 
+          ? Math.floor(new Date(checkpoint.endDate).getTime() / 1000)
+          : null;
+      
+      // Mark as running again with updated checkpoint
       await supabase.from('sync_runs').update({
         status: 'running',
         error_message: null,
-        checkpoint: { ...checkpoint, lastActivity: new Date().toISOString(), resumed: true }
+        checkpoint: { 
+          ...checkpoint, 
+          lastActivity: new Date().toISOString(), 
+          resumed: true,
+          resumeCount: (checkpoint.resumeCount || 0) + 1
+        }
       }).eq('id', pausedSync.id);
 
-      const startDate = body.startDate ? Math.floor(new Date(body.startDate).getTime() / 1000) : null;
-      const endDate = body.endDate ? Math.floor(new Date(body.endDate).getTime() / 1000) : null;
+      logger.info(`RESUME SYNC: ${pausedSync.id}`, { 
+        runningTotal: checkpoint.runningTotal, 
+        chunk: checkpoint.chunk,
+        cursor: checkpoint.cursor?.slice(-10)
+      });
 
       EdgeRuntime.waitUntil(
         processChunk(supabase, stripeSecretKey, pausedSync.id, startDate, endDate, checkpoint.cursor, checkpoint.runningTotal || 0, (checkpoint.chunk || 1) + 1)
@@ -624,7 +715,9 @@ Deno.serve(async (req) => {
           run_id: pausedSync.id,
           syncRunId: pausedSync.id,
           resumedFrom: checkpoint.runningTotal || 0,
-          cursor: checkpoint.cursor?.slice(-15)
+          chunk: checkpoint.chunk || 1,
+          cursor: checkpoint.cursor?.slice(-15),
+          resumeCount: (checkpoint.resumeCount || 0) + 1
         }),
         { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );

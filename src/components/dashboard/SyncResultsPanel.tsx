@@ -92,21 +92,21 @@ export function SyncResultsPanel() {
 
     setRecentRuns((recent || []) as SyncRun[]);
     
-    // Failed syncs with checkpoint (resumable) - last 24 hours
+    // Failed AND paused syncs with checkpoint (resumable) - last 24 hours
     const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
     const { data: failed } = await supabase
       .from("sync_runs")
       .select("*")
-      .eq("status", "failed")
+      .in("status", ["failed", "paused"]) // Include paused syncs too!
       .not("checkpoint", "is", null)
-      .gte("completed_at", oneDayAgo)
-      .order("completed_at", { ascending: false })
-      .limit(5);
+      .gte("started_at", oneDayAgo)
+      .order("started_at", { ascending: false })
+      .limit(10);
     
-    // Filter to only those with real checkpoint data
+    // Filter to only those with real checkpoint data (canResume or cursor)
     const resumableFailed = (failed || []).filter((run: SyncRun) => {
       const cp = run.checkpoint as Record<string, unknown> | null;
-      return cp && (cp.cursor || cp.runningTotal);
+      return cp && (cp.canResume === true || cp.cursor || cp.runningTotal);
     });
     
     setFailedResumable(resumableFailed as SyncRun[]);
@@ -321,12 +321,13 @@ export function SyncResultsPanel() {
     }
   };
 
-  // ============= RESUME FAILED SYNC =============
+  // ============= RESUME FAILED/PAUSED SYNC =============
   const handleResumeSync = async (sync: SyncRun) => {
     setIsResuming(sync.id);
     try {
       const checkpoint = sync.checkpoint as Record<string, unknown> | null;
       const cursor = checkpoint?.cursor as string | undefined;
+      const runningTotal = checkpoint?.runningTotal as number || 0;
       
       if (!cursor) {
         toast.error('No hay punto de reanudación', {
@@ -335,18 +336,25 @@ export function SyncResultsPanel() {
         return;
       }
 
-      // Map source to edge function
+      // Map source to edge function - now pass syncRunId to resume existing run!
       let endpoint = '';
       let payload: Record<string, unknown> = {};
       
       switch (sync.source) {
         case 'stripe':
           endpoint = 'fetch-stripe';
-          payload = { resumeFromCursor: cursor };
+          // Pass the sync run ID so we continue the SAME sync, not create a new one
+          payload = { 
+            syncRunId: sync.id,
+            resumeFromCursor: cursor 
+          };
           break;
         case 'paypal':
           endpoint = 'fetch-paypal';
-          payload = { resumeFromCursor: cursor };
+          payload = { 
+            syncRunId: sync.id,
+            resumeFromCursor: cursor 
+          };
           break;
         case 'ghl':
           endpoint = 'sync-ghl';
@@ -363,28 +371,27 @@ export function SyncResultsPanel() {
           return;
       }
 
-      // Mark old sync as superseded
-      await supabase
-        .from('sync_runs')
-        .update({
-          error_message: `${sync.error_message || ''} → Reanudado en nuevo sync`
-        })
-        .eq('id', sync.id);
-
-      // Start new sync with resume cursor
-      const result = await invokeWithAdminKey<{ success: boolean; run_id?: string }>(endpoint, payload);
+      // Start resume (don't modify the sync record - the edge function handles it)
+      const result = await invokeWithAdminKey<{ 
+        success: boolean; 
+        run_id?: string;
+        syncRunId?: string;
+        resumedFrom?: number;
+        status?: string;
+      }>(endpoint, payload);
       
-      if (result?.success || result?.run_id) {
-        toast.success('Sync reanudado', {
-          description: `Continuando desde cursor guardado (${(checkpoint?.runningTotal as number || 0).toLocaleString()} procesados)`,
+      if (result?.success || result?.status === 'resumed') {
+        toast.success('✅ Sync reanudado', {
+          description: `Continuando desde ${runningTotal.toLocaleString()} registros procesados`,
         });
       } else {
-        toast.success('Sync iniciado', {
-          description: 'Verificando si continúa desde el cursor...',
+        toast.info('Verificando reanudación...', {
+          description: 'El proceso debería continuar en segundo plano.',
         });
       }
       
-      fetchRuns();
+      // Wait a moment for DB to update, then refresh
+      setTimeout(() => fetchRuns(), 1500);
       
     } catch (error) {
       console.error('Resume sync error:', error);
@@ -682,13 +689,16 @@ export function SyncResultsPanel() {
             </div>
           )}
 
-          {/* ============= RESUMABLE FAILED SYNCS ============= */}
+          {/* ============= RESUMABLE FAILED/PAUSED SYNCS ============= */}
           {failedResumable.length > 0 && (
-            <div className="divide-y divide-border/30 bg-amber-500/5">
-              <div className="px-4 py-2 bg-amber-500/10">
-                <p className="text-xs font-medium text-amber-400 uppercase tracking-wider flex items-center gap-2">
+            <div className="divide-y divide-border/30 bg-emerald-500/5">
+              <div className="px-4 py-2 bg-emerald-500/10">
+                <p className="text-xs font-medium text-emerald-400 uppercase tracking-wider flex items-center gap-2">
                   <PlayCircle className="h-3 w-3" />
-                  Syncs Reanudables
+                  ⏸️ Syncs Reanudables ({failedResumable.length})
+                </p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Estos syncs tienen checkpoints guardados. Tu progreso está seguro.
                 </p>
               </div>
               {failedResumable.map((sync) => {
@@ -697,37 +707,54 @@ export function SyncResultsPanel() {
                 const checkpoint = sync.checkpoint as Record<string, unknown> | null;
                 const runningTotal = checkpoint?.runningTotal as number || sync.total_fetched || 0;
                 const lastActivity = checkpoint?.lastActivity as string | undefined;
+                const chunkNum = checkpoint?.chunk as number | undefined;
+                const isPaused = sync.status === 'paused';
                 
                 return (
-                  <div key={sync.id} className="px-4 py-3 flex items-center justify-between gap-4">
-                    <div className="flex items-center gap-3 min-w-0 flex-1">
-                      <Icon className={`h-4 w-4 ${config.color} flex-shrink-0`} />
-                      <div className="min-w-0">
-                        <p className="text-sm font-medium truncate">{config.label}</p>
-                        <p className="text-xs text-muted-foreground">
-                          {runningTotal.toLocaleString()} procesados • 
-                          {lastActivity && ` última actividad ${formatDistanceToNow(new Date(lastActivity), { locale: es, addSuffix: true })}`}
-                        </p>
-                        {sync.error_message && (
-                          <p className="text-xs text-red-400 truncate mt-0.5">{sync.error_message}</p>
-                        )}
+                  <div key={sync.id} className="px-4 py-3">
+                    <div className="flex items-center justify-between gap-4">
+                      <div className="flex items-center gap-3 min-w-0 flex-1">
+                        <Icon className={`h-4 w-4 ${config.color} flex-shrink-0`} />
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <p className="text-sm font-medium truncate">{config.label}</p>
+                            <Badge variant="outline" className={isPaused 
+                              ? "bg-amber-500/10 text-amber-400 border-amber-500/30 text-xs" 
+                              : "bg-red-500/10 text-red-400 border-red-500/30 text-xs"
+                            }>
+                              {isPaused ? '⏸️ Pausado' : '❌ Fallido'}
+                            </Badge>
+                          </div>
+                          <p className="text-xs text-muted-foreground">
+                            <span className="text-emerald-400 font-medium">{runningTotal.toLocaleString()}</span> procesados
+                            {chunkNum && ` • Chunk ${chunkNum}`}
+                            {lastActivity && ` • ${formatDistanceToNow(new Date(lastActivity), { locale: es, addSuffix: true })}`}
+                          </p>
+                        </div>
                       </div>
+                      
+                      <Button
+                        variant="default"
+                        size="sm"
+                        onClick={() => handleResumeSync(sync)}
+                        disabled={isResuming === sync.id}
+                        className="h-9 text-sm bg-emerald-600 hover:bg-emerald-500 text-white border-0"
+                      >
+                        {isResuming === sync.id ? (
+                          <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+                        ) : (
+                          <PlayCircle className="h-3.5 w-3.5 mr-1.5" />
+                        )}
+                        Reanudar
+                      </Button>
                     </div>
                     
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => handleResumeSync(sync)}
-                      disabled={isResuming === sync.id}
-                      className="h-8 text-xs border-amber-500/30 text-amber-400 hover:bg-amber-500/10 hover:text-amber-300"
-                    >
-                      {isResuming === sync.id ? (
-                        <Loader2 className="h-3 w-3 mr-1 animate-spin" />
-                      ) : (
-                        <PlayCircle className="h-3 w-3 mr-1" />
-                      )}
-                      Reanudar
-                    </Button>
+                    {/* Error message if present */}
+                    {sync.error_message && (
+                      <div className="mt-2 p-2 bg-zinc-800/50 rounded text-xs text-muted-foreground">
+                        💡 {sync.error_message}
+                      </div>
+                    )}
                   </div>
                 );
               })}
