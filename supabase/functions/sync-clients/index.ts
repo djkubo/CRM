@@ -5,6 +5,7 @@ const logger = createLogger('sync-clients', LogLevel.INFO);
 
 const ALLOWED_ORIGINS = [
   "https://id-preview--9d074359-befd-41d0-9307-39b75ab20410.lovable.app",
+  "https://zen-admin-joy.lovable.app",
   "https://lovable.dev",
   "http://localhost:5173",
   "http://localhost:3000",

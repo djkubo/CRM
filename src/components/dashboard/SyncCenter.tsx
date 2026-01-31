@@ -124,11 +124,19 @@ export default function SyncCenter() {
     }
   });
 
-  // Sync GHL mutation
+  // Sync GHL mutation with safety timeout
   const syncGHL = useMutation({
     mutationFn: async () => {
       setSyncingSource('ghl');
-      return await invokeWithAdminKey<{ stats?: { total_fetched?: number; total_inserted?: number; total_updated?: number; total_conflicts?: number } }>('sync-ghl', { dry_run: dryRun });
+      
+      // Safety timeout promise (60 seconds for syncs)
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('Timeout: GHL sync tardó más de 60s')), 60000);
+      });
+      
+      const syncPromise = invokeWithAdminKey<{ stats?: { total_fetched?: number; total_inserted?: number; total_updated?: number; total_conflicts?: number } }>('sync-ghl', { dry_run: dryRun });
+      
+      return await Promise.race([syncPromise, timeoutPromise]) as { stats?: { total_fetched?: number; total_inserted?: number; total_updated?: number; total_conflicts?: number } };
     },
     onSuccess: (data) => {
       setSyncingSource(null);
@@ -137,7 +145,7 @@ export default function SyncCenter() {
       queryClient.invalidateQueries({ queryKey: ['identity-stats'] });
       queryClient.invalidateQueries({ queryKey: ['clients'] });
       
-      const stats = data.stats ?? {};
+      const stats = data?.stats ?? {};
       toast.success(
         dryRun 
           ? `[Dry Run] GHL: ${stats.total_fetched ?? 0} contacts, ${stats.total_inserted ?? 0} nuevos, ${stats.total_updated ?? 0} actualizados`
@@ -151,11 +159,19 @@ export default function SyncCenter() {
     }
   });
 
-  // Sync ManyChat mutation
+  // Sync ManyChat mutation with safety timeout
   const syncManyChat = useMutation({
     mutationFn: async () => {
       setSyncingSource('manychat');
-      return await invokeWithAdminKey<{ stats?: { total_fetched?: number; total_inserted?: number; total_updated?: number; total_conflicts?: number } }>('sync-manychat', { dry_run: dryRun });
+      
+      // Safety timeout promise (60 seconds for syncs)
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('Timeout: ManyChat sync tardó más de 60s')), 60000);
+      });
+      
+      const syncPromise = invokeWithAdminKey<{ stats?: { total_fetched?: number; total_inserted?: number; total_updated?: number; total_conflicts?: number } }>('sync-manychat', { dry_run: dryRun });
+      
+      return await Promise.race([syncPromise, timeoutPromise]) as { stats?: { total_fetched?: number; total_inserted?: number; total_updated?: number; total_conflicts?: number } };
     },
     onSuccess: (data) => {
       setSyncingSource(null);
@@ -164,7 +180,7 @@ export default function SyncCenter() {
       queryClient.invalidateQueries({ queryKey: ['identity-stats'] });
       queryClient.invalidateQueries({ queryKey: ['clients'] });
       
-      const stats = data.stats ?? {};
+      const stats = data?.stats ?? {};
       toast.success(
         dryRun 
           ? `[Dry Run] ManyChat: ${stats.total_fetched ?? 0} subscribers, ${stats.total_inserted ?? 0} nuevos, ${stats.total_updated ?? 0} actualizados`
@@ -178,16 +194,24 @@ export default function SyncCenter() {
     }
   });
 
-  // Sync All mutation
+  // Sync All mutation with safety timeout
   const syncAll = useMutation({
     mutationFn: async () => {
       setSyncingSource('all');
       
-      // Run syncs sequentially to avoid conflicts
-      const ghlResult = await invokeWithAdminKey('sync-ghl', { dry_run: dryRun });
-      const manychatResult = await invokeWithAdminKey('sync-manychat', { dry_run: dryRun });
+      // Safety timeout for full sync (120 seconds)
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('Timeout: Sync All tardó más de 120s')), 120000);
+      });
       
-      return [ghlResult, manychatResult];
+      const syncPromise = (async () => {
+        // Run syncs sequentially to avoid conflicts
+        const ghlResult = await invokeWithAdminKey('sync-ghl', { dry_run: dryRun });
+        const manychatResult = await invokeWithAdminKey('sync-manychat', { dry_run: dryRun });
+        return [ghlResult, manychatResult];
+      })();
+      
+      return await Promise.race([syncPromise, timeoutPromise]);
     },
     onSuccess: () => {
       setSyncingSource(null);

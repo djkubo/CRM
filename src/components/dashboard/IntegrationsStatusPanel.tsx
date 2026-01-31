@@ -63,11 +63,20 @@ export function IntegrationsStatusPanel() {
 
     setTesting(integration.id);
     
+    // Safety timeout to prevent infinite spinners (30 seconds)
+    const timeoutId = setTimeout(() => {
+      setTesting(null);
+      setStatuses(prev => ({ ...prev, [integration.id]: 'error' }));
+      toast.error(`${integration.name}: Timeout - sin respuesta después de 30s`);
+    }, 30000);
+    
     try {
       const result = await invokeWithAdminKey<{ success?: boolean; ok?: boolean; error?: string }>(
         integration.testEndpoint,
         { dryRun: true, limit: 1 }
       );
+
+      clearTimeout(timeoutId);
 
       if (result?.success || result?.ok) {
         setStatuses(prev => ({ ...prev, [integration.id]: 'connected' }));
@@ -76,9 +85,11 @@ export function IntegrationsStatusPanel() {
         setStatuses(prev => ({ ...prev, [integration.id]: 'error' }));
         toast.error(`${integration.name}: ${result?.error || 'Error de conexión'}`);
       }
-    } catch (error) {
+    } catch (error: any) {
+      clearTimeout(timeoutId);
       setStatuses(prev => ({ ...prev, [integration.id]: 'error' }));
-      toast.error(`Error probando ${integration.name}`);
+      const errorMsg = error?.message || 'Error de conexión';
+      toast.error(`Error probando ${integration.name}: ${errorMsg}`);
     } finally {
       setTesting(null);
     }
