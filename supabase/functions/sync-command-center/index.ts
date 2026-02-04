@@ -437,14 +437,28 @@ Deno.serve(async (req: Request) => {
     // ============ STRIPE INVOICES ============
     if (!isTimeout()) {
       try {
-      await updateProgress("stripe-invoices", "Iniciando...");
-      const response = await invokeClient.functions.invoke('fetch-invoices');
-      const respData = response.data as GenericSyncResponse | null;
-      if (response.error) throw response.error;
-      results["invoices"] = { success: true, count: respData?.synced ?? 0 };
-      await updateProgress("stripe-invoices", `${results["invoices"].count} facturas`);
+        await updateProgress("stripe-invoices", "Iniciando...");
+        console.log("🔄 Starting Stripe invoices sync...");
+        // CORRECCIÓN: Enviar configuración de fechas y forzar fetchAll
+        const response = await invokeClient.functions.invoke('fetch-invoices', {
+          body: {
+            mode: config.mode,
+            startDate: startDate.toISOString(),
+            endDate: endDate.toISOString(),
+            fetchAll: true, // CRÍTICO: Activa el background loop
+            syncRunId: syncRunId // Pasar el syncRunId del command-center
+          }
+        });
+        const respData = response.data as GenericSyncResponse | null;
+        if (response.error) {
+          console.error("❌ Invoices invoke error:", response.error);
+          throw response.error;
+        }
+        results["invoices"] = { success: true, count: respData?.synced ?? 0 };
+        await updateProgress("stripe-invoices", `${results["invoices"].count} facturas`);
+        console.log(`✅ Invoices sync completed: ${results["invoices"].count}`);
       } catch (e) {
-        console.error("Invoices sync error:", e);
+        console.error("❌ Invoices sync error:", e);
         results["invoices"] = { success: false, count: 0, error: String(e) };
       }
     } else {
