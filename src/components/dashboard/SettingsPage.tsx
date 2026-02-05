@@ -8,6 +8,7 @@ import { useAuth } from '@/hooks/useAuth';
 const SystemTogglesPanel = lazy(() => import('./SystemTogglesPanel'));
 const IntegrationsStatusPanel = lazy(() => import('./IntegrationsStatusPanel').then(m => ({ default: m.IntegrationsStatusPanel })));
 const GHLSettingsPanel = lazy(() => import('./GHLSettingsPanel'));
+const MaintenancePanel = lazy(() => import('./MaintenancePanel'));
 
 interface SettingsPageProps {
   onLogout?: () => void;
@@ -83,6 +84,9 @@ export function SettingsPage({ onLogout }: SettingsPageProps) {
 
         {/* GHL Integration */}
         <GHLSettingsPanel />
+
+        {/* Database Maintenance */}
+        <MaintenancePanel />
       </Suspense>
     </div>
   );
