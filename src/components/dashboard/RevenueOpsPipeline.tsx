@@ -45,7 +45,7 @@ import { invokeWithAdminKey } from '@/lib/adminApi';
 import { toast } from 'sonner';
 import { openWhatsApp, openNativeSms } from './RecoveryTable';
 import { supportsNativeSms } from '@/lib/nativeSms';
-import { useRevenuePipeline, PipelineClient, PipelineType } from '@/hooks/useRevenuePipeline';
+import { useRevenuePipeline, PipelineClient, PipelineType, BotAction } from '@/hooks/useRevenuePipeline';
 import { formatDistanceToNow } from 'date-fns';
 import { es } from 'date-fns/locale';
 
@@ -272,8 +272,37 @@ export function RevenueOpsPipeline() {
     refetch();
   };
 
-  // Bot status badge
+  // Bot status badge with last action info
   const getBotStatusBadge = (client: PipelineClient) => {
+    // Show last bot action if available
+    if (client.last_bot_action) {
+      const actionLabels: Record<string, string> = {
+        'whatsapp_sent': 'WA enviado',
+        'sms_sent': 'SMS enviado',
+        'sms_api_sent': 'SMS API',
+        'sms_native_sent': 'SMS nativo',
+        'manychat_sent': 'ManyChat',
+        'email_sent': 'Email',
+      };
+      const label = actionLabels[client.last_bot_action.action] || client.last_bot_action.action;
+      const timeAgo = client.last_bot_action.sent_at 
+        ? formatDistanceToNow(new Date(client.last_bot_action.sent_at), { locale: es, addSuffix: true })
+        : '';
+      
+      return (
+        <div className="flex flex-col gap-0.5">
+          <Badge variant="default" className="text-[10px] bg-emerald-500/20 text-emerald-400 border-emerald-500/30">
+            ✓ {label}
+          </Badge>
+          {timeAgo && <span className="text-[9px] text-muted-foreground">{timeAgo}</span>}
+          {client.total_outreach_count > 1 && (
+            <span className="text-[9px] text-muted-foreground">{client.total_outreach_count} intentos</span>
+          )}
+        </div>
+      );
+    }
+
+    // Fall back to queue status
     if (!client.queue_status) return null;
     
     const statusMap: Record<string, { label: string; variant: 'default' | 'secondary' | 'destructive' | 'outline' }> = {
