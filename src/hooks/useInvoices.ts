@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
@@ -20,7 +20,6 @@ export interface Invoice {
   customer_phone: string | null;
   stripe_customer_id: string | null;
   client_id: string | null;
-  // Joined client data (unified identity)
   client: InvoiceClient | null;
   amount_due: number;
   amount_paid: number | null;
@@ -70,21 +69,15 @@ export interface Invoice {
 
 export type InvoiceStatus = 'all' | 'draft' | 'open' | 'paid' | 'void' | 'uncollectible';
 
-interface FetchInvoicesResponse {
-  success: boolean;
-  synced: number;
-  upserted: number;
-  hasMore: boolean;
-  nextCursor: string | null;
-  syncRunId: string | null;
-  error?: string;
-  stats?: {
-    draft: number;
-    open: number;
-    paid: number;
-    void: number;
-    uncollectible: number;
-  };
+interface SyncProgress {
+  syncRunId: string;
+  status: 'running' | 'continuing' | 'completed' | 'failed' | 'cancelled';
+  totalFetched: number;
+  totalInserted: number;
+  currentChunk?: number;
+  totalChunks?: number;
+  currentPage?: number;
+  errorMessage?: string | null;
 }
 
 interface UseInvoicesOptions {
@@ -92,101 +85,149 @@ interface UseInvoicesOptions {
   searchQuery?: string;
   startDate?: string;
   endDate?: string;
+  page?: number;
+  pageSize?: number;
 }
 
+/**
+ * REFACTORED: Fire-and-Forget sync with polling
+ * - Removes client-side loops
+ * - Uses sync_runs table for progress monitoring
+ * - Single Edge Function call triggers background processing
+ */
 export function useInvoices(options: UseInvoicesOptions = {}) {
-  const { statusFilter = 'all', searchQuery = '', startDate, endDate } = options;
+  const { 
+    statusFilter = 'all', 
+    searchQuery = '', 
+    startDate, 
+    endDate,
+    page = 1,
+    pageSize = 50,
+  } = options;
+  
   const { toast } = useToast();
   const queryClient = useQueryClient();
-  const [syncProgress, setSyncProgress] = useState<{ 
-    current: number; 
-    total: number | null;
-    hasMore: boolean;
-    page: number;
-  } | null>(null);
+  const [syncProgress, setSyncProgress] = useState<SyncProgress | null>(null);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [activeSyncRunId, setActiveSyncRunId] = useState<string | null>(null);
 
-  // OPTIMIZATION: Removed JOIN with clients table (221k rows was causing timeout)
-  // Reduced limit from 1000 to 100 for faster initial load
-  const { data: invoices = [], isLoading, refetch } = useQuery({
-    queryKey: ["invoices", statusFilter, searchQuery, startDate, endDate],
+  // Calculate pagination range
+  const from = (page - 1) * pageSize;
+  const to = from + pageSize - 1;
+
+  // SERVER-SIDE paginated query for invoices
+  const { data, isLoading, refetch } = useQuery({
+    queryKey: ["invoices", statusFilter, searchQuery, startDate, endDate, page, pageSize],
     queryFn: async () => {
       let query = supabase
         .from("invoices")
-        .select("*") // No JOIN - prevents timeout
+        .select("*", { count: 'exact' })
         .order("stripe_created_at", { ascending: false, nullsFirst: false })
-        .limit(100); // Reduced limit for fast load
+        .range(from, to);
 
       // Status filter
       if (statusFilter !== 'all') {
-        query = query.eq('status', statusFilter);
+        if (statusFilter === 'open') {
+          query = query.in('status', ['open', 'pending']);
+        } else if (statusFilter === 'uncollectible') {
+          query = query.in('status', ['uncollectible', 'failed']);
+        } else {
+          query = query.eq('status', statusFilter);
+        }
       }
 
-      // Date range filter using stripe_created_at
-      if (startDate) {
-        query = query.gte('stripe_created_at', startDate);
-      }
-      if (endDate) {
-        query = query.lte('stripe_created_at', endDate);
-      }
+      // Date range filter
+      if (startDate) query = query.gte('stripe_created_at', startDate);
+      if (endDate) query = query.lte('stripe_created_at', endDate);
 
       // Search filter
       if (searchQuery) {
         query = query.or(`customer_email.ilike.%${searchQuery}%,customer_name.ilike.%${searchQuery}%,invoice_number.ilike.%${searchQuery}%`);
       }
 
-      const { data, error } = await query;
+      const { data: invoices, error, count } = await query;
 
       if (error) throw error;
       
-      return (data || []).map(row => ({
-        ...row,
-        client: null, // Client data now loaded on-demand
-        lines: row.lines as unknown as Invoice['lines'],
-        raw_data: row.raw_data as unknown as Invoice['raw_data'],
-      })) as Invoice[];
+      return {
+        invoices: (invoices || []).map(row => ({
+          ...row,
+          client: null,
+          lines: row.lines as unknown as Invoice['lines'],
+          raw_data: row.raw_data as unknown as Invoice['raw_data'],
+        })) as Invoice[],
+        totalCount: count || 0,
+      };
     },
   });
 
-  // OPTIMIZATION: Use RPC for invoice totals (server-side aggregation)
-  const { data: invoiceSummary } = useQuery({
-    queryKey: ["invoice-summary"],
-    queryFn: async () => {
-      try {
-        // Note: RPC may not be in types yet, using type assertion
-        const { data, error } = await supabase.rpc('kpi_invoices_summary' as any);
-        if (error) throw error;
-        return (data as any)?.[0] || null;
-      } catch {
-        // RPC might not exist yet - return null to use local calculation
-        console.warn('kpi_invoices_summary RPC not available');
-        return null;
-      }
-    },
-    staleTime: 60000, // Cache for 1 minute
-  });
+  const invoices = data?.invoices || [];
+  const totalCount = data?.totalCount || 0;
+  const totalPages = Math.ceil(totalCount / pageSize);
 
-  // OPTIMIZATION: Debounced realtime subscription for invoices table
+  // Poll sync_runs for progress when syncing
   useEffect(() => {
-    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
-    const debouncedRefetch = () => {
-      if (debounceTimer) clearTimeout(debounceTimer);
-      debounceTimer = setTimeout(() => refetch(), 2000);
-    };
-    
-    const channel = supabase.channel('invoices-realtime')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'invoices' }, debouncedRefetch)
-      .subscribe();
-      
-    return () => { 
-      if (debounceTimer) clearTimeout(debounceTimer);
-      supabase.removeChannel(channel); 
-    };
-  }, [refetch]);
+    if (!activeSyncRunId || !isSyncing) return;
+
+    const pollInterval = setInterval(async () => {
+      const { data: syncRun, error } = await supabase
+        .from('sync_runs')
+        .select('id, status, total_fetched, total_inserted, error_message, metadata, checkpoint')
+        .eq('id', activeSyncRunId)
+        .single();
+
+      if (error || !syncRun) {
+        clearInterval(pollInterval);
+        setIsSyncing(false);
+        setActiveSyncRunId(null);
+        return;
+      }
+
+      const metadata = syncRun.metadata as Record<string, any> | null;
+      const checkpoint = syncRun.checkpoint as Record<string, any> | null;
+
+      setSyncProgress({
+        syncRunId: syncRun.id,
+        status: syncRun.status as SyncProgress['status'],
+        totalFetched: syncRun.total_fetched || 0,
+        totalInserted: syncRun.total_inserted || 0,
+        currentChunk: metadata?.currentChunk || checkpoint?.chunkIndex,
+        totalChunks: metadata?.totalChunks || checkpoint?.totalChunks,
+        currentPage: metadata?.currentPage || checkpoint?.page,
+        errorMessage: syncRun.error_message,
+      });
+
+      // Sync finished
+      if (['completed', 'failed', 'cancelled'].includes(syncRun.status)) {
+        clearInterval(pollInterval);
+        setIsSyncing(false);
+        setActiveSyncRunId(null);
+
+        if (syncRun.status === 'completed') {
+          toast({
+            title: "Sincronización completa",
+            description: `${syncRun.total_inserted?.toLocaleString() || 0} facturas sincronizadas`,
+          });
+          // Invalidate queries to refresh data
+          queryClient.invalidateQueries({ queryKey: ["invoices"] });
+          queryClient.invalidateQueries({ queryKey: ["unified-invoices"] });
+          queryClient.invalidateQueries({ queryKey: ["unified-invoices-summary"] });
+        } else if (syncRun.status === 'failed') {
+          toast({
+            title: "Error en sincronización",
+            description: syncRun.error_message || "Error desconocido",
+            variant: "destructive",
+          });
+        }
+      }
+    }, 3000); // Poll every 3 seconds
+
+    return () => clearInterval(pollInterval);
+  }, [activeSyncRunId, isSyncing, queryClient, toast]);
 
   /**
-   * REFACTORED: Fire-and-Forget sync
-   * Single call to backend - pagination runs in background via EdgeRuntime.waitUntil
+   * FIRE-AND-FORGET: Single call to backend
+   * Backend handles all pagination via EdgeRuntime.waitUntil
    */
   const syncInvoicesFull = useCallback(async (mode: 'full' | 'recent' = 'recent') => {
     if (isSyncing) {
@@ -199,63 +240,68 @@ export function useInvoices(options: UseInvoicesOptions = {}) {
     }
 
     setIsSyncing(true);
-    setSyncProgress({ current: 0, total: null, hasMore: true, page: 0 });
+    setSyncProgress(null);
 
     try {
-      const result = await invokeWithAdminKey<FetchInvoicesResponse>("fetch-invoices", {
+      const result = await invokeWithAdminKey<{
+        success: boolean;
+        syncRunId?: string;
+        error?: string;
+        status?: string;
+        backgroundProcessing?: boolean;
+      }>("fetch-invoices", {
         mode,
-        fetchAll: true, // CRITICAL: Activates background worker in backend
-        syncRunId: undefined, // Let backend create a new one
+        fetchAll: true, // Activates background worker
       });
-
-      // Handle background processing response
-      if ((result as any)?.backgroundProcessing || (result as any)?.status === 'background') {
-        toast({
-          title: "Sincronización iniciada",
-          description: "El proceso continúa en segundo plano. Refresca en unos minutos para ver los resultados.",
-        });
-        setSyncProgress(null);
-        return { success: true, background: true };
-      }
 
       if (!result?.success) {
-        throw new Error(result?.error || 'Sync failed');
+        throw new Error(result?.error || 'Failed to start sync');
       }
 
-      const synced = (result as any).upserted ?? (result as any).synced ?? 0;
-      
-      toast({
-        title: "Sincronización completa",
-        description: `${synced.toLocaleString()} facturas sincronizadas`,
-      });
+      // Start polling if we got a syncRunId
+      if (result.syncRunId) {
+        setActiveSyncRunId(result.syncRunId);
+        setSyncProgress({
+          syncRunId: result.syncRunId,
+          status: 'running',
+          totalFetched: 0,
+          totalInserted: 0,
+        });
 
+        toast({
+          title: "Sincronización iniciada",
+          description: "El proceso se ejecuta en segundo plano. Puedes continuar trabajando.",
+        });
+
+        return { success: true, syncRunId: result.syncRunId };
+      }
+
+      // Immediate completion (small sync)
+      setIsSyncing(false);
       queryClient.invalidateQueries({ queryKey: ["invoices"] });
       queryClient.invalidateQueries({ queryKey: ["unified-invoices"] });
-      queryClient.invalidateQueries({ queryKey: ["unified-invoices-summary"] });
       
-      return { success: true, synced };
+      return { success: true };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Error desconocido';
       toast({
-        title: "Error al sincronizar",
+        title: "Error al iniciar sincronización",
         description: message,
         variant: "destructive",
       });
-      return { success: false, error: message };
-    } finally {
       setIsSyncing(false);
-      setSyncProgress(null);
+      return { success: false, error: message };
     }
   }, [isSyncing, queryClient, toast]);
 
-  // Quick sync - uses same paginated approach but with 'recent' mode (last 30 days)
+  // Quick sync mutation wrapper
   const syncInvoices = useMutation({
     mutationFn: async () => {
       return await syncInvoicesFull('recent');
     },
   });
 
-  // Calculate totals
+  // Calculate totals from current page (for display purposes)
   const totalPending = invoices
     .filter(inv => inv.status === 'open' || inv.status === 'draft')
     .reduce((sum, inv) => sum + inv.amount_due, 0) / 100;
@@ -264,33 +310,28 @@ export function useInvoices(options: UseInvoicesOptions = {}) {
     .filter(inv => inv.status === 'paid')
     .reduce((sum, inv) => sum + (inv.amount_paid || 0), 0) / 100;
 
-  // Get invoices due in next 72 hours (includes both open AND draft)
+  // Get invoices due in next 72 hours
   const next72Hours = new Date();
   next72Hours.setHours(next72Hours.getHours() + 72);
 
   const invoicesNext72h = invoices.filter((inv) => {
-    // Include both open and draft invoices
     if (!['open', 'draft'].includes(inv.status)) return false;
-    
-    // For open invoices, use next_payment_attempt
-    // For draft invoices, use automatically_finalizes_at (when Stripe auto-finalizes them)
     const targetDate = inv.status === 'open' 
       ? inv.next_payment_attempt 
       : (inv.automatically_finalizes_at || inv.next_payment_attempt);
-    
     if (!targetDate) return false;
     return new Date(targetDate) <= next72Hours;
   });
 
   const totalNext72h = invoicesNext72h.reduce((sum, inv) => sum + inv.amount_due, 0) / 100;
 
-  // Calculate uncollectible total for alert
+  // Uncollectible totals
   const uncollectibleInvoices = invoices.filter(inv => inv.status === 'uncollectible');
   const totalUncollectible = uncollectibleInvoices.reduce((sum, inv) => sum + inv.amount_due, 0) / 100;
 
-  // Status counts
+  // Status counts (from current page)
   const statusCounts = {
-    all: invoices.length,
+    all: totalCount,
     draft: invoices.filter(i => i.status === 'draft').length,
     open: invoices.filter(i => i.status === 'open').length,
     paid: invoices.filter(i => i.status === 'paid').length,
@@ -347,6 +388,12 @@ export function useInvoices(options: UseInvoicesOptions = {}) {
     syncInvoices,
     syncInvoicesFull,
     syncProgress,
+    // Pagination
+    page,
+    pageSize,
+    totalCount,
+    totalPages,
+    // Calculated totals (from current page)
     totalPending,
     totalPaid,
     totalNext72h,

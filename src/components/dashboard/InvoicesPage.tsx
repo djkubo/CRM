@@ -325,10 +325,16 @@ export function InvoicesPage() {
       {syncProgress && (
         <div className="rounded-xl border border-border/50 bg-card p-3 md:p-4">
           <div className="flex items-center justify-between mb-2">
-            <span className="text-xs md:text-sm font-medium">Sincronizando facturas...</span>
-            <span className="text-xs text-muted-foreground">{syncProgress.current} procesadas</span>
+            <span className="text-xs md:text-sm font-medium">
+              Sincronizando facturas... 
+              {syncProgress.currentChunk && syncProgress.totalChunks && ` (Lote ${syncProgress.currentChunk}/${syncProgress.totalChunks})`}
+            </span>
+            <span className="text-xs text-muted-foreground">{syncProgress.totalFetched.toLocaleString()} procesadas</span>
           </div>
-          <Progress value={syncProgress.hasMore ? 50 : 100} className="h-2" />
+          <Progress value={syncProgress.status === 'completed' ? 100 : syncProgress.status === 'continuing' ? 50 : 25} className="h-2" />
+          {syncProgress.status === 'running' && (
+            <p className="text-xs text-muted-foreground mt-1">Ejecutando en segundo plano...</p>
+          )}
         </div>
       )}
 
