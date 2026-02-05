@@ -389,12 +389,10 @@ export function DashboardHome() {
     },
     {
       title: 'Ventas Netas',
-      value: `$${metrics.netRevenueMonthTotal.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`,
+      value: `$${kpis.newRevenue.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`,
       icon: DollarSign,
       color: 'emerald',
-      subtitle: metrics.refundsMonthTotal > 0 
-        ? `-$${metrics.refundsMonthTotal.toFixed(0)} refunds` 
-        : filterLabels[filter],
+      subtitle: filterLabels[filter],
       navigateTo: 'movements',
     },
     {

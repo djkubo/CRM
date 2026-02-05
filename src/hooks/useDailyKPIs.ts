@@ -76,6 +76,104 @@ function getDateRange(filter: TimeFilter): { start: string; end: string; rangePa
   };
 }
 
+// Helper functions to avoid TypeScript deep instantiation errors
+async function countTrials(start: string, end: string): Promise<number> {
+  const { count } = await supabase
+    .from('subscriptions')
+    .select('id', { count: 'exact', head: true })
+    .eq('status', 'trialing')
+    .gte('trial_start', start)
+    .lte('trial_start', end);
+  return count || 0;
+}
+
+async function countClients(start: string, end: string): Promise<number> {
+  const { count } = await supabase
+    .from('clients')
+    .select('id', { count: 'exact', head: true })
+    .gte('created_at', start)
+    .lte('created_at', end);
+  return count || 0;
+}
+
+async function getSalesTotal(start: string, end: string): Promise<number> {
+  const { data } = await supabase
+    .from('transactions')
+    .select('amount')
+    .in('status', ['succeeded', 'paid'])
+    .gte('stripe_created_at', start)
+    .lte('stripe_created_at', end);
+  
+  if (!data || !Array.isArray(data)) return 0;
+  const totalCents = data.reduce((sum, tx) => sum + ((tx as any).amount || 0), 0);
+  return totalCents / 100;
+}
+
+async function countNewPayers(start: string, end: string): Promise<number> {
+  // Use 'as any' to avoid TS2589 deep type instantiation error with .in() + .eq() chains
+  const result = await (supabase
+    .from('transactions')
+    .select('id', { count: 'exact', head: true })
+    .in('status', ['succeeded', 'paid']) as any)
+    .eq('billing_reason', 'subscription_create')
+    .gte('stripe_created_at', start)
+    .lte('stripe_created_at', end);
+  return result?.count || 0;
+}
+
+async function countRenewals(start: string, end: string): Promise<number> {
+  // Use 'as any' to avoid TS2589 deep type instantiation error with .in() + .eq() chains
+  const result = await (supabase
+    .from('transactions')
+    .select('id', { count: 'exact', head: true })
+    .in('status', ['succeeded', 'paid']) as any)
+    .eq('billing_reason', 'subscription_cycle')
+    .gte('stripe_created_at', start)
+    .lte('stripe_created_at', end);
+  return result?.count || 0;
+}
+
+async function countCancellations(start: string, end: string): Promise<number> {
+  const { count } = await supabase
+    .from('subscriptions')
+    .select('id', { count: 'exact', head: true })
+    .not('canceled_at', 'is', null)
+    .gte('canceled_at', start)
+    .lte('canceled_at', end);
+  return count || 0;
+}
+
+async function getMrrSummary(): Promise<{ mrr: number; mrrActiveCount: number; revenueAtRisk: number; revenueAtRiskCount: number }> {
+  try {
+    const { data } = await (supabase.rpc as any)('kpi_mrr_summary');
+    if (data) {
+      const mrrSummary = Array.isArray(data) ? data[0] : data;
+      if (mrrSummary) {
+        return {
+          mrr: (mrrSummary.mrr || 0) / 100,
+          mrrActiveCount: mrrSummary.active_count || 0,
+          revenueAtRisk: (mrrSummary.at_risk_amount || 0) / 100,
+          revenueAtRiskCount: mrrSummary.at_risk_count || 0,
+        };
+      }
+    }
+  } catch {
+    // Try fallback
+    try {
+      const { data: fallbackMrr } = await (supabase.rpc as any)('kpi_mrr');
+      if (fallbackMrr?.[0]) {
+        return {
+          mrr: (fallbackMrr[0].mrr || 0) / 100,
+          mrrActiveCount: fallbackMrr[0].active_subscriptions || 0,
+          revenueAtRisk: 0,
+          revenueAtRiskCount: 0,
+        };
+      }
+    } catch { /* ignore */ }
+  }
+  return { mrr: 0, mrrActiveCount: 0, revenueAtRisk: 0, revenueAtRiskCount: 0 };
+}
+
 export function useDailyKPIs(filter: TimeFilter = 'today') {
   const [kpis, setKPIs] = useState<DailyKPIs>(defaultKPIs);
   const [isLoading, setIsLoading] = useState(true);
@@ -88,98 +186,42 @@ export function useDailyKPIs(filter: TimeFilter = 'today') {
     try {
       const { start, end } = getDateRange(filter);
 
-      // OPTIMIZED: Use simplified RPCs that read from materialized views
-      // These are instant (<10ms) and don't scan 200k+ row tables
-      let trialsCount = 0;
-      let clientsCount = 0;
-      let mrr = 0;
-      let mrrActiveCount = 0;
-      let revenueAtRisk = 0;
-      let revenueAtRiskCount = 0;
-
-      // Run minimal queries in parallel with fallback logic
-      const promises = await Promise.allSettled([
-        // Trials started in period
-        supabase.from('subscriptions')
-          .select('id', { count: 'exact', head: true })
-          .eq('status', 'trialing')
-          .gte('trial_start', start)
-          .lte('trial_start', end),
-        // Clients created in period
-        supabase.from('clients')
-          .select('id', { count: 'exact', head: true })
-          .gte('created_at', start)
-          .lte('created_at', end),
-        // MRR from kpi_mrr_summary RPC
-        (supabase.rpc as any)('kpi_mrr_summary'),
-        // Sales: Direct query to transactions with date filtering
-        supabase.from('transactions')
-          .select('amount')
-          .in('status', ['succeeded', 'paid'])
-          .gte('stripe_created_at', start)
-          .lte('stripe_created_at', end),
+      // Run all queries in parallel using helper functions
+      const [
+        trialsCount,
+        clientsCount,
+        mrrData,
+        salesUsd,
+        newPayersCount,
+        renewalsCount,
+        cancellationsCount,
+      ] = await Promise.all([
+        countTrials(start, end),
+        countClients(start, end),
+        getMrrSummary(),
+        getSalesTotal(start, end),
+        countNewPayers(start, end),
+        countRenewals(start, end),
+        countCancellations(start, end),
       ]);
-
-      // Extract trial count
-      if (promises[0].status === 'fulfilled' && promises[0].value?.count !== null) {
-        trialsCount = promises[0].value.count || 0;
-      }
-      
-      // Extract clients count
-      if (promises[1].status === 'fulfilled' && promises[1].value?.count !== null) {
-        clientsCount = promises[1].value.count || 0;
-      }
-      
-      // Extract MRR data with fallback
-      if (promises[2].status === 'fulfilled' && promises[2].value?.data) {
-        const mrrData = promises[2].value.data;
-        // Handle both array and single object responses
-        const mrrSummary = Array.isArray(mrrData) ? mrrData[0] : mrrData;
-        if (mrrSummary) {
-          mrr = (mrrSummary.mrr || 0) / 100;
-          mrrActiveCount = mrrSummary.active_count || 0;
-          revenueAtRisk = (mrrSummary.at_risk_amount || 0) / 100;
-          revenueAtRiskCount = mrrSummary.at_risk_count || 0;
-        }
-      } else {
-        // Fallback: try kpi_mrr (older function that exists)
-        try {
-          const { data: fallbackMrr } = await (supabase.rpc as any)('kpi_mrr');
-          if (fallbackMrr?.[0]) {
-            mrr = (fallbackMrr[0].mrr || 0) / 100;
-            mrrActiveCount = fallbackMrr[0].active_subscriptions || 0;
-          }
-        } catch { /* ignore fallback errors */ }
-      }
-
-      // Extract sales data
-      let salesUsd = 0;
-      if (promises[3].status === 'fulfilled' && promises[3].value?.data && Array.isArray(promises[3].value.data)) {
-        const transactionsData = promises[3].value.data as { amount: number }[];
-        const totalCents = transactionsData.reduce((sum, tx) => sum + (tx.amount || 0), 0);
-        salesUsd = totalCents / 100; // Convert cents to dollars
-      }
-
-      const failedQueries = promises.filter(p => p.status === 'rejected').length;
-      if (failedQueries >= 3) setError('Métricas limitadas disponibles');
 
       setKPIs({
         registrationsToday: clientsCount,
         trialsStartedToday: trialsCount,
         trialConversionsToday: 0, // Simplified - not tracking conversions in real-time
-        newPayersToday: 0, // Simplified - use dashboard_metrics for this
-        renewalsToday: 0, // Simplified
+        newPayersToday: newPayersCount,
+        renewalsToday: renewalsCount,
         failuresToday: 0, // Simplified - using dashboard for this
         failureReasons: [],
-        cancellationsToday: 0, // Simplified
+        cancellationsToday: cancellationsCount,
         newRevenue: salesUsd,
         conversionRevenue: 0,
         renewalRevenue: 0,
         cancellationRevenue: 0,
-        mrr,
-        mrrActiveCount,
-        revenueAtRisk,
-        revenueAtRiskCount,
+        mrr: mrrData.mrr,
+        mrrActiveCount: mrrData.mrrActiveCount,
+        revenueAtRisk: mrrData.revenueAtRisk,
+        revenueAtRiskCount: mrrData.revenueAtRiskCount,
       });
     } catch (err) {
       console.error('Error fetching KPIs:', err);
