@@ -234,6 +234,8 @@ export type Database = {
         Row: {
           created_at: string | null
           description: string | null
+          filter_criteria: Json | null
+          filter_type: string | null
           id: string
           last_broadcast_at: string | null
           member_count: number | null
@@ -243,6 +245,8 @@ export type Database = {
         Insert: {
           created_at?: string | null
           description?: string | null
+          filter_criteria?: Json | null
+          filter_type?: string | null
           id?: string
           last_broadcast_at?: string | null
           member_count?: number | null
@@ -252,6 +256,8 @@ export type Database = {
         Update: {
           created_at?: string | null
           description?: string | null
+          filter_criteria?: Json | null
+          filter_type?: string | null
           id?: string
           last_broadcast_at?: string | null
           member_count?: number | null
