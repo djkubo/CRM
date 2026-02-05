@@ -88,13 +88,27 @@ export function useCreateBroadcastList() {
   const queryClient = useQueryClient();
   
   return useMutation({
-    mutationFn: async (data: { name: string; description?: string }) => {
+    mutationFn: async (data: { 
+      name: string; 
+      description?: string;
+      filter_type?: string;
+      filter_criteria?: Record<string, any>;
+    }) => {
+      const insertData: any = {
+        name: data.name,
+        description: data.description || null,
+      };
+      
+      if (data.filter_type) {
+        insertData.filter_type = data.filter_type;
+      }
+      if (data.filter_criteria) {
+        insertData.filter_criteria = data.filter_criteria;
+      }
+      
       const { data: result, error } = await supabase
         .from('broadcast_lists')
-        .insert({
-          name: data.name,
-          description: data.description || null,
-        })
+        .insert(insertData)
         .select()
         .single();
       
@@ -115,10 +129,16 @@ export function useUpdateBroadcastList() {
   const queryClient = useQueryClient();
   
   return useMutation({
-    mutationFn: async ({ id, ...data }: { id: string; name?: string; description?: string }) => {
+    mutationFn: async ({ id, ...data }: { 
+      id: string; 
+      name?: string; 
+      description?: string;
+      filter_type?: string;
+      filter_criteria?: Record<string, any> | null;
+    }) => {
       const { data: result, error } = await supabase
         .from('broadcast_lists')
-        .update(data)
+        .update(data as any) // Type assertion for new columns not yet in types
         .eq('id', id)
         .select()
         .single();
