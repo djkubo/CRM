@@ -3,6 +3,12 @@ import { supabase } from "@/integrations/supabase/client";
 
 export type PipelineType = "recovery" | "trial" | "winback";
 
+export interface BotAction {
+  action: string;
+  sent_at: string;
+  channel: string | null;
+}
+
 export interface PipelineClient {
   id: string;
   email: string | null;
@@ -18,10 +24,14 @@ export interface PipelineClient {
   attempt_count: number | null;
   last_attempt_at: string | null;
   notification_sent_at: string | null;
+  notification_channel: string | null;
   pipeline_type: string;
   last_contact_at: string | null;
   days_until_expiry?: number | null;
   trial_end?: string | null;
+  // New bot tracking fields
+  last_bot_action: BotAction | null;
+  total_outreach_count: number;
 }
 
 export interface PipelineSummary {
@@ -63,13 +73,14 @@ export function useRevenuePipeline({
   return useQuery({
     queryKey: ["revenue-pipeline", type, page, pageSize, showOnlyWithPhone],
     queryFn: async (): Promise<PipelineResult> => {
-      // Call the server-side RPC
+      // Call the server-side RPC with phone filter
       const { data, error } = await supabase.rpc(
         "get_revenue_pipeline_stats" as any,
         {
           p_type: type,
           p_limit: pageSize,
           p_offset: offset,
+          p_phone_only: showOnlyWithPhone,
         }
       );
 
@@ -78,20 +89,10 @@ export function useRevenuePipeline({
         throw new Error(error.message);
       }
 
-      const result = data as PipelineResult;
-
-      // Client-side filter for phone (optional enhancement)
-      // This is acceptable because we're filtering a small paginated set
-      if (showOnlyWithPhone && result.items) {
-        result.items = result.items.filter(
-          (item) => item.phone || item.phone_e164
-        );
-      }
-
-      return result;
+      return data as PipelineResult;
     },
     enabled,
-    staleTime: 30_000, // 30 seconds
+    staleTime: 30_000,
     refetchOnWindowFocus: false,
   });
 }
