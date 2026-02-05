@@ -439,10 +439,10 @@ Deno.serve(async (req: Request) => {
       try {
         await updateProgress("stripe-invoices", "Iniciando...");
         console.log("🔄 Starting Stripe invoices sync...");
-        // CORRECCIÓN: Enviar configuración de fechas y forzar fetchAll
+        // CORRECCIÓN: Forzar mode='range' para que respete las fechas
         const response = await invokeClient.functions.invoke('fetch-invoices', {
           body: {
-            mode: config.mode,
+            mode: 'range', // Forzar 'range' para que aplique filtros de fecha
             startDate: startDate.toISOString(),
             endDate: endDate.toISOString(),
             fetchAll: true, // CRÍTICO: Activa el background loop
