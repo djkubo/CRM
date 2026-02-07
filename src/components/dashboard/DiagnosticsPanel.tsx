@@ -84,17 +84,17 @@ const getStatusBadge = (status: string) => {
     case 'completed':
       return <Badge className="bg-emerald-500/20 text-emerald-400 text-[10px] md:text-xs"><CheckCircle className="w-2.5 h-2.5 md:w-3 md:h-3 mr-0.5 md:mr-1" /> OK</Badge>;
     case 'running':
-      return <Badge className="bg-zinc-800 text-white text-[10px] md:text-xs"><Loader2 className="w-2.5 h-2.5 md:w-3 md:h-3 mr-0.5 md:mr-1 animate-spin" /> ...</Badge>;
+      return <Badge className="bg-zinc-800 text-foreground text-[10px] md:text-xs"><Loader2 className="w-2.5 h-2.5 md:w-3 md:h-3 mr-0.5 md:mr-1 animate-spin" /> En progreso</Badge>;
     case 'warning':
-      return <Badge className="bg-amber-500/20 text-amber-400 text-[10px] md:text-xs"><AlertTriangle className="w-2.5 h-2.5 md:w-3 md:h-3 mr-0.5 md:mr-1" /> Warn</Badge>;
+      return <Badge className="bg-amber-500/20 text-amber-400 text-[10px] md:text-xs"><AlertTriangle className="w-2.5 h-2.5 md:w-3 md:h-3 mr-0.5 md:mr-1" /> Advertencia</Badge>;
     case 'critical':
     case 'fail':
     case 'error':
       return <Badge className="bg-red-500/20 text-red-400 text-[10px] md:text-xs"><XCircle className="w-2.5 h-2.5 md:w-3 md:h-3 mr-0.5 md:mr-1" /> Error</Badge>;
     case 'info':
-      return <Badge variant="outline" className="bg-zinc-800 text-white text-[10px] md:text-xs">Info</Badge>;
+      return <Badge variant="outline" className="bg-zinc-800 text-foreground text-[10px] md:text-xs">Info</Badge>;
     default:
-      return <Badge variant="outline" className="bg-zinc-800 text-white text-[10px] md:text-xs">{status}</Badge>;
+      return <Badge variant="outline" className="bg-zinc-800 text-foreground text-[10px] md:text-xs">{status}</Badge>;
   }
 };
 
@@ -152,7 +152,7 @@ function SyncHealthPanel() {
   return (
     <Card>
       <CardHeader className="p-4 md:p-6">
-        <CardTitle className="text-base md:text-lg">Sync Health</CardTitle>
+        <CardTitle className="text-base md:text-lg">Salud de sincronización</CardTitle>
         <CardDescription className="text-xs md:text-sm">
           Historial de sincronizaciones y webhooks
         </CardDescription>
@@ -178,10 +178,10 @@ function SyncHealthPanel() {
                       {format(new Date(lastRun.started_at), 'dd/MM HH:mm')}
                     </p>
                     <p className="text-xs md:text-sm text-foreground">
-                      {lastRun.total_inserted || 0} ins • {lastRun.total_skipped || 0} skip
+                      {lastRun.total_inserted || 0} insertados • {lastRun.total_skipped || 0} omitidos
                     </p>
                     <p className="text-[10px] text-muted-foreground mt-1">
-                      7d: {last7dRuns.length} syncs
+                      7d: {last7dRuns.length} sincronizaciones
                     </p>
                   </>
                 ) : (
@@ -209,7 +209,7 @@ function SyncHealthPanel() {
 
         {/* Recent Sync Runs - Mobile Cards */}
         <div className="space-y-2 md:hidden">
-          <h4 className="font-medium text-sm">Últimos syncs</h4>
+          <h4 className="font-medium text-sm">Últimas sincronizaciones</h4>
           {syncRuns.slice(0, 10).map(run => (
             <div key={run.id} className="flex items-center justify-between p-2.5 rounded-lg border border-border/30 bg-muted/20">
               <div className="flex items-center gap-2">
@@ -463,7 +463,7 @@ Responde en español, de forma concisa.`;
           <AlertTitle className="text-sm text-orange-400">Sincronización Requerida</AlertTitle>
           <AlertDescription className="text-xs text-orange-300">
             La última reconciliación de {reconciliationRuns[0].source} detectó {reconciliationRuns[0].difference_pct.toFixed(1)}% de diferencia.
-            Ejecuta "Sync {reconciliationRuns[0].source === 'stripe' ? 'Stripe' : 'PayPal'}" desde el Sync Center antes de reconciliar.
+            Ejecuta "Sincronizar {reconciliationRuns[0].source === 'stripe' ? 'Stripe' : 'PayPal'}" desde Importar/Sincronizar antes de reconciliar.
           </AlertDescription>
         </Alert>
       )}
@@ -474,13 +474,13 @@ Responde en español, de forma concisa.`;
           <CardContent className="p-3 md:pt-4 md:p-4">
             <div className="flex items-center gap-1.5 md:gap-2 mb-1.5 md:mb-2">
               <Database className="w-4 h-4 md:w-5 md:h-5 text-primary" />
-              <span className="font-medium text-xs md:text-sm">Data</span>
+              <span className="font-medium text-xs md:text-sm">Datos</span>
             </div>
             <div className="flex items-center gap-1.5">
               {hasCriticalIssues ? (
                 <Badge className="bg-red-500/20 text-red-400 text-[10px] md:text-xs">Crítico</Badge>
               ) : hasWarnings ? (
-                <Badge className="bg-amber-500/20 text-amber-400 text-[10px] md:text-xs">Warn</Badge>
+                <Badge className="bg-amber-500/20 text-amber-400 text-[10px] md:text-xs">Advertencia</Badge>
               ) : (
                 <Badge className="bg-emerald-500/20 text-emerald-400 text-[10px] md:text-xs">OK</Badge>
               )}
@@ -492,7 +492,7 @@ Responde en español, de forma concisa.`;
           <CardContent className="p-3 md:pt-4 md:p-4">
             <div className="flex items-center gap-1.5 md:gap-2 mb-1.5 md:mb-2">
               <ArrowRightLeft className="w-4 h-4 md:w-5 md:h-5" />
-              <span className="font-medium text-xs md:text-sm">Recon</span>
+              <span className="font-medium text-xs md:text-sm">Reconc.</span>
             </div>
             {reconciliationRuns[0] ? (
               <div className="flex flex-col gap-1">
@@ -511,7 +511,7 @@ Responde en español, de forma concisa.`;
           <CardContent className="p-3 md:pt-4 md:p-4">
             <div className="flex items-center gap-1.5 md:gap-2 mb-1.5 md:mb-2">
               <BarChart3 className="w-4 h-4 md:w-5 md:h-5" />
-              <span className="font-medium text-xs md:text-sm">Rebuild</span>
+              <span className="font-medium text-xs md:text-sm">Reconstrucción</span>
             </div>
             {rebuildLogs[0] ? (
               <div className="flex flex-col gap-1">
@@ -530,9 +530,9 @@ Responde en español, de forma concisa.`;
           <CardContent className="p-3 md:pt-4 md:p-4">
             <div className="flex items-center gap-1.5 md:gap-2 mb-1.5 md:mb-2">
               <Calendar className="w-4 h-4 md:w-5 md:h-5" />
-              <span className="font-medium text-xs md:text-sm">TZ</span>
+              <span className="font-medium text-xs md:text-sm">Zona</span>
             </div>
-            <Badge variant="outline" className="text-[10px] md:text-xs">MX City</Badge>
+            <Badge variant="outline" className="text-[10px] md:text-xs">CDMX</Badge>
           </CardContent>
         </Card>
       </div>
@@ -543,19 +543,19 @@ Responde en español, de forma concisa.`;
           <TabsList className="inline-flex min-w-max md:min-w-0">
             <TabsTrigger value="sync-health" className="gap-1 md:gap-2 text-xs md:text-sm px-2 md:px-3">
               <RefreshCw className="w-3 h-3 md:w-4 md:h-4" />
-              <span className="hidden sm:inline">Sync</span>
+              <span className="hidden sm:inline">Sincronización</span>
             </TabsTrigger>
             <TabsTrigger value="quality" className="gap-1 md:gap-2 text-xs md:text-sm px-2 md:px-3">
               <Database className="w-3 h-3 md:w-4 md:h-4" />
-              <span className="hidden sm:inline">Quality</span>
+              <span className="hidden sm:inline">Calidad</span>
             </TabsTrigger>
             <TabsTrigger value="reconciliation" className="gap-1 md:gap-2 text-xs md:text-sm px-2 md:px-3">
               <ArrowRightLeft className="w-3 h-3 md:w-4 md:h-4" />
-              <span className="hidden sm:inline">Recon</span>
+              <span className="hidden sm:inline">Reconc.</span>
             </TabsTrigger>
             <TabsTrigger value="rebuild" className="gap-1 md:gap-2 text-xs md:text-sm px-2 md:px-3">
               <BarChart3 className="w-3 h-3 md:w-4 md:h-4" />
-              <span className="hidden sm:inline">Rebuild</span>
+              <span className="hidden sm:inline">Reconstrucción</span>
             </TabsTrigger>
             <TabsTrigger value="ai-audit" className="gap-1 md:gap-2 text-xs md:text-sm px-2 md:px-3">
               <Brain className="w-3 h-3 md:w-4 md:h-4" />

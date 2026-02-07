@@ -56,9 +56,9 @@ interface DynamicFilter {
 const LIFECYCLE_OPTIONS = [
   { value: '', label: 'Todos' },
   { value: 'LEAD', label: 'Leads' },
-  { value: 'TRIAL', label: 'Trials' },
+  { value: 'TRIAL', label: 'Pruebas' },
   { value: 'CUSTOMER', label: 'Clientes' },
-  { value: 'CHURN', label: 'Churn' },
+  { value: 'CHURN', label: 'Bajas' },
 ];
 
 export function BroadcastListEditor({ open, onOpenChange, listId }: BroadcastListEditorProps) {

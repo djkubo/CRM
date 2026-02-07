@@ -56,7 +56,7 @@ export function SmartRecoveryCard() {
             <Rocket className="h-6 w-6 text-primary" />
           </div>
           <div>
-            <h2 className="text-xl font-bold text-white">Smart Recovery</h2>
+            <h2 className="text-xl font-bold text-foreground">Recuperación Inteligente</h2>
             <p className="text-sm text-muted-foreground">
               Recuperación automática en segundo plano
             </p>
@@ -67,7 +67,7 @@ export function SmartRecoveryCard() {
             variant="ghost"
             size="sm"
             onClick={clearProgress}
-            className="text-muted-foreground hover:text-white"
+            className="text-muted-foreground hover:text-foreground"
           >
             <RefreshCw className="h-4 w-4 mr-2" />
             Limpiar
@@ -87,7 +87,7 @@ export function SmartRecoveryCard() {
             className={
               selectedRange === hours 
                 ? "bg-primary hover:bg-primary/90 text-white border-primary" 
-                : "border-zinc-700 text-white hover:bg-zinc-800"
+                : "border-zinc-700 text-foreground hover:bg-zinc-800"
             }
           >
             {isRunning && selectedRange === hours ? (

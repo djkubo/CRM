@@ -60,9 +60,9 @@ const getLifecycleBadge = (stage: string | null, isDelinquent?: boolean) => {
   
   const stageConfig: Record<string, { label: string; className: string }> = {
     LEAD: { label: "Lead", className: "bg-zinc-800 text-zinc-400 border-zinc-700" },
-    TRIAL: { label: "Trial", className: "bg-zinc-800 text-white border-zinc-700" },
+    TRIAL: { label: "Prueba", className: "bg-zinc-800 text-foreground border-zinc-700" },
     CUSTOMER: { label: "Cliente", className: "bg-emerald-500/10 text-emerald-400 border-emerald-500/30" },
-    CHURN: { label: "Cancel", className: "bg-red-500/10 text-red-400 border-red-500/30" },
+    CHURN: { label: "Baja", className: "bg-red-500/10 text-red-400 border-red-500/30" },
   };
 
   const config = stageConfig[stageLower] || { label: stage || "?", className: "bg-muted text-muted-foreground" };
@@ -80,9 +80,9 @@ const getPaymentStatusBadge = (paymentStatus: string | null) => {
   
   const statusConfig: Record<string, { label: string; className: string }> = {
     active: { label: "Pagando", className: "bg-emerald-500/10 text-emerald-400 border-emerald-500/30" },
-    past_due: { label: "Atrás", className: "bg-amber-500/10 text-amber-400 border-amber-500/30" },
+    past_due: { label: "Atrasado", className: "bg-amber-500/10 text-amber-400 border-amber-500/30" },
     failed: { label: "Fallido", className: "bg-red-500/10 text-red-400 border-red-500/30" },
-    canceled: { label: "Cancel", className: "bg-zinc-800 text-zinc-400 border-zinc-700" },
+    canceled: { label: "Cancelado", className: "bg-zinc-800 text-zinc-400 border-zinc-700" },
   };
 
   const config = statusConfig[paymentStatus] || null;

@@ -565,7 +565,7 @@ export function SyncOrchestrator() {
       });
 
       if (error) throw error;
-      if (!data?.success) throw new Error(data?.error || data?.message || 'Unknown error');
+      if (!data?.success) throw new Error(data?.error || data?.message || 'Error desconocido');
 
       const syncRunId = data.syncRunId;
       
@@ -583,7 +583,7 @@ export function SyncOrchestrator() {
         const rangeLabel = TIME_RANGE_OPTIONS.find(o => o.value === timeRange)?.label || 'Todo';
         toast.success(resume 
           ? `Stripe: Reanudando desde ${(data.resumedFrom || 0).toLocaleString()} registros` 
-          : `Stripe: Sync iniciado (${rangeLabel})`
+          : `Stripe: Sincronización iniciada (${rangeLabel})`
         );
       }
     } catch (error) {
@@ -883,7 +883,7 @@ export function SyncOrchestrator() {
                     ) : (
                       <>
                         <Zap className="h-4 w-4 mr-2" />
-                        Sync Stripe
+                        Sincronizar Stripe
                       </>
                     )}
                   </Button>
@@ -908,7 +908,7 @@ export function SyncOrchestrator() {
                   disabled={syncStatuses.paypal.status === 'running'}
                 >
                   <Zap className="h-4 w-4 mr-2" />
-                  Sync PayPal
+                  Sincronizar PayPal
                 </Button>
               </CardContent>
             </Card>
@@ -932,7 +932,7 @@ export function SyncOrchestrator() {
                   disabled={syncStatuses.ghl.status === 'running'}
                 >
                   <Zap className="h-4 w-4 mr-2" />
-                  Sync GHL
+                  Sincronizar GHL
                 </Button>
               </CardContent>
             </Card>
@@ -956,7 +956,7 @@ export function SyncOrchestrator() {
                   disabled={syncStatuses.manychat.status === 'running'}
                 >
                   <Zap className="h-4 w-4 mr-2" />
-                  Sync ManyChat
+                  Sincronizar ManyChat
                 </Button>
               </CardContent>
             </Card>

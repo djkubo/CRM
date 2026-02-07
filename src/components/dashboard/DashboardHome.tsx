@@ -232,7 +232,7 @@ export function DashboardHome() {
     // Show appropriate toast based on range size
     const isLargeRange = range === 'month' || range === 'full';
     if (isLargeRange) {
-      toast.info(`🚀 Sincronización masiva iniciada en segundo plano`, {
+      toast.info("Sincronización masiva iniciada en segundo plano", {
         description: 'Los datos aparecerán progresivamente en los próximos minutos.',
         duration: 8000,
       });
@@ -242,7 +242,7 @@ export function DashboardHome() {
 
     try {
       // Use sync-command-center for orchestrated sync
-      setSyncProgress('Iniciando sync completo...');
+      setSyncProgress('Iniciando sincronización completa...');
       console.log('[Command Center] Starting sync with mode:', range);
       
       const commandCenterData = await invokeWithAdminKey<SyncCommandCenterResponse, SyncCommandCenterBody>(
@@ -272,7 +272,7 @@ export function DashboardHome() {
 
       if (!commandCenterData.success) {
         console.error('[Command Center] Sync failed without details');
-        throw new Error(commandCenterData.error || 'El sync falló sin detalles');
+        throw new Error(commandCenterData.error || 'La sincronización falló sin detalles');
       }
 
       // Extract results from command center response
@@ -292,7 +292,7 @@ export function DashboardHome() {
 
       // Show detailed results
       if (commandCenterData.status === 'completed_with_timeout') {
-        toast.warning(`⏱️ Sync completado parcialmente (timeout)`, {
+        toast.warning("Sincronización parcial (timeout)", {
           description: `Se sincronizaron ${totalRecords} registros antes del límite de tiempo. Algunos pasos fueron omitidos.`,
           duration: 10000,
         });
@@ -303,12 +303,12 @@ export function DashboardHome() {
           return `${step}: ${error === 'Timeout' ? 'Se agotó el tiempo' : error}`;
         }).join(', ');
         
-        toast.warning(`Sync completado con ${errorsCount} error(es)`, {
+        toast.warning(`Sincronización completada con ${errorsCount} error(es)`, {
           description: errorDetails,
           duration: 8000,
         });
       } else {
-        toast.success(`✅ ${syncRangeLabels[range]}: ${totalRecords} registros sincronizados`, {
+        toast.success(`${syncRangeLabels[range]}: ${totalRecords} registros sincronizados`, {
           description: `Stripe: ${stripeCount}, PayPal: ${paypalCount}, Subs: ${subsCount}, Facturas: ${invoicesCount}`,
         });
       }
@@ -479,7 +479,9 @@ export function DashboardHome() {
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-4">
             <div className="flex items-center gap-2">
               <Zap className="h-5 w-5 text-primary" />
-              <h1 className="text-lg md:text-xl font-display uppercase tracking-wide text-foreground">Command Center</h1>
+              <h1 className="text-lg md:text-xl font-display uppercase tracking-wide text-foreground">
+                Centro de Comando
+              </h1>
             </div>
             
             {/* Time filter - clean pill style */}
@@ -506,7 +508,9 @@ export function DashboardHome() {
             <div className="flex items-center gap-2 text-xs md:text-sm">
               <Clock className="h-4 w-4 text-muted-foreground" />
               <span className="text-muted-foreground hidden sm:inline">
-                {lastSync ? formatDistanceToNow(lastSync, { addSuffix: true, locale: es }) : 'Sin sync'}
+                {lastSync
+                  ? formatDistanceToNow(lastSync, { addSuffix: true, locale: es })
+                  : 'Sin sincronización'}
               </span>
               {syncStatus && (
                 <Badge variant="outline" className={`text-xs ${syncStatus === 'ok' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-amber-500/10 text-amber-400 border-amber-500/20'}`}>
@@ -523,7 +527,7 @@ export function DashboardHome() {
               className="gap-1.5 text-xs md:text-sm touch-feedback"
             >
               <Megaphone className="h-4 w-4" />
-              <span className="hidden sm:inline">Broadcast</span>
+              <span className="hidden sm:inline">Campañas</span>
             </Button>
 
             {/* Sync All Dropdown */}
@@ -534,7 +538,7 @@ export function DashboardHome() {
                 className="gap-2 bg-primary/80 text-xs md:text-sm"
               >
                 <Loader2 className="h-4 w-4 animate-spin" />
-                <span className="hidden sm:inline">{syncProgress || 'Syncing...'}</span>
+                <span className="hidden sm:inline">{syncProgress || 'Sincronizando...'}</span>
               </Button>
             ) : (
               <DropdownMenu>
@@ -544,7 +548,7 @@ export function DashboardHome() {
                     className="gap-1.5 bg-primary hover:bg-primary/90 text-xs md:text-sm touch-feedback"
                   >
                     <RefreshCw className="h-4 w-4" />
-                    <span className="hidden sm:inline">Sync All</span>
+                    <span className="hidden sm:inline">Sincronizar todo</span>
                     <ChevronDown className="h-3 w-3" />
                   </Button>
                 </DropdownMenuTrigger>
@@ -563,7 +567,7 @@ export function DashboardHome() {
                   </DropdownMenuItem>
                   <DropdownMenuItem onClick={() => handleSyncAll('full')} className="text-amber-400 touch-feedback">
                     <Zap className="h-4 w-4 mr-2" />
-                    Todo (3 años)
+                    Todo (5 años)
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>

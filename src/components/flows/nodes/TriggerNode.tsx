@@ -22,8 +22,8 @@ const triggerIcons = {
 const triggerLabels = {
   new_lead: 'Nuevo Lead',
   payment_failed: 'Pago Fallido',
-  trial_expiring: 'Trial Expirando',
-  tag_added: 'Tag Agregado',
+  trial_expiring: 'Prueba por vencer',
+  tag_added: 'Etiqueta agregada',
   manual: 'Manual',
 };
 
@@ -31,7 +31,7 @@ function TriggerNode({ data, selected }: NodeProps) {
   const nodeData = data as TriggerNodeData;
   const triggerType = nodeData.type || 'manual';
   const Icon = triggerIcons[triggerType] || Zap;
-  const label = triggerLabels[triggerType] || 'Trigger';
+  const label = triggerLabels[triggerType] || 'Disparador';
 
   return (
     <div

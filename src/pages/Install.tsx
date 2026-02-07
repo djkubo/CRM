@@ -67,12 +67,12 @@ export default function Install() {
             </div>
             <CardTitle className="text-2xl">¡Ya tienes la app!</CardTitle>
             <CardDescription>
-              Revenue Command Center está instalada y lista para usar
+              VRP Centro de Comando está instalada y lista para usar
             </CardDescription>
           </CardHeader>
           <CardContent>
             <Button onClick={() => navigate("/")} className="w-full touch-feedback">
-              Ir al Dashboard
+              Ir al panel
             </Button>
           </CardContent>
         </Card>
@@ -110,7 +110,7 @@ export default function Install() {
           <div className="mx-auto mb-4 w-20 h-20 rounded-2xl overflow-hidden shadow-lg">
             <img src="/pwa-512x512.png" alt="App Icon" className="w-full h-full object-cover" />
           </div>
-          <CardTitle className="text-2xl">Instalar Revenue Command</CardTitle>
+          <CardTitle className="text-2xl">Instalar VRP Centro de Comando</CardTitle>
           <CardDescription>
             Instala la app en tu dispositivo para acceso rápido y experiencia nativa
           </CardDescription>

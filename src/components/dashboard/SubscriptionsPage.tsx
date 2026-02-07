@@ -175,7 +175,7 @@ export function SubscriptionsPage() {
               variant="outline"
               size="sm"
               className="touch-feedback h-8"
-              title="Sync PayPal"
+              title="Sincronizar PayPal"
             >
               <PayPalIcon />
             </Button>

@@ -271,7 +271,7 @@ export function Sidebar() {
             </div>
             <div className="flex-1 min-w-0">
               <p className="text-sm font-medium text-foreground truncate">{displayName}</p>
-              <p className="text-xs text-muted-foreground truncate">VRP Command Center</p>
+              <p className="text-xs text-muted-foreground truncate">VRP Centro de Comando</p>
             </div>
             <button
               type="button"

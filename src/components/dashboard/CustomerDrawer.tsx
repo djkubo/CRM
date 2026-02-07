@@ -48,22 +48,22 @@ interface CustomerDrawerProps {
 }
 
 const statusConfig: Record<string, { label: string; color: string; icon: typeof Play }> = {
-  trialing: { label: 'En Trial', color: 'text-white bg-zinc-800 border-zinc-700', icon: Play },
+  trialing: { label: 'En prueba', color: 'text-foreground bg-zinc-800 border-zinc-700', icon: Play },
   active: { label: 'Activo', color: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30', icon: CheckCircle2 },
   past_due: { label: 'Pago Vencido', color: 'text-amber-400 bg-amber-500/10 border-amber-500/30', icon: AlertTriangle },
   canceled: { label: 'Cancelado', color: 'text-red-400 bg-red-500/10 border-red-500/30', icon: XCircle },
   customer: { label: 'Cliente', color: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30', icon: CheckCircle2 },
   lead: { label: 'Lead', color: 'text-zinc-400 bg-zinc-800 border-zinc-700', icon: Play },
-  churn: { label: 'Churn', color: 'text-red-400 bg-red-500/10 border-red-500/30', icon: XCircle },
-  trial: { label: 'Trial', color: 'text-white bg-zinc-800 border-zinc-700', icon: Play },
+  churn: { label: 'Baja', color: 'text-red-400 bg-red-500/10 border-red-500/30', icon: XCircle },
+  trial: { label: 'Prueba', color: 'text-foreground bg-zinc-800 border-zinc-700', icon: Play },
 };
 
 const eventIcons: Record<string, { icon: typeof Mail; color: string }> = {
-  email_open: { icon: Mail, color: 'text-white' },
+  email_open: { icon: Mail, color: 'text-foreground' },
   email_click: { icon: ExternalLink, color: 'text-primary' },
   payment_failed: { icon: CreditCard, color: 'text-red-400' },
   payment_success: { icon: CheckCircle2, color: 'text-emerald-400' },
-  trial_started: { icon: Play, color: 'text-white' },
+  trial_started: { icon: Play, color: 'text-foreground' },
   trial_converted: { icon: ArrowUpCircle, color: 'text-emerald-400' },
 };
 
@@ -245,7 +245,7 @@ export function CustomerDrawer({ client, open, onOpenChange, debtAmount = 0 }: C
     client.trial_started_at && {
       type: 'trial',
       date: client.trial_started_at,
-      label: 'Inicio de Trial',
+      label: 'Inicio de prueba',
       icon: Play,
       color: 'text-purple-400',
     },
@@ -431,7 +431,7 @@ export function CustomerDrawer({ client, open, onOpenChange, debtAmount = 0 }: C
                       <span className="font-medium text-xs sm:text-sm">{sub.plan_name || 'Plan sin nombre'}</span>
                       <Badge variant="outline" className={`text-[10px] sm:text-xs ${getSubscriptionStatusColor(sub.status)}`}>
                         {sub.status === 'active' ? 'Activo' : 
-                         sub.status === 'trialing' ? 'Trial' : 
+                         sub.status === 'trialing' ? 'Prueba' : 
                          sub.status === 'past_due' ? 'Vencido' : 
                          sub.status === 'unpaid' ? 'Sin pagar' : sub.status}
                       </Badge>
@@ -449,7 +449,7 @@ export function CustomerDrawer({ client, open, onOpenChange, debtAmount = 0 }: C
                       )}
                       {sub.trial_end && new Date(sub.trial_end) > new Date() && (
                         <div className="flex justify-between">
-                          <span>Fin Trial:</span>
+                          <span>Fin de prueba:</span>
                           <span className="text-blue-400">{format(new Date(sub.trial_end), 'd MMM yyyy', { locale: es })}</span>
                         </div>
                       )}

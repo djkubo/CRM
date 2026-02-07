@@ -25,8 +25,8 @@ interface FlowsListProps {
 const triggerLabels: Record<string, string> = {
   new_lead: 'Nuevo Lead',
   payment_failed: 'Pago Fallido',
-  trial_expiring: 'Trial Expirando',
-  tag_added: 'Tag Agregado',
+  trial_expiring: 'Prueba por vencer',
+  tag_added: 'Etiqueta agregada',
   manual: 'Manual',
 };
 
@@ -218,7 +218,7 @@ export function FlowsList({ onSelectFlow }: FlowsListProps) {
               />
             </div>
             <div className="space-y-2">
-              <Label>Evento Trigger</Label>
+              <Label>Evento disparador</Label>
               <Select value={newFlowTrigger} onValueChange={setNewFlowTrigger}>
                 <SelectTrigger>
                   <SelectValue />
@@ -226,8 +226,8 @@ export function FlowsList({ onSelectFlow }: FlowsListProps) {
                 <SelectContent>
                   <SelectItem value="new_lead">Nuevo Lead</SelectItem>
                   <SelectItem value="payment_failed">Pago Fallido</SelectItem>
-                  <SelectItem value="trial_expiring">Trial Expirando</SelectItem>
-                  <SelectItem value="tag_added">Tag Agregado</SelectItem>
+                  <SelectItem value="trial_expiring">Prueba por vencer</SelectItem>
+                  <SelectItem value="tag_added">Etiqueta agregada</SelectItem>
                   <SelectItem value="manual">Manual</SelectItem>
                 </SelectContent>
               </Select>

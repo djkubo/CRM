@@ -34,14 +34,14 @@ interface ChatCustomerPanelProps {
 }
 
 const statusConfig: Record<string, { label: string; color: string; icon: typeof Play }> = {
-  trialing: { label: "Trial", color: "text-blue-400 bg-blue-500/10 border-blue-500/30", icon: Play },
+  trialing: { label: "Prueba", color: "text-blue-400 bg-blue-500/10 border-blue-500/30", icon: Play },
   active: { label: "Activo", color: "text-emerald-400 bg-emerald-500/10 border-emerald-500/30", icon: CheckCircle2 },
   past_due: { label: "Moroso", color: "text-amber-400 bg-amber-500/10 border-amber-500/30", icon: AlertTriangle },
   canceled: { label: "Cancelado", color: "text-red-400 bg-red-500/10 border-red-500/30", icon: XCircle },
   customer: { label: "Cliente", color: "text-emerald-400 bg-emerald-500/10 border-emerald-500/30", icon: CheckCircle2 },
   lead: { label: "Lead", color: "text-gray-400 bg-gray-500/10 border-gray-500/30", icon: Play },
-  churn: { label: "Churn", color: "text-red-400 bg-red-500/10 border-red-500/30", icon: XCircle },
-  trial: { label: "Trial", color: "text-blue-400 bg-blue-500/10 border-blue-500/30", icon: Play },
+  churn: { label: "Baja", color: "text-red-400 bg-red-500/10 border-red-500/30", icon: XCircle },
+  trial: { label: "Prueba", color: "text-blue-400 bg-blue-500/10 border-blue-500/30", icon: Play },
 };
 
 export function ChatCustomerPanel({ clientId, clientPhone, clientEmail }: ChatCustomerPanelProps) {

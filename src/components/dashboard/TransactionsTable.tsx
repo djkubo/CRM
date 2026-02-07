@@ -86,7 +86,7 @@ export function TransactionsTable({ transactions, isLoading }: TransactionsTable
           <AlertCircle className="mx-auto h-12 w-12 text-muted-foreground/50" />
           <p className="mt-4 text-muted-foreground">No hay transacciones fallidas</p>
           <p className="text-sm text-muted-foreground/70">
-            Usa el botón "Sync Data" para sincronizar desde Stripe
+            Usa el botón "Sincronizar" para traer datos desde Stripe
           </p>
         </div>
       </div>
@@ -100,7 +100,7 @@ export function TransactionsTable({ transactions, isLoading }: TransactionsTable
           <thead>
             <tr className="border-b border-border bg-muted/30">
               <th className="px-6 py-4 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                Payment Intent
+                Intento de pago
               </th>
               <th className="px-6 py-4 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground">
                 Cliente

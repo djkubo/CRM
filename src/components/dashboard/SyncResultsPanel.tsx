@@ -51,14 +51,14 @@ interface SyncRun {
 }
 
 const SOURCE_CONFIG: Record<string, { label: string; icon: React.ElementType; color: string }> = {
-  stripe: { label: "Stripe", icon: CreditCard, color: "text-white" },
-  paypal: { label: "PayPal", icon: CreditCard, color: "text-white" },
-  subscriptions: { label: "Suscripciones", icon: RefreshCw, color: "text-white" },
-  invoices: { label: "Facturas", icon: FileText, color: "text-white" },
-  ghl: { label: "GoHighLevel", icon: Users, color: "text-white" },
-  manychat: { label: "ManyChat", icon: Users, color: "text-white" },
-  "command-center": { label: "Command Center", icon: RefreshCw, color: "text-white" },
-  bulk_unify: { label: "Unificación Masiva", icon: Users, color: "text-white" },
+  stripe: { label: "Stripe", icon: CreditCard, color: "text-foreground" },
+  paypal: { label: "PayPal", icon: CreditCard, color: "text-foreground" },
+  subscriptions: { label: "Suscripciones", icon: RefreshCw, color: "text-foreground" },
+  invoices: { label: "Facturas", icon: FileText, color: "text-foreground" },
+  ghl: { label: "GoHighLevel", icon: Users, color: "text-foreground" },
+  manychat: { label: "ManyChat", icon: Users, color: "text-foreground" },
+  "command-center": { label: "Centro de Comando", icon: RefreshCw, color: "text-foreground" },
+  bulk_unify: { label: "Unificación Masiva", icon: Users, color: "text-foreground" },
 };
 
 export function SyncResultsPanel() {

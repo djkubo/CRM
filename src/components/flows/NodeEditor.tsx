@@ -33,7 +33,7 @@ export function NodeEditor({ node, onClose, onUpdate }: NodeEditorProps) {
   const renderTriggerEditor = () => (
     <div className="space-y-4">
       <div>
-        <Label>Tipo de Trigger</Label>
+        <Label>Tipo de disparador</Label>
         <Select
           value={(formData.type as string) || 'manual'}
           onValueChange={(v) => handleChange('type', v)}
@@ -44,8 +44,8 @@ export function NodeEditor({ node, onClose, onUpdate }: NodeEditorProps) {
           <SelectContent>
             <SelectItem value="new_lead">Nuevo Lead</SelectItem>
             <SelectItem value="payment_failed">Pago Fallido</SelectItem>
-            <SelectItem value="trial_expiring">Trial Expirando</SelectItem>
-            <SelectItem value="tag_added">Tag Agregado</SelectItem>
+            <SelectItem value="trial_expiring">Prueba por vencer</SelectItem>
+            <SelectItem value="tag_added">Etiqueta agregada</SelectItem>
             <SelectItem value="manual">Manual</SelectItem>
           </SelectContent>
         </Select>
@@ -53,7 +53,7 @@ export function NodeEditor({ node, onClose, onUpdate }: NodeEditorProps) {
       
       {formData.type === 'tag_added' && (
         <div>
-          <Label>Nombre del Tag</Label>
+          <Label>Nombre de la etiqueta</Label>
           <Input
             value={(formData.config as Record<string, string>)?.tagName || ''}
             onChange={(e) => handleChange('config', { ...formData.config as object, tagName: e.target.value })}
