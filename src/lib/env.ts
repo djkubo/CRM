@@ -1,5 +1,7 @@
 type EnvValue = string | undefined;
 
+import { DEFAULT_SUPABASE_ANON_KEY, DEFAULT_SUPABASE_URL } from "@/lib/publicDefaults";
+
 type RuntimeEnvMap = Record<string, unknown>;
 
 function cleanEnvString(value: unknown): string | undefined {
@@ -27,6 +29,14 @@ function readRuntimeEnv(): RuntimeEnvMap {
 }
 
 const runtimeEnv = readRuntimeEnv();
+const viteEnv = {
+  VITE_SUPABASE_URL: cleanEnvString(import.meta.env.VITE_SUPABASE_URL),
+  VITE_SUPABASE_PUBLISHABLE_KEY:
+    cleanEnvString(import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY) ??
+    cleanEnvString(import.meta.env.VITE_SUPABASE_ANON_KEY),
+  VITE_SUPABASE_PROJECT_ID: cleanEnvString(import.meta.env.VITE_SUPABASE_PROJECT_ID),
+} as const;
+
 const runtime = {
   VITE_SUPABASE_URL:
     cleanEnvString(runtimeEnv.VITE_SUPABASE_URL) ??
@@ -43,14 +53,15 @@ const runtime = {
 
 export const env = {
   VITE_SUPABASE_URL:
-    (import.meta.env.VITE_SUPABASE_URL as EnvValue) ??
-    runtime.VITE_SUPABASE_URL,
+    (viteEnv.VITE_SUPABASE_URL as EnvValue) ??
+    runtime.VITE_SUPABASE_URL ??
+    DEFAULT_SUPABASE_URL,
   VITE_SUPABASE_PUBLISHABLE_KEY:
-    (import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY as EnvValue) ??
-    (import.meta.env.VITE_SUPABASE_ANON_KEY as EnvValue) ??
-    runtime.VITE_SUPABASE_PUBLISHABLE_KEY,
+    (viteEnv.VITE_SUPABASE_PUBLISHABLE_KEY as EnvValue) ??
+    runtime.VITE_SUPABASE_PUBLISHABLE_KEY ??
+    DEFAULT_SUPABASE_ANON_KEY,
   VITE_SUPABASE_PROJECT_ID:
-    (import.meta.env.VITE_SUPABASE_PROJECT_ID as EnvValue) ??
+    (viteEnv.VITE_SUPABASE_PROJECT_ID as EnvValue) ??
     runtime.VITE_SUPABASE_PROJECT_ID,
 } as const;
 
