@@ -1,6 +1,7 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
+import { refreshSessionLocked } from '@/lib/authSession';
 
 // Friendly error messages for common scenarios
 const getErrorMessage = (error: unknown): { title: string; description: string } => {
@@ -64,6 +65,8 @@ const getErrorMessage = (error: unknown): { title: string; description: string }
 
 export function QueryErrorHandler() {
   const queryClient = useQueryClient();
+  const lastToastAt = useRef<Record<string, number>>({});
+  const lastAuthRecoveryAtMs = useRef(0);
 
   useEffect(() => {
     // Global error handler for React Query
@@ -73,6 +76,72 @@ export function QueryErrorHandler() {
         // Only show toast for queries that don't have their own error handling
         const meta = event.query.options.meta as { suppressErrorToast?: boolean } | undefined;
         if (!meta?.suppressErrorToast) {
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          const lowerMessage = errorMessage.toLowerCase();
+
+          // Helper: simple per-title throttle to avoid toast spam.
+          const now = Date.now();
+          const key = lowerMessage.includes('jwt') || lowerMessage.includes('401') ? 'auth' : getErrorMessage(error).title;
+          const last = lastToastAt.current[key] ?? 0;
+          if (now - last < 6_000) return;
+          lastToastAt.current[key] = now;
+
+          // Auth errors: try a best-effort recovery before forcing re-login.
+          if (lowerMessage.includes('unauthorized') || lowerMessage.includes('401') || lowerMessage.includes('jwt')) {
+            if (now - lastAuthRecoveryAtMs.current > 30_000) {
+              lastAuthRecoveryAtMs.current = now;
+
+              refreshSessionLocked()
+                .then((session) => {
+                  if (session) {
+                    toast.success('Sesión revalidada', {
+                      description: 'Tu sesión se recuperó automáticamente. Reintentando…',
+                      duration: 4000,
+                    });
+                    queryClient.invalidateQueries();
+                    return;
+                  }
+
+                  toast.error('Sesión expirada', {
+                    description: 'Vuelve a iniciar sesión para continuar.',
+                    duration: 10_000,
+                    action: {
+                      label: 'Iniciar sesión',
+                      onClick: () => {
+                        window.location.href = '/login';
+                      },
+                    },
+                  });
+                })
+                .catch(() => {
+                  toast.error('Sesión expirada', {
+                    description: 'Vuelve a iniciar sesión para continuar.',
+                    duration: 10_000,
+                    action: {
+                      label: 'Iniciar sesión',
+                      onClick: () => {
+                        window.location.href = '/login';
+                      },
+                    },
+                  });
+                });
+
+              return;
+            }
+
+            toast.error('Sesión expirada', {
+              description: 'Vuelve a iniciar sesión para continuar.',
+              duration: 10_000,
+              action: {
+                label: 'Iniciar sesión',
+                onClick: () => {
+                  window.location.href = '/login';
+                },
+              },
+            });
+            return;
+          }
+
           const { title, description } = getErrorMessage(error);
           toast.error(title, { description, duration: 5000 });
         }

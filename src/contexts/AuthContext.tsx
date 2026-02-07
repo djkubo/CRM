@@ -47,12 +47,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const initializeAuth = async () => {
       try {
-        // Check for existing session FIRST before setting up listener
-        const { data: { session: existingSession }, error } = await supabase.auth.getSession();
-        
-        if (error) {
-          console.error('[Auth] Error getting session:', error);
-        }
+        // Check for an existing session FIRST before setting up listener.
+        // Use a safe refresh path to avoid false "logged out" states when access token expired.
+        const existingSession = await getValidSession({ refreshIfExpiringWithinMs: 10 * 60 * 1000 });
 
         if (mounted) {
           console.log('[Auth] Initial session check:', existingSession ? 'Found session' : 'No session');

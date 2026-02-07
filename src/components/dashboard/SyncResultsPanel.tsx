@@ -54,11 +54,16 @@ const SOURCE_CONFIG: Record<string, { label: string; icon: React.ElementType; co
   stripe: { label: "Stripe", icon: CreditCard, color: "text-foreground" },
   paypal: { label: "PayPal", icon: CreditCard, color: "text-foreground" },
   subscriptions: { label: "Suscripciones", icon: RefreshCw, color: "text-foreground" },
-  invoices: { label: "Facturas", icon: FileText, color: "text-foreground" },
+  stripe_invoices: { label: "Facturas", icon: FileText, color: "text-foreground" },
   ghl: { label: "GoHighLevel", icon: Users, color: "text-foreground" },
   manychat: { label: "ManyChat", icon: Users, color: "text-foreground" },
   "command-center": { label: "Centro de Comando", icon: RefreshCw, color: "text-foreground" },
   bulk_unify: { label: "Unificación Masiva", icon: Users, color: "text-foreground" },
+  paypal_products: { label: "PayPal Productos", icon: FileText, color: "text-foreground" },
+  paypal_subscriptions: { label: "PayPal Suscripciones", icon: RefreshCw, color: "text-foreground" },
+  paypal_disputes: { label: "PayPal Disputas", icon: AlertTriangle, color: "text-foreground" },
+  "unify-all": { label: "Unificar", icon: Users, color: "text-foreground" },
+  automated_dunning: { label: "Dunning", icon: RefreshCw, color: "text-foreground" },
 };
 
 export function SyncResultsPanel() {
@@ -85,7 +90,7 @@ export function SyncResultsPanel() {
     const { data: recent } = await supabase
       .from("sync_runs")
       .select("*")
-      .in("status", ["completed", "completed_with_errors"])
+      .in("status", ["completed", "completed_with_errors", "completed_with_timeout", "cancelled"])
       .gte("completed_at", oneHourAgo)
       .order("completed_at", { ascending: false })
       .limit(10);
@@ -217,16 +222,21 @@ export function SyncResultsPanel() {
   const handleCancelSync = async (source: string) => {
     setIsCancelling(true);
     try {
-      // STEP 1: Force cancel via database update for ALL running syncs
-      const { data: runningData, error: runningError } = await supabase
+      // STEP 1: Mark sync runs as cancelled in DB (so UI + background jobs stop ASAP).
+      let cancelQuery = supabase
         .from('sync_runs')
         .update({
-          status: 'canceled',
+          status: 'cancelled',
           completed_at: new Date().toISOString(),
           error_message: 'Cancelado por el usuario'
         })
-        .in('status', ['running', 'continuing'])
-        .select();
+        .in('status', ['running', 'continuing', 'paused']);
+
+      if (source !== 'all') {
+        cancelQuery = cancelQuery.eq('source', source);
+      }
+
+      const { data: runningData, error: runningError } = await cancelQuery.select();
       
       if (runningError) {
         console.error('Error cancelling via DB:', runningError);
@@ -242,6 +252,7 @@ export function SyncResultsPanel() {
           invokeWithAdminKey<{ success: boolean }, { forceCancel: boolean }>('fetch-paypal', { forceCancel: true }).catch(() => {}),
           invokeWithAdminKey<{ ok: boolean }, { forceCancel: boolean }>('sync-ghl', { forceCancel: true }).catch(() => {}),
           invokeWithAdminKey<{ ok: boolean }, { forceCancel: boolean }>('sync-manychat', { forceCancel: true }).catch(() => {}),
+          invokeWithAdminKey<{ success: boolean }, { forceCancel: boolean }>('sync-command-center', { forceCancel: true }).catch(() => {}),
         ]);
         
         toast.success('Sincronizaciones canceladas', {
@@ -254,12 +265,18 @@ export function SyncResultsPanel() {
         });
       } else {
         // Cancel specific source
-        let endpoint = 'fetch-stripe';
-        if (source === 'paypal') endpoint = 'fetch-paypal';
-        else if (source === 'ghl') endpoint = 'sync-ghl';
-        else if (source === 'manychat') endpoint = 'sync-manychat';
-        
-        invokeWithAdminKey<{ success: boolean }, { forceCancel: boolean }>(endpoint, { forceCancel: true }).catch(() => {});
+        const endpointBySource: Record<string, string> = {
+          stripe: 'fetch-stripe',
+          paypal: 'fetch-paypal',
+          ghl: 'sync-ghl',
+          manychat: 'sync-manychat',
+          "command-center": 'sync-command-center',
+        };
+
+        const endpoint = endpointBySource[source];
+        if (endpoint) {
+          invokeWithAdminKey<{ success: boolean }, { forceCancel: boolean }>(endpoint, { forceCancel: true }).catch(() => {});
+        }
         
         toast.success('Sync cancelado', {
           description: `Sincronización de ${getSourceConfig(source).label} cancelada`,

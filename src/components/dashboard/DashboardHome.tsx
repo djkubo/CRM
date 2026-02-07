@@ -409,7 +409,12 @@ export function DashboardHome() {
 
       // Calculate totals
       const stripeCount = results.stripe?.count || 0;
-      const paypalCount = results.paypal?.count || 0;
+      const paypalResult = results.paypal;
+      const paypalCount = paypalResult?.count || 0;
+      const paypalLabel =
+        paypalResult?.error === 'background_processing' || paypalResult?.error === 'background'
+          ? 'en segundo plano'
+          : paypalCount.toLocaleString();
       const subsCount = results.subscriptions?.count || 0;
       const invoicesCount = results.invoices?.count || 0;
       const errorsCount = failedSteps.length;
@@ -436,7 +441,7 @@ export function DashboardHome() {
         });
       } else {
         toast.success(`${syncRangeLabels[range]}: ${totalRecords} registros sincronizados`, {
-          description: `Stripe: ${stripeCount}, PayPal: ${paypalCount}, Subs: ${subsCount}, Facturas: ${invoicesCount}`,
+          description: `Stripe: ${stripeCount.toLocaleString()}, PayPal: ${paypalLabel}, Subs: ${subsCount.toLocaleString()}, Facturas: ${invoicesCount.toLocaleString()}`,
         });
       }
       

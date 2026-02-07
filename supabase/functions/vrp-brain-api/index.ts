@@ -76,7 +76,7 @@ Deno.serve(async (req) => {
 
       case 'insert': {
         // Whitelist allowed tables for security
-        const allowedTables = ['chat_events', 'lead_events']
+        const allowedTables = ['chat_events', 'lead_events', 'vrp_knowledge']
         if (!params.table || !params.data) {
           return new Response(
             JSON.stringify({ ok: false, error: 'Insert requires "table" and "data" fields' }),
