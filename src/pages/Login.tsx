@@ -87,7 +87,7 @@ export default function Login() {
           </div>
           
           <CardTitle className="font-display text-2xl tracking-wide text-foreground">
-            COMMAND CENTER
+            CENTRO DE COMANDO
           </CardTitle>
           <CardDescription className="text-muted-foreground">
             Sistema de administración VRP
@@ -152,7 +152,7 @@ export default function Login() {
           {/* Footer branding */}
           <div className="mt-8 pt-6 border-t border-border text-center">
             <p className="text-xs text-muted-foreground">
-              VRP Revenue Operations System
+              VRP Revenue Operations
             </p>
           </div>
         </CardContent>
