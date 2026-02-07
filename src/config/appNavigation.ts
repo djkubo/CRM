@@ -95,8 +95,13 @@ export const NAVIGATION_GROUPS: NavGroup[] = [
       { id: "campaigns", label: "Campañas", icon: Megaphone, path: ROUTE_MAP.campaigns },
       { id: "broadcast", label: "Difusión", icon: Radio, path: ROUTE_MAP.broadcast },
       { id: "flows", label: "Automatizaciones", icon: Workflow, path: ROUTE_MAP.flows },
-      { id: "whatsapp", label: "WhatsApp", icon: Smartphone, path: ROUTE_MAP.whatsapp },
     ],
+  },
+  {
+    id: "channels",
+    label: "Canales",
+    icon: Smartphone,
+    items: [{ id: "whatsapp", label: "WhatsApp", icon: Smartphone, path: ROUTE_MAP.whatsapp }],
   },
   {
     id: "revenue",
