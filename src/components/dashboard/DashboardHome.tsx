@@ -1,10 +1,8 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '@/integrations/supabase/client';
 import { useDailyKPIs, TimeFilter } from '@/hooks/useDailyKPIs';
-import { useMetrics } from '@/hooks/useMetrics';
-import { useInvoices } from '@/hooks/useInvoices';
-import { useSubscriptions } from '@/hooks/useSubscriptions';
+import { useRevenuePipeline } from '@/hooks/useRevenuePipeline';
 import { 
   DollarSign, 
   UserPlus, 
@@ -33,12 +31,11 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { formatDistanceToNow, addHours, subDays, subMonths, subYears } from 'date-fns';
 import { es } from 'date-fns/locale';
 import { openWhatsApp, getRecoveryMessage } from './RecoveryTable';
-import type { RecoveryClient } from '@/lib/csvProcessor';
 import { invokeWithAdminKey } from '@/lib/adminApi';
 import { SyncResultsPanel } from './SyncResultsPanel';
 import type { 
@@ -113,13 +110,82 @@ export function DashboardHome() {
   const [lastSync, setLastSync] = useState<Date | null>(null);
   const [filter, setFilter] = useState<TimeFilter>('today');
   const { kpis, isLoading, refetch } = useDailyKPIs(filter);
-  const { metrics } = useMetrics();
-  const { invoicesNext72h } = useInvoices();
-  const { subscriptions } = useSubscriptions();
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncProgress, setSyncProgress] = useState<string>('');
   const [syncStatus, setSyncStatus] = useState<'ok' | 'warning' | null>(null);
   const queryClient = useQueryClient();
+
+  const recoveryPipeline = useRevenuePipeline({
+    type: "recovery",
+    page: 1,
+    pageSize: 10,
+    showOnlyWithPhone: true,
+  });
+
+  const trialPipeline = useRevenuePipeline({
+    type: "trial",
+    page: 1,
+    pageSize: 10,
+  });
+
+  type DueInvoice = {
+    id: string;
+    customer_email: string | null;
+    customer_name: string | null;
+    amount_due: number;
+    currency: string | null;
+    status: string;
+    next_payment_attempt: string | null;
+    automatically_finalizes_at: string | null;
+    due_date: string | null;
+    hosted_invoice_url: string | null;
+    invoice_number: string | null;
+  };
+
+  const invoicesDueNext72h = useQuery({
+    queryKey: ["command-center", "invoices-next72h", 10],
+    queryFn: async (): Promise<DueInvoice[]> => {
+      const limitDate = addHours(new Date(), 72).toISOString();
+
+      const { data, error } = await supabase
+        .from("invoices")
+        .select(
+          "id, customer_email, customer_name, amount_due, currency, status, next_payment_attempt, automatically_finalizes_at, due_date, hosted_invoice_url, invoice_number, stripe_created_at"
+        )
+        .in("status", ["open", "pending", "draft"])
+        .or(
+          `next_payment_attempt.lte.${limitDate},automatically_finalizes_at.lte.${limitDate},due_date.lte.${limitDate}`
+        )
+        .order("stripe_created_at", { ascending: false, nullsFirst: false })
+        .limit(200);
+
+      if (error) throw error;
+
+      const rows = (data || []) as DueInvoice[];
+      const sorted = rows
+        .map((inv) => {
+          const candidates = [
+            inv.next_payment_attempt,
+            inv.automatically_finalizes_at,
+            inv.due_date,
+          ]
+            .filter((v): v is string => typeof v === "string" && v.length > 0)
+            .map((v) => new Date(v).getTime())
+            .filter((ms) => Number.isFinite(ms));
+
+          const targetMs = candidates.length ? Math.min(...candidates) : Number.POSITIVE_INFINITY;
+          return { inv, targetMs };
+        })
+        .filter((x) => x.targetMs !== Number.POSITIVE_INFINITY)
+        .sort((a, b) => a.targetMs - b.targetMs)
+        .slice(0, 10)
+        .map((x) => x.inv);
+
+      return sorted;
+    },
+    staleTime: 30_000,
+    refetchInterval: 60_000,
+  });
 
   // Helper for navigation
   const handleNavigate = (page: string) => {
@@ -129,11 +195,15 @@ export function DashboardHome() {
 
   // Fetch last sync on mount
   useEffect(() => {
+    const refetchInvoicesDue = invoicesDueNext72h.refetch;
+    const refetchRecovery = recoveryPipeline.refetch;
+    const refetchTrials = trialPipeline.refetch;
+
     const fetchLastSync = async () => {
       const { data } = await supabase
         .from('sync_runs')
         .select('completed_at')
-        .eq('status', 'completed')
+        .in('status', ['completed', 'completed_with_errors'])
         .order('completed_at', { ascending: false })
         .limit(1)
         .maybeSingle();
@@ -151,8 +221,21 @@ export function DashboardHome() {
       .on('postgres_changes', 
         { event: '*', schema: 'public', table: 'sync_runs' },
         (payload) => {
-          if (payload.eventType === 'UPDATE' && (payload.new as any).status === 'completed') {
-            setLastSync(new Date((payload.new as any).completed_at));
+          if (payload.eventType !== 'UPDATE') return;
+          const next = payload.new as any;
+          const status = next?.status as string | undefined;
+
+          if (status === 'completed' || status === 'completed_with_errors') {
+            if (next?.completed_at) setLastSync(new Date(next.completed_at));
+
+            // Refresh all dashboard data quickly after a sync finishes.
+            queryClient.invalidateQueries({ queryKey: ['revenue-pipeline'] });
+            queryClient.invalidateQueries({ queryKey: ['command-center', 'invoices-next72h'] });
+            queryClient.invalidateQueries({ queryKey: ['sync-runs'] });
+            void refetchInvoicesDue();
+            void refetchRecovery();
+            void refetchTrials();
+            void refetch();
           }
         }
       )
@@ -161,7 +244,13 @@ export function DashboardHome() {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, []);
+  }, [
+    queryClient,
+    invoicesDueNext72h.refetch,
+    recoveryPipeline.refetch,
+    trialPipeline.refetch,
+    refetch,
+  ]);
 
   const filterLabels: Record<TimeFilter, string> = {
     today: 'Hoy',
@@ -275,6 +364,44 @@ export function DashboardHome() {
         throw new Error(commandCenterData.error || 'La sincronización falló sin detalles');
       }
 
+      // Some hosting setups return a 504 even though the Edge Function continues in background.
+      // Our invoke helper normalizes this to { success: true, status: 'background' }.
+      if ((commandCenterData as any).backgroundProcessing || commandCenterData.status === 'background') {
+        setSyncStatus('warning');
+        setSyncProgress('');
+
+        toast.info('Sincronización en segundo plano', {
+          description:
+            (commandCenterData as any).message ||
+            'El proceso sigue ejecutándose. Revisa el panel de Sync abajo para ver el progreso.',
+          duration: 9000,
+        });
+
+        // Refresh sync status + data shortly after starting.
+        queryClient.invalidateQueries({ queryKey: ['sync-runs'] });
+        setTimeout(() => {
+          queryClient.invalidateQueries({ queryKey: ['transactions'] });
+          queryClient.invalidateQueries({ queryKey: ['clients'] });
+          queryClient.invalidateQueries({ queryKey: ['subscriptions'] });
+          queryClient.invalidateQueries({ queryKey: ['invoices'] });
+          queryClient.invalidateQueries({ queryKey: ['revenue-pipeline'] });
+          queryClient.invalidateQueries({ queryKey: ['command-center', 'invoices-next72h'] });
+        }, 15_000);
+
+        return;
+      }
+
+      if (commandCenterData.status === 'skipped') {
+        setSyncStatus('warning');
+        setSyncProgress('');
+        toast.info('Sincronización omitida', {
+          description: (commandCenterData as any).reason || 'La sincronización está pausada en el sistema.',
+          duration: 9000,
+        });
+        queryClient.invalidateQueries({ queryKey: ['sync-runs'] });
+        return;
+      }
+
       // Extract results from command center response
       const results = commandCenterData.results || {};
       const failedSteps = commandCenterData.failedSteps || [];
@@ -355,35 +482,12 @@ export function DashboardHome() {
     }
   };
 
-  // Top 10 failed payments with phone
-  const top10Failures = useMemo(() => {
-    return metrics.recoveryList
-      .filter((c: RecoveryClient) => c.phone)
-      .sort((a, b) => b.amount - a.amount)
-      .slice(0, 10);
-  }, [metrics.recoveryList]);
+  const top10Failures = recoveryPipeline.data?.items ?? [];
+  const top10Invoices = invoicesDueNext72h.data ?? [];
+  const top10ExpiringTrials = trialPipeline.data?.items ?? [];
 
-  // Top 10 invoices to collect soon
-  const top10Invoices = useMemo(() => {
-    return invoicesNext72h?.slice(0, 10) || [];
-  }, [invoicesNext72h]);
-
-  // Top 10 trials expiring in 24-48h
-  const top10ExpiringTrials = useMemo(() => {
-    const now = new Date();
-    const in48h = addHours(now, 48);
-    
-    return subscriptions
-      .filter(s => {
-        if (s.status !== 'trialing' || !s.trial_end) return false;
-        const trialEnd = new Date(s.trial_end);
-        return trialEnd >= now && trialEnd <= in48h;
-      })
-      .sort((a, b) => new Date(a.trial_end!).getTime() - new Date(b.trial_end!).getTime())
-      .slice(0, 10);
-  }, [subscriptions]);
-
-  const totalRevenue = kpis.newRevenue + kpis.conversionRevenue + kpis.renewalRevenue;
+  const formatMoneyInt = (value: number) =>
+    value.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
 
   // Card definitions with navigation targets
   const cards = [
@@ -398,10 +502,16 @@ export function DashboardHome() {
     },
     {
       title: 'Ventas Netas',
-      value: `$${kpis.newRevenue.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`,
+      value:
+        kpis.netSales.usd !== 0
+          ? `$${formatMoneyInt(kpis.netSales.usd)}`
+          : `MXN $${formatMoneyInt(kpis.netSales.mxn)}`,
       icon: DollarSign,
       color: 'emerald',
-      subtitle: filterLabels[filter],
+      subtitle:
+        kpis.netSales.usd !== 0 && kpis.netSales.mxn !== 0
+          ? `${filterLabels[filter]} · MXN $${formatMoneyInt(kpis.netSales.mxn)}`
+          : filterLabels[filter],
       navigateTo: 'movements',
     },
     {
@@ -409,7 +519,10 @@ export function DashboardHome() {
       value: kpis.newPayersToday,
       icon: UserPlus,
       color: 'neutral',  // VRP: All non-critical KPIs use neutral zinc
-      subtitle: `$${kpis.newRevenue.toFixed(0)}`,
+      subtitle:
+        kpis.newCustomerRevenue.usd !== 0
+          ? `$${formatMoneyInt(kpis.newCustomerRevenue.usd)}`
+          : `MXN $${formatMoneyInt(kpis.newCustomerRevenue.mxn)}`,
       navigateTo: 'clients',
     },
     {
@@ -425,7 +538,7 @@ export function DashboardHome() {
       value: kpis.trialConversionsToday,
       icon: ArrowRightCircle,
       color: 'neutral',  // VRP: Neutral instead of purple
-      subtitle: `$${kpis.conversionRevenue.toFixed(0)}`,
+      subtitle: `${kpis.trialConversionRate.toFixed(1)}% · $${formatMoneyInt(kpis.trialConversionRevenue)}`,
       navigateTo: 'subscriptions',
     },
     {
@@ -433,7 +546,10 @@ export function DashboardHome() {
       value: kpis.renewalsToday,
       icon: RefreshCw,
       color: 'neutral',  // VRP: Neutral instead of green
-      subtitle: `$${kpis.renewalRevenue.toFixed(0)}`,
+      subtitle:
+        kpis.renewalRevenue.usd !== 0
+          ? `$${formatMoneyInt(kpis.renewalRevenue.usd)}`
+          : `MXN $${formatMoneyInt(kpis.renewalRevenue.mxn)}`,
       navigateTo: 'subscriptions',
     },
     {
@@ -441,7 +557,7 @@ export function DashboardHome() {
       value: `$${kpis.revenueAtRisk.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`,
       icon: ShieldAlert,
       color: 'red',
-      subtitle: `${kpis.revenueAtRiskCount.toLocaleString()} facturas`,
+      subtitle: `${kpis.revenueAtRiskCount.toLocaleString()} suscripciones`,
       isNegative: true,
       navigateTo: 'recovery',
       isWarning: kpis.revenueAtRisk > 10000,
@@ -646,7 +762,17 @@ export function DashboardHome() {
             </Button>
           </div>
           <div className="divide-y divide-border max-h-[300px] overflow-y-auto">
-            {top10Failures.length === 0 ? (
+            {recoveryPipeline.isLoading ? (
+              <div className="p-6 text-center text-muted-foreground text-sm">
+                <Loader2 className="h-8 w-8 mx-auto mb-2 animate-spin text-muted-foreground" />
+                Cargando...
+              </div>
+            ) : recoveryPipeline.isError ? (
+              <div className="p-6 text-center text-muted-foreground text-sm">
+                <AlertTriangle className="h-8 w-8 mx-auto mb-2 text-amber-500/60" />
+                No se pudo cargar la cola de recuperación
+              </div>
+            ) : top10Failures.length === 0 ? (
               <div className="p-6 text-center text-muted-foreground text-sm">
                 <CheckCircle className="h-8 w-8 mx-auto mb-2 text-emerald-500/50" />
                 Sin fallos
@@ -656,16 +782,24 @@ export function DashboardHome() {
                 <div key={i} className="flex items-center justify-between p-3 hover:bg-accent/50 touch-feedback">
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium text-foreground truncate">{client.full_name || client.email}</p>
-                    <p className="text-xs text-red-400">${client.amount.toFixed(2)}</p>
+                    <p className="text-xs text-red-400">${client.revenue_at_risk.toFixed(2)}</p>
                   </div>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className="text-primary hover:bg-primary/10 h-8 w-8 p-0"
-                    onClick={() => openWhatsApp(client.phone!, client.full_name || '', getRecoveryMessage(client.full_name || '', client.amount))}
-                  >
-                    <MessageCircle className="h-4 w-4" />
-                  </Button>
+                  {(client.phone_e164 || client.phone) && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="text-primary hover:bg-primary/10 h-8 w-8 p-0"
+                      onClick={() =>
+                        openWhatsApp(
+                          client.phone_e164 || client.phone || "",
+                          client.full_name || "",
+                          getRecoveryMessage(client.full_name || "", client.revenue_at_risk)
+                        )
+                      }
+                    >
+                      <MessageCircle className="h-4 w-4" />
+                    </Button>
+                  )}
                 </div>
               ))
             )}
@@ -684,7 +818,17 @@ export function DashboardHome() {
             </Button>
           </div>
           <div className="divide-y divide-border max-h-[300px] overflow-y-auto">
-            {top10Invoices.length === 0 ? (
+            {invoicesDueNext72h.isLoading ? (
+              <div className="p-6 text-center text-muted-foreground text-sm">
+                <Loader2 className="h-8 w-8 mx-auto mb-2 animate-spin text-muted-foreground" />
+                Cargando...
+              </div>
+            ) : invoicesDueNext72h.isError ? (
+              <div className="p-6 text-center text-muted-foreground text-sm">
+                <AlertTriangle className="h-8 w-8 mx-auto mb-2 text-amber-500/60" />
+                No se pudieron cargar las facturas
+              </div>
+            ) : top10Invoices.length === 0 ? (
               <div className="p-6 text-center text-muted-foreground text-sm">
                 <CheckCircle className="h-8 w-8 mx-auto mb-2 text-emerald-500/50" />
                 Sin pendientes
@@ -694,8 +838,25 @@ export function DashboardHome() {
                 <div key={i} className="flex items-center justify-between p-3 hover:bg-accent/50 touch-feedback">
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium text-foreground truncate">{invoice.customer_email || 'Sin email'}</p>
-                    <p className="text-xs text-muted-foreground">
-                      ${(invoice.amount_due / 100).toFixed(2)}
+                    <p className="text-xs text-muted-foreground flex items-center gap-2">
+                      <span>${(invoice.amount_due / 100).toFixed(2)}</span>
+                      {(() => {
+                        const candidates = [
+                          invoice.next_payment_attempt,
+                          invoice.automatically_finalizes_at,
+                          invoice.due_date,
+                        ]
+                          .filter((v): v is string => typeof v === "string" && v.length > 0)
+                          .map((v) => ({ v, ms: new Date(v).getTime() }))
+                          .filter((x) => Number.isFinite(x.ms))
+                          .sort((a, b) => a.ms - b.ms);
+                        const soonest = candidates[0]?.v;
+                        return soonest ? (
+                          <span className="text-[10px] text-muted-foreground/80">
+                            {formatDistanceToNow(new Date(soonest), { addSuffix: true, locale: es })}
+                          </span>
+                        ) : null;
+                      })()}
                     </p>
                   </div>
                   {invoice.hosted_invoice_url && (
@@ -726,7 +887,17 @@ export function DashboardHome() {
             </Button>
           </div>
           <div className="divide-y divide-border max-h-[300px] overflow-y-auto">
-            {top10ExpiringTrials.length === 0 ? (
+            {trialPipeline.isLoading ? (
+              <div className="p-6 text-center text-muted-foreground text-sm">
+                <Loader2 className="h-8 w-8 mx-auto mb-2 animate-spin text-muted-foreground" />
+                Cargando...
+              </div>
+            ) : trialPipeline.isError ? (
+              <div className="p-6 text-center text-muted-foreground text-sm">
+                <AlertTriangle className="h-8 w-8 mx-auto mb-2 text-amber-500/60" />
+                No se pudieron cargar las pruebas
+              </div>
+            ) : top10ExpiringTrials.length === 0 ? (
               <div className="p-6 text-center text-muted-foreground text-sm">
                 <CheckCircle className="h-8 w-8 mx-auto mb-2 text-emerald-500/50" />
                 Sin pruebas
@@ -735,13 +906,13 @@ export function DashboardHome() {
               top10ExpiringTrials.map((sub, i) => (
                 <div key={i} className="flex items-center justify-between p-3 hover:bg-accent/50 touch-feedback">
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-foreground truncate">{sub.customer_email || 'Sin email'}</p>
-                    <p className="text-xs text-muted-foreground">
-                      {sub.plan_name}
-                    </p>
+                    <p className="text-sm font-medium text-foreground truncate">{sub.email || 'Sin email'}</p>
+                    <p className="text-xs text-muted-foreground">${sub.revenue_at_risk.toFixed(0)} MRR en juego</p>
                   </div>
                   <Badge variant="outline" className="bg-zinc-800 text-white border-zinc-700 text-xs">
-                    {formatDistanceToNow(new Date(sub.trial_end!), { locale: es })}
+                    {sub.trial_end
+                      ? formatDistanceToNow(new Date(sub.trial_end), { addSuffix: true, locale: es })
+                      : "—"}
                   </Badge>
                 </div>
               ))

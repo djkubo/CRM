@@ -26,6 +26,26 @@ export default function Login() {
   const navigate = useNavigate();
   const { toast } = useToast();
 
+  const handleHardRefresh = async () => {
+    try {
+      // Best-effort: remove stale PWA/service worker caches that can pin old builds.
+      if ("serviceWorker" in navigator) {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(regs.map((r) => r.unregister().catch(() => {})));
+      }
+
+      if ("caches" in window) {
+        const keys = await caches.keys();
+        await Promise.all(keys.map((k) => caches.delete(k).catch(() => {})));
+      }
+
+      localStorage.clear();
+      sessionStorage.clear();
+    } finally {
+      window.location.reload();
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
@@ -158,6 +178,17 @@ export default function Login() {
             <p className="mt-1 text-[10px] text-muted-foreground font-mono">
               Build {buildInfo.gitSha} · {new Date(buildInfo.buildTime).toLocaleString()}
             </p>
+            <div className="mt-3 flex justify-center">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => void handleHardRefresh()}
+                className="h-8 text-xs"
+              >
+                Limpiar cache / actualizar
+              </Button>
+            </div>
           </div>
         </CardContent>
       </Card>
