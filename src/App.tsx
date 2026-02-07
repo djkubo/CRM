@@ -11,6 +11,7 @@ import { QueryErrorHandler } from "@/components/QueryErrorHandler";
 import { PwaUpdater } from "@/components/PwaUpdater";
 import { DashboardLayout } from "@/layouts/DashboardLayout";
 import { Skeleton } from "@/components/ui/skeleton";
+import { APP_PATHS } from "@/config/appPaths";
 
 // Pages - eager load critical auth pages
 import Login from "./pages/Login";
@@ -166,44 +167,107 @@ function AppRoutes() {
         }
       >
         <Route index element={<DashboardHome />} />
-        <Route path="movements" element={
-          <Suspense fallback={<PageSkeleton />}>
-            <MovementsPage />
-          </Suspense>
-        } />
-        <Route path="analytics" element={
-          <Suspense fallback={<PageSkeleton />}>
-            <AnalyticsPanel />
-          </Suspense>
-        } />
-        <Route path="messages" element={<MessagesPageWrapper />} />
-        <Route path="campaigns" element={
-          <Suspense fallback={<PageSkeleton />}>
-            <CampaignControlCenter />
-          </Suspense>
-        } />
-        <Route path="broadcast" element={
-          <Suspense fallback={<PageSkeleton />}>
-            <BroadcastListsPage />
-          </Suspense>
-        } />
-        <Route path="flows" element={
-          <Suspense fallback={<PageSkeleton />}>
-            <FlowsPage />
-          </Suspense>
-        } />
-        <Route path="whatsapp" element={<WhatsAppSettingsPage />} />
-        <Route path="clients" element={<ClientsPage />} />
-        <Route path="invoices" element={<InvoicesPage />} />
-        <Route path="subscriptions" element={<SubscriptionsPage />} />
-        <Route path="recovery" element={<RevenueOpsPipeline />} />
-        <Route path="import" element={<ImportSyncPage />} />
-        <Route path="diagnostics" element={
-          <Suspense fallback={<PageSkeleton />}>
-            <DiagnosticsPanel />
-          </Suspense>
-        } />
-        <Route path="settings" element={<SettingsPage />} />
+
+        {/* New IA (v2) */}
+        <Route path="insights">
+          <Route index element={<Navigate to="analytics" replace />} />
+          <Route
+            path="analytics"
+            element={
+              <Suspense fallback={<PageSkeleton />}>
+                <AnalyticsPanel />
+              </Suspense>
+            }
+          />
+        </Route>
+
+        <Route path="crm">
+          <Route index element={<Navigate to="clients" replace />} />
+          <Route path="clients" element={<ClientsPage />} />
+          <Route path="inbox" element={<MessagesPageWrapper />} />
+        </Route>
+
+        <Route path="growth">
+          <Route index element={<Navigate to="campaigns" replace />} />
+          <Route
+            path="campaigns"
+            element={
+              <Suspense fallback={<PageSkeleton />}>
+                <CampaignControlCenter />
+              </Suspense>
+            }
+          />
+          <Route
+            path="broadcast"
+            element={
+              <Suspense fallback={<PageSkeleton />}>
+                <BroadcastListsPage />
+              </Suspense>
+            }
+          />
+          <Route
+            path="flows"
+            element={
+              <Suspense fallback={<PageSkeleton />}>
+                <FlowsPage />
+              </Suspense>
+            }
+          />
+        </Route>
+
+        <Route path="channels">
+          <Route index element={<Navigate to="whatsapp" replace />} />
+          <Route path="whatsapp" element={<WhatsAppSettingsPage />} />
+        </Route>
+
+        <Route path="revenue">
+          <Route index element={<Navigate to="transactions" replace />} />
+          <Route
+            path="transactions"
+            element={
+              <Suspense fallback={<PageSkeleton />}>
+                <MovementsPage />
+              </Suspense>
+            }
+          />
+          <Route path="invoices" element={<InvoicesPage />} />
+          <Route path="subscriptions" element={<SubscriptionsPage />} />
+          <Route path="recovery" element={<RevenueOpsPipeline />} />
+        </Route>
+
+        <Route path="ops">
+          <Route index element={<Navigate to="sync" replace />} />
+          <Route path="sync" element={<ImportSyncPage />} />
+          <Route
+            path="diagnostics"
+            element={
+              <Suspense fallback={<PageSkeleton />}>
+                <DiagnosticsPanel />
+              </Suspense>
+            }
+          />
+        </Route>
+
+        <Route path="admin">
+          <Route index element={<Navigate to="settings" replace />} />
+          <Route path="settings" element={<SettingsPage />} />
+        </Route>
+
+        {/* Legacy routes (v1) - keep working for bookmarks */}
+        <Route path="analytics" element={<Navigate to={APP_PATHS.analytics} replace />} />
+        <Route path="movements" element={<Navigate to={APP_PATHS.movements} replace />} />
+        <Route path="messages" element={<Navigate to={APP_PATHS.inbox} replace />} />
+        <Route path="clients" element={<Navigate to={APP_PATHS.clients} replace />} />
+        <Route path="campaigns" element={<Navigate to={APP_PATHS.campaigns} replace />} />
+        <Route path="broadcast" element={<Navigate to={APP_PATHS.broadcast} replace />} />
+        <Route path="flows" element={<Navigate to={APP_PATHS.flows} replace />} />
+        <Route path="whatsapp" element={<Navigate to={APP_PATHS.whatsapp} replace />} />
+        <Route path="invoices" element={<Navigate to={APP_PATHS.invoices} replace />} />
+        <Route path="subscriptions" element={<Navigate to={APP_PATHS.subscriptions} replace />} />
+        <Route path="recovery" element={<Navigate to={APP_PATHS.recovery} replace />} />
+        <Route path="import" element={<Navigate to={APP_PATHS.sync} replace />} />
+        <Route path="diagnostics" element={<Navigate to={APP_PATHS.diagnostics} replace />} />
+        <Route path="settings" element={<Navigate to={APP_PATHS.settings} replace />} />
       </Route>
 
       {/* Public Routes */}

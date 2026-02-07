@@ -12,7 +12,6 @@ import {
   BarChart3, 
   Settings,
   LogOut,
-  Send,
   MessageSquare,
   Shield,
   Menu,
@@ -24,71 +23,91 @@ import {
   Home,
   MessageCircle,
   DollarSign,
-  Cog
+  Cog,
+  TrendingUp,
+  Megaphone
 } from "lucide-react";
 import { toast } from "sonner";
 import vrpLogo from "@/assets/vrp-logo.png";
+import { APP_PATHS } from "@/config/appPaths";
 
 // Route mapping for each menu item
 const routeMap: Record<string, string> = {
-  dashboard: "/",
-  movements: "/movements",
-  analytics: "/analytics",
-  messages: "/messages",
-  campaigns: "/campaigns",
-  broadcast: "/broadcast",
-  flows: "/flows",
-  "whatsapp-direct": "/whatsapp",
-  clients: "/clients",
-  invoices: "/invoices",
-  subscriptions: "/subscriptions",
-  recovery: "/recovery",
-  import: "/import",
-  diagnostics: "/diagnostics",
-  settings: "/settings",
+  dashboard: APP_PATHS.commandCenter,
+
+  // Insights
+  analytics: APP_PATHS.analytics,
+
+  // CRM
+  inbox: APP_PATHS.inbox,
+  clients: APP_PATHS.clients,
+
+  // Growth
+  campaigns: APP_PATHS.campaigns,
+  broadcast: APP_PATHS.broadcast,
+  flows: APP_PATHS.flows,
+  whatsapp: APP_PATHS.whatsapp,
+
+  // Revenue
+  movements: APP_PATHS.movements,
+  invoices: APP_PATHS.invoices,
+  subscriptions: APP_PATHS.subscriptions,
+  recovery: APP_PATHS.recovery,
+
+  // Ops/Admin
+  sync: APP_PATHS.sync,
+  diagnostics: APP_PATHS.diagnostics,
+  settings: APP_PATHS.settings,
 };
 
-// Navigation structure organized in 4 logical modules
+// Navigation structure organized by modules (IA v2)
 const navigationGroups = [
   {
-    id: "general",
-    label: "General",
+    id: "center",
+    label: "Centro",
     icon: Home,
     items: [
       { id: "dashboard", label: "Centro de Comando", icon: LayoutDashboard },
-      { id: "movements", label: "Movimientos", icon: Activity },
       { id: "analytics", label: "Analítica", icon: BarChart3 },
     ]
   },
   {
-    id: "comunicacion",
-    label: "Comunicación",
+    id: "crm",
+    label: "CRM",
     icon: MessageCircle,
     items: [
-      { id: "messages", label: "Mensajes", icon: MessageSquare },
-      { id: "campaigns", label: "Campañas", icon: Send },
-      { id: "broadcast", label: "Difusión", icon: Radio },
-      { id: "flows", label: "Automatizaciones", icon: Workflow },
-      { id: "whatsapp-direct", label: "WhatsApp Directo", icon: Smartphone },
+      { id: "inbox", label: "Bandeja", icon: MessageSquare },
+      { id: "clients", label: "Clientes", icon: Users },
     ]
   },
   {
-    id: "finanzas",
-    label: "Finanzas",
+    id: "growth",
+    label: "Crecimiento",
+    icon: TrendingUp,
+    items: [
+      { id: "campaigns", label: "Campañas", icon: Megaphone },
+      { id: "broadcast", label: "Difusión", icon: Radio },
+      { id: "flows", label: "Automatizaciones", icon: Workflow },
+      { id: "whatsapp", label: "WhatsApp", icon: Smartphone },
+    ]
+  },
+  {
+    id: "revenue",
+    label: "Ingresos",
     icon: DollarSign,
     items: [
-      { id: "clients", label: "Clientes", icon: Users },
+      { id: "movements", label: "Movimientos", icon: Activity },
       { id: "invoices", label: "Facturas", icon: FileText },
       { id: "subscriptions", label: "Suscripciones", icon: CreditCard },
       { id: "recovery", label: "Recuperación", icon: AlertTriangle },
     ]
   },
   {
-    id: "sistema",
+    id: "system",
     label: "Sistema",
     icon: Cog,
     items: [
-      { id: "import", label: "Importar / Sincronizar", icon: Upload },
+      { id: "sync", label: "Importar / Sync", icon: Upload },
       { id: "diagnostics", label: "Diagnóstico", icon: Shield },
       { id: "settings", label: "Ajustes", icon: Settings },
     ]

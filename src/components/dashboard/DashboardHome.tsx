@@ -38,6 +38,7 @@ import { es } from 'date-fns/locale';
 import { openWhatsApp, getRecoveryMessage } from './RecoveryTable';
 import { invokeWithAdminKey } from '@/lib/adminApi';
 import { SyncResultsPanel } from './SyncResultsPanel';
+import { APP_PATHS } from "@/config/appPaths";
 import type { 
   FetchStripeBody, 
   FetchStripeResponse, 
@@ -97,13 +98,13 @@ function getSyncDateRange(range: SyncRange): { startDate: Date; endDate: Date; f
 
 // Route mapping for navigation
 const routeMap: Record<string, string> = {
-  analytics: "/analytics",
-  movements: "/movements",
-  clients: "/clients",
-  subscriptions: "/subscriptions",
-  recovery: "/recovery",
-  invoices: "/invoices",
-  campaigns: "/campaigns",
+  analytics: APP_PATHS.analytics,
+  movements: APP_PATHS.movements,
+  clients: APP_PATHS.clients,
+  subscriptions: APP_PATHS.subscriptions,
+  recovery: APP_PATHS.recovery,
+  invoices: APP_PATHS.invoices,
+  campaigns: APP_PATHS.campaigns,
 };
 
 export function DashboardHome() {
