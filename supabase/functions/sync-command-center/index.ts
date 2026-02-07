@@ -460,6 +460,9 @@ Deno.serve(async (req: Request) => {
       }
     };
 
+    // Run PayPal first so it doesn't get skipped by Stripe work near the Edge 60s limit.
+    await runPayPalTransactions();
+
     // ============ STRIPE TRANSACTIONS ============
     if (!isTimeout()) {
       try {
@@ -597,14 +600,11 @@ Deno.serve(async (req: Request) => {
         await updateProgress("stripe-customers", `${results["customers"].count} clientes`);
       } catch (e) {
         console.error("Customers sync error:", e);
-        results["customers"] = { success: false, count: 0, error: String(e) };
+      results["customers"] = { success: false, count: 0, error: String(e) };
       }
     } else {
       console.warn("⏱️ Skipping remaining Stripe syncs due to timeout");
     }
-
-    // PayPal before non-critical Stripe steps (products/disputes/payouts/balance)
-    await runPayPalTransactions();
 
     // Skip non-critical syncs if we're running low on time
     if (!isTimeout() && config.mode !== 'today') {
