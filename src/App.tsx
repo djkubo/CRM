@@ -10,6 +10,7 @@ import { OfflineBanner } from "@/components/OfflineIndicator";
 import { QueryErrorHandler } from "@/components/QueryErrorHandler";
 import { DashboardLayout } from "@/layouts/DashboardLayout";
 import { Skeleton } from "@/components/ui/skeleton";
+import { isSupabaseConfigured, missingSupabaseEnvKeys } from "@/lib/env";
 
 // Pages - eager load critical auth pages
 import Login from "./pages/Login";
@@ -71,6 +72,46 @@ const AuthLoadingScreen = () => (
     </div>
   </div>
 );
+
+const MissingEnvScreen = () => {
+  const missing = missingSupabaseEnvKeys();
+
+  return (
+    <div className="min-h-screen bg-background text-foreground flex items-center justify-center p-6 safe-area-top safe-area-bottom">
+      <div className="w-full max-w-2xl space-y-4 rounded-xl border border-border bg-card p-6 shadow-sm">
+        <div className="space-y-1">
+          <h1 className="text-xl font-semibold">Falta configuración</h1>
+          <p className="text-sm text-muted-foreground">
+            La app no puede iniciar porque faltan variables de entorno para Supabase.
+          </p>
+        </div>
+
+        <div className="space-y-2">
+          <p className="text-sm font-medium">Variables faltantes:</p>
+          <ul className="list-disc pl-5 text-sm text-muted-foreground">
+            {missing.map((k) => (
+              <li key={k}>
+                <code className="font-mono text-foreground">{k}</code>
+              </li>
+            ))}
+          </ul>
+        </div>
+
+        <div className="space-y-2">
+          <p className="text-sm font-medium">Cómo arreglarlo</p>
+          <p className="text-sm text-muted-foreground">
+            En local: crea un archivo <code className="font-mono text-foreground">.env</code> o{" "}
+            <code className="font-mono text-foreground">.env.local</code> en la raíz usando{" "}
+            <code className="font-mono text-foreground">.env.example</code> como plantilla.
+          </p>
+          <p className="text-sm text-muted-foreground">
+            En deploy (Lovable/Netlify/Vercel): configura esas variables en el panel de Environment Variables y redeploy.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+};
 
 // Optimized QueryClient for performance and stability
 const queryClient = new QueryClient({
@@ -223,19 +264,25 @@ function AppRoutes() {
   );
 }
 
-const App = () => (
-  <ErrorBoundary>
-    <QueryClientProvider client={queryClient}>
-      <TooltipProvider>
-        <AuthProvider>
-          <DeferredComponents />
-          <BrowserRouter>
-            <AppRoutes />
-          </BrowserRouter>
-        </AuthProvider>
-      </TooltipProvider>
-    </QueryClientProvider>
-  </ErrorBoundary>
-);
+const App = () => {
+  if (!isSupabaseConfigured()) {
+    return <MissingEnvScreen />;
+  }
+
+  return (
+    <ErrorBoundary>
+      <QueryClientProvider client={queryClient}>
+        <TooltipProvider>
+          <AuthProvider>
+            <DeferredComponents />
+            <BrowserRouter>
+              <AppRoutes />
+            </BrowserRouter>
+          </AuthProvider>
+        </TooltipProvider>
+      </QueryClientProvider>
+    </ErrorBoundary>
+  );
+};
 
 export default App;
