@@ -71,6 +71,47 @@ P2 (polish + performance)
 - Observabilidad:
   - Log de errores de edge functions y fallas de sync en una vista unica (ideal: timeline de incidentes en `/diagnostics`).
 
+## Auditoria Por Ruta (Resumen)
+
+- `/login`
+  - Agregar: "Olvide mi contrasena", "Soporte", y un indicador no-intrusivo de estado (online/offline).
+  - Microcopy: decidir si "COMMAND CENTER" queda como marca o se traduce a "CENTRO DE COMANDO".
+- `/`
+  - Mucha densidad: separar "Operar" vs "Analizar" (2 vistas o tabs) para reducir carga cognitiva.
+  - Normalizar formato de moneda/fechas a locale ES (hoy mezcla `en-US`).
+- `/clients`
+  - Tabla: acciones bulk (etiquetar, cambiar estado, exportar) + guardrails (confirmaciones).
+  - Drawer: estandarizar titulos/colores con tokens (evitar `text-white`/`bg-zinc-*` donde no sea necesario).
+- `/messages`
+  - UX de inbox: unread, filtros rapidos, busqueda por cliente, asignacion visible y consistente.
+  - Accesibilidad: atajos teclado (cmd+k, j/k) y labels para icon buttons.
+- `/campaigns`
+  - Guardrails: preview obligatorio, "dry-run" visible, y resumen de costos/rate-limit antes de enviar.
+- `/broadcast`
+  - Estados: draft/scheduled/sent claros + timeline y metricas por envio.
+- `/flows`
+  - Onboarding: empty state con plantilla inicial, y un "modo seguro" (no activar sin confirmacion).
+- `/whatsapp`
+  - Claridad: diferenciar "Directo" (1:1) vs "Campanas" (masivo). Copy actual sugiere ambos.
+- `/invoices`
+  - Tabla: filtros por estado, fuente, rango de fechas; export con columnas configurables.
+  - Mostrar "ultima sync" + boton "reintentar" cuando falle.
+- `/subscriptions`
+  - Copy: estandarizar "Pruebas/Bajas" y tooltips ES.
+  - Reporte: agregar "por plan" y "cohortes" accesibles (charts alternativos en tabla).
+- `/recovery`
+  - Alinear nombre/alcance: ahora incluye Recuperacion, Pruebas, Reactivacion. Falta explicar el "por que" por tab.
+  - CTA por tab: "Enviar WhatsApp", "Enviar SMS", "Actualizar metodo de pago" con confirmaciones y logs.
+- `/import`
+  - Tabs: ya corregido label roto; falta persistir tab seleccionada y mostrar "ultima corrida" por fuente.
+- `/diagnostics`
+  - Convertir en consola unica: estado Supabase, estado webhooks, estado edge functions, y estado PWA/update.
+- `/settings`
+  - Secciones: "Cuenta", "Integraciones", "Automatizaciones", "Mantenimiento".
+  - Agregar "Exportar configuracion" y "Restaurar" (si aplica).
+- `*` (404)
+  - OK (ya en ES), agregar opcion "Reportar link roto" (opcional).
+
 ## Propuesta De Siguiente Iteracion (Recomendada)
 
 1. UX de updates PWA: modal/banner "Nueva version disponible" + boton "Actualizar ahora".
@@ -79,4 +120,3 @@ P2 (polish + performance)
 3. Accesibilidad rapida:
    - `aria-label` para todos los icon buttons, y focus rings consistentes.
 4. Estados vacios + CTA por ruta (clientes/ facturas / suscripciones / mensajes).
-
