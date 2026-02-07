@@ -43,7 +43,12 @@ export function Header({
         
         {/* Action buttons */}
         <div className="flex items-center gap-2">
-          <Button variant="ghost" size="icon" className="relative h-9 w-9 touch-feedback">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="relative h-9 w-9 touch-feedback"
+            aria-label="Notificaciones"
+          >
             <Bell className="h-4 w-4 md:h-5 md:w-5" />
             <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-primary" />
           </Button>
@@ -57,7 +62,7 @@ export function Header({
               className="gap-1.5 touch-feedback"
             >
               <RefreshCw className={`h-3.5 w-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
-              <span className="hidden sm:inline">Sync</span>
+              <span className="hidden sm:inline">Sincronizar</span>
             </Button>
           )}
           

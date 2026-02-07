@@ -52,25 +52,25 @@ import { es } from 'date-fns/locale';
 const pipelineConfig = {
   recovery: { 
     label: 'Recuperación', 
-    shortLabel: 'Recovery',
+    shortLabel: 'Recuperación',
     icon: AlertTriangle, 
     color: 'text-red-400',
     bgColor: 'bg-red-500/10',
     borderColor: 'border-red-500/30'
   },
   trial: { 
-    label: 'Trials por Vencer', 
-    shortLabel: 'Trials',
+    label: 'Pruebas por vencer', 
+    shortLabel: 'Pruebas',
     icon: Clock, 
     color: 'text-amber-400',
     bgColor: 'bg-amber-500/10',
     borderColor: 'border-amber-500/30'
   },
   winback: { 
-    label: 'Winback', 
-    shortLabel: 'Winback',
+    label: 'Reactivación', 
+    shortLabel: 'Reactivación',
     icon: UserX, 
-    color: 'text-white',
+    color: 'text-foreground',
     bgColor: 'bg-zinc-800',
     borderColor: 'border-zinc-700'
   },
@@ -324,9 +324,9 @@ export function RevenueOpsPipeline() {
         <div className="flex items-center gap-2">
           <Zap className="h-6 w-6 md:h-8 md:w-8 text-primary shrink-0" />
           <div>
-            <h1 className="text-lg md:text-2xl font-bold text-white">Revenue Ops</h1>
+            <h1 className="text-lg md:text-2xl font-bold text-foreground">Recuperación</h1>
             <p className="text-[10px] md:text-sm text-muted-foreground hidden sm:block">
-              Centro de operaciones multicanal
+              Operaciones de ingresos: Recuperación · Pruebas · Reactivación
             </p>
           </div>
         </div>
@@ -345,7 +345,7 @@ export function RevenueOpsPipeline() {
               <AlertTriangle className="h-3 w-3 md:h-4 md:w-4" />
               <span className="text-[10px] md:text-xs">Deuda Total</span>
             </div>
-            <p className="text-lg md:text-2xl font-bold text-white">
+            <p className="text-lg md:text-2xl font-bold text-foreground">
               ${(summary?.total_debt || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}
             </p>
             <p className="text-[10px] text-muted-foreground">{summary?.recovery_count || 0} clientes</p>
@@ -356,25 +356,25 @@ export function RevenueOpsPipeline() {
           <CardContent className="p-3 md:p-4">
             <div className="flex items-center gap-2 text-amber-400 mb-1">
               <Clock className="h-3 w-3 md:h-4 md:w-4" />
-              <span className="text-[10px] md:text-xs">Trials Expirando</span>
+              <span className="text-[10px] md:text-xs">Pruebas por vencer</span>
             </div>
-            <p className="text-lg md:text-2xl font-bold text-white">
+            <p className="text-lg md:text-2xl font-bold text-foreground">
               ${(summary?.total_trials_expiring || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}
             </p>
-            <p className="text-[10px] text-muted-foreground">{summary?.trial_count || 0} trials</p>
+            <p className="text-[10px] text-muted-foreground">{summary?.trial_count || 0} pruebas</p>
           </CardContent>
         </Card>
 
         <Card className={`bg-card border-border/50 ${activeTab === 'winback' ? 'ring-2 ring-zinc-500/50' : ''}`}>
           <CardContent className="p-3 md:p-4">
-            <div className="flex items-center gap-2 text-white mb-1">
+            <div className="flex items-center gap-2 text-foreground mb-1">
               <UserX className="h-3 w-3 md:h-4 md:w-4" />
-              <span className="text-[10px] md:text-xs">Winback</span>
+              <span className="text-[10px] md:text-xs">Reactivación</span>
             </div>
-            <p className="text-lg md:text-2xl font-bold text-white">
+            <p className="text-lg md:text-2xl font-bold text-foreground">
               ${(summary?.total_winback || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}
             </p>
-            <p className="text-[10px] text-muted-foreground">{summary?.winback_count || 0} churned</p>
+            <p className="text-[10px] text-muted-foreground">{summary?.winback_count || 0} bajas</p>
           </CardContent>
         </Card>
       </div>
@@ -444,7 +444,7 @@ export function RevenueOpsPipeline() {
                     <TableRow key={client.id} className="border-border/30 hover:bg-muted/30">
                       <TableCell>
                         <div>
-                          <p className="font-medium text-sm text-white truncate max-w-[200px]">
+                          <p className="font-medium text-sm text-foreground truncate max-w-[200px]">
                             {client.full_name || client.email || 'Sin nombre'}
                           </p>
                           <p className="text-xs text-muted-foreground truncate max-w-[200px]">

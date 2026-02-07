@@ -272,12 +272,12 @@ export function InvoicesPage() {
       {/* Header */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-xl md:text-3xl font-bold text-white flex items-center gap-2 md:gap-3">
+          <h1 className="text-xl md:text-3xl font-bold text-foreground flex items-center gap-2 md:gap-3">
             <FileText className="h-6 w-6 md:h-8 md:w-8 text-primary" />
             Facturas
           </h1>
           <p className="text-xs md:text-sm text-muted-foreground mt-1">
-            {sourceFilter === 'unified' ? 'Vista unificada: Stripe + PayPal' : 'Solo Stripe Invoices'}
+            {sourceFilter === 'unified' ? 'Vista unificada: Stripe + PayPal' : 'Solo facturas de Stripe'}
             {totalCount > 0 && ` · ${totalCount.toLocaleString()} total`}
           </p>
         </div>

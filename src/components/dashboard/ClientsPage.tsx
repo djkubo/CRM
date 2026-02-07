@@ -81,7 +81,7 @@ export function ClientsPage() {
       {/* Header - Responsive */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-xl md:text-3xl font-bold text-white flex items-center gap-2 md:gap-3">
+          <h1 className="text-xl md:text-3xl font-bold text-foreground flex items-center gap-2 md:gap-3">
             <Users className="h-6 w-6 md:h-8 md:w-8 text-primary" />
             Clientes
           </h1>
@@ -133,7 +133,7 @@ export function ClientsPage() {
             className="gap-1.5 text-xs border-zinc-700 hover:bg-zinc-800 touch-feedback shrink-0"
           >
             <span className="h-2 w-2 rounded-full bg-zinc-400" />
-            Trial
+            Prueba
           </Button>
           <Button
             variant={statusFilter === 'past_due' ? 'default' : 'outline'}
@@ -151,7 +151,7 @@ export function ClientsPage() {
             className="gap-1.5 text-xs border-zinc-700 hover:bg-zinc-800 touch-feedback shrink-0"
           >
             <LogOut className="h-3.5 w-3.5 text-red-500" />
-            Cancel
+            Cancelados
           </Button>
           <Button
             variant={statusFilter === 'vip' ? 'default' : 'outline'}
@@ -169,7 +169,7 @@ export function ClientsPage() {
             className="gap-1.5 text-xs border-zinc-700 hover:bg-zinc-800 touch-feedback shrink-0"
           >
             <Phone className="h-3.5 w-3.5 text-muted-foreground" />
-            Sin tel
+            Sin teléfono
           </Button>
         </div>
       </div>

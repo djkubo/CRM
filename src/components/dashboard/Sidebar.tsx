@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
-import { NavLink, useLocation } from "react-router-dom";
+import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { cn } from "@/lib/utils";
+import { useAuth } from "@/hooks/useAuth";
 import { 
   LayoutDashboard, 
   AlertTriangle,
@@ -25,6 +26,7 @@ import {
   DollarSign,
   Cog
 } from "lucide-react";
+import { toast } from "sonner";
 import vrpLogo from "@/assets/vrp-logo.png";
 
 // Route mapping for each menu item
@@ -53,9 +55,9 @@ const navigationGroups = [
     label: "General",
     icon: Home,
     items: [
-      { id: "dashboard", label: "Command Center", icon: LayoutDashboard },
+      { id: "dashboard", label: "Centro de Comando", icon: LayoutDashboard },
       { id: "movements", label: "Movimientos", icon: Activity },
-      { id: "analytics", label: "Analytics", icon: BarChart3 },
+      { id: "analytics", label: "Analítica", icon: BarChart3 },
     ]
   },
   {
@@ -78,7 +80,7 @@ const navigationGroups = [
       { id: "clients", label: "Clientes", icon: Users },
       { id: "invoices", label: "Facturas", icon: FileText },
       { id: "subscriptions", label: "Suscripciones", icon: CreditCard },
-      { id: "recovery", label: "Recovery", icon: AlertTriangle },
+      { id: "recovery", label: "Recuperación", icon: AlertTriangle },
     ]
   },
   {
@@ -86,8 +88,8 @@ const navigationGroups = [
     label: "Sistema",
     icon: Cog,
     items: [
-      { id: "import", label: "Importar / Sync", icon: Upload },
-      { id: "diagnostics", label: "Diagnostics", icon: Shield },
+      { id: "import", label: "Importar / Sincronizar", icon: Upload },
+      { id: "diagnostics", label: "Diagnóstico", icon: Shield },
       { id: "settings", label: "Ajustes", icon: Settings },
     ]
   },
@@ -96,6 +98,8 @@ const navigationGroups = [
 export function Sidebar() {
   const [isOpen, setIsOpen] = useState(false);
   const location = useLocation();
+  const navigate = useNavigate();
+  const { user, signOut } = useAuth();
 
   useEffect(() => {
     const handleEscape = (e: KeyboardEvent) => {
@@ -118,6 +122,41 @@ export function Sidebar() {
     setIsOpen(false);
   }, [location.pathname]);
 
+  const displayName = user?.user_metadata?.full_name ?? user?.email ?? "Admin";
+  const initials = (() => {
+    const fromEmail = user?.email?.trim();
+    if (fromEmail) return fromEmail.slice(0, 2).toUpperCase();
+
+    const fromName = user?.user_metadata?.full_name?.trim();
+    if (fromName) {
+      const parts = fromName.split(/\s+/).filter(Boolean);
+      const letters = parts.slice(0, 2).map((p: string) => p[0]?.toUpperCase()).join("");
+      if (letters) return letters;
+    }
+
+    return "VR";
+  })();
+
+  const handleLogout = async () => {
+    try {
+      const { error } = await signOut();
+      if (error) {
+        toast.error("No se pudo cerrar sesión", {
+          description: error.message,
+        });
+        return;
+      }
+
+      toast.success("Sesión cerrada");
+      setIsOpen(false);
+      navigate("/login");
+    } catch (err) {
+      toast.error("No se pudo cerrar sesión", {
+        description: err instanceof Error ? err.message : "Error inesperado",
+      });
+    }
+  };
+
   return (
     <>
       {/* Mobile Header - Clean, minimal */}
@@ -133,7 +172,7 @@ export function Sidebar() {
           <button
             onClick={() => setIsOpen(!isOpen)}
             className="p-2.5 rounded-lg hover:bg-accent touch-feedback"
-            aria-label="Toggle menu"
+            aria-label={isOpen ? "Cerrar menú" : "Abrir menú"}
           >
             {isOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
           </button>
@@ -228,13 +267,18 @@ export function Sidebar() {
         <div className="border-t border-border p-4 safe-area-bottom">
           <div className="flex items-center gap-3">
             <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-accent">
-              <span className="text-xs font-semibold text-foreground">VR</span>
+              <span className="text-xs font-semibold text-foreground">{initials}</span>
             </div>
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium text-foreground truncate">Admin</p>
-              <p className="text-xs text-muted-foreground truncate">V-Remixes Pack</p>
+              <p className="text-sm font-medium text-foreground truncate">{displayName}</p>
+              <p className="text-xs text-muted-foreground truncate">VRP Command Center</p>
             </div>
-            <button className="rounded-lg p-2 text-muted-foreground hover:bg-accent hover:text-foreground transition-colors touch-feedback">
+            <button
+              type="button"
+              onClick={handleLogout}
+              className="rounded-lg p-2 text-muted-foreground hover:bg-accent hover:text-foreground transition-colors touch-feedback"
+              aria-label="Cerrar sesión"
+            >
               <LogOut className="h-4 w-4" />
             </button>
           </div>

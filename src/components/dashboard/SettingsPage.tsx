@@ -3,16 +3,14 @@ import { Settings, LogOut } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useAuth } from '@/hooks/useAuth';
+import { useNavigate } from 'react-router-dom';
+import { toast } from 'sonner';
 
 // Lazy load heavy components for better performance
 const SystemTogglesPanel = lazy(() => import('./SystemTogglesPanel'));
 const IntegrationsStatusPanel = lazy(() => import('./IntegrationsStatusPanel').then(m => ({ default: m.IntegrationsStatusPanel })));
 const GHLSettingsPanel = lazy(() => import('./GHLSettingsPanel'));
 const MaintenancePanel = lazy(() => import('./MaintenancePanel'));
-
-interface SettingsPageProps {
-  onLogout?: () => void;
-}
 
 // Skeleton de carga premium
 function SettingsSkeleton() {
@@ -46,15 +44,35 @@ function SettingsSkeleton() {
   );
 }
 
-export function SettingsPage({ onLogout }: SettingsPageProps) {
-  const { user } = useAuth();
+export function SettingsPage() {
+  const { user, signOut } = useAuth();
+  const navigate = useNavigate();
+
+  const handleLogout = async () => {
+    try {
+      const { error } = await signOut();
+      if (error) {
+        toast.error("No se pudo cerrar sesión", {
+          description: error.message,
+        });
+        return;
+      }
+
+      toast.success("Sesión cerrada");
+      navigate("/login");
+    } catch (err) {
+      toast.error("No se pudo cerrar sesión", {
+        description: err instanceof Error ? err.message : "Error inesperado",
+      });
+    }
+  };
 
   return (
     <div className="space-y-4 md:space-y-6">
       {/* Header - Responsive */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-xl md:text-3xl font-bold text-white flex items-center gap-2 md:gap-3">
+          <h1 className="text-xl md:text-3xl font-bold text-foreground flex items-center gap-2 md:gap-3">
             <Settings className="h-6 w-6 md:h-8 md:w-8 text-primary" />
             Ajustes
           </h1>
@@ -65,7 +83,7 @@ export function SettingsPage({ onLogout }: SettingsPageProps) {
         {user && (
           <div className="flex items-center gap-3 justify-between sm:justify-end">
             <span className="text-xs md:text-sm text-muted-foreground truncate max-w-[150px] md:max-w-none">{user.email}</span>
-            <Button variant="outline" size="sm" onClick={onLogout} className="gap-2 touch-feedback shrink-0">
+            <Button variant="outline" size="sm" onClick={handleLogout} className="gap-2 touch-feedback shrink-0">
               <LogOut className="h-4 w-4" />
               <span className="hidden sm:inline">Cerrar Sesión</span>
               <span className="sm:hidden">Salir</span>

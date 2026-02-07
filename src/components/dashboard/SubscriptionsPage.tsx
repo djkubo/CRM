@@ -99,11 +99,11 @@ export function SubscriptionsPage() {
 
   // VRP Style: Semantic colors only (emerald=active, amber=warning, red=risk, zinc=neutral)
   const funnelCards = [
-    { label: 'Trials', value: funnel.trials, icon: Clock, color: 'amber' },           // Pendiente → Amber
+    { label: 'Pruebas', value: funnel.trials, icon: Clock, color: 'amber' },          // Pendiente → Amber
     { label: 'Por Vencer', value: funnel.trialsExpiringSoon, icon: AlertTriangle, color: 'amber' },
     { label: 'Activas', value: funnel.active, icon: CheckCircle, color: 'emerald' },
     { label: 'En Riesgo', value: funnel.atRisk, icon: AlertTriangle, color: 'red' },
-    { label: 'Churn', value: funnel.canceled, icon: XCircle, color: 'neutral' },      // Neutral → Zinc
+    { label: 'Bajas', value: funnel.canceled, icon: XCircle, color: 'neutral' },      // Neutral → Zinc
   ];
 
   // VRP Style: Neutral zinc + semantic colors only (emerald=ok, red=risk, amber=warning)
@@ -122,12 +122,12 @@ export function SubscriptionsPage() {
       {/* Header - Responsive */}
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-xl md:text-3xl font-bold text-white flex items-center gap-2">
+          <h1 className="text-xl md:text-3xl font-bold text-foreground flex items-center gap-2">
             <CreditCard className="h-5 w-5 md:h-8 md:w-8 text-primary" />
             Suscripciones
           </h1>
           <p className="text-[10px] md:text-sm text-muted-foreground mt-0.5">
-            Funnel: Trials → Conversiones → Churn
+            Embudo: Pruebas → Conversiones → Bajas
           </p>
         </div>
         <div className="flex items-center gap-3 justify-between sm:justify-end">
@@ -165,7 +165,7 @@ export function SubscriptionsPage() {
               variant="outline"
               size="sm"
               className="touch-feedback h-8"
-              title="Sync Stripe"
+              title="Sincronizar Stripe"
             >
               {isSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <StripeIcon />}
             </Button>

@@ -1,7 +1,4 @@
-import { useState } from 'react';
-import { Upload, RefreshCw, CheckCircle, AlertCircle, Loader2, History, FileText, Database, Users } from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
+import { Upload, RefreshCw, FileText, Database, Users } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { CSVUploader } from './CSVUploader';
 import { APISyncPanel } from './APISyncPanel';
@@ -27,7 +24,7 @@ export function ImportSyncPage() {
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
         <div>
-          <h1 className="text-xl sm:text-3xl font-bold text-white flex items-center gap-2 sm:gap-3">
+          <h1 className="text-xl sm:text-3xl font-bold text-foreground flex items-center gap-2 sm:gap-3">
             <Upload className="h-6 w-6 sm:h-8 sm:w-8 text-primary" />
             Importar / Sincronizar
           </h1>
@@ -45,7 +42,7 @@ export function ImportSyncPage() {
           <TabsList className="bg-card border border-border/50 w-max sm:w-auto">
             <TabsTrigger value="api" className="gap-1.5 sm:gap-2 text-xs sm:text-sm px-2.5 sm:px-3 data-[state=active]:bg-primary/20">
               <Database className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
-              <span className="hidden xs:inline">API</span> Sync
+              API
             </TabsTrigger>
             <TabsTrigger value="csv" className="gap-1.5 sm:gap-2 text-xs sm:text-sm px-2.5 sm:px-3 data-[state=active]:bg-primary/20">
               <FileText className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
@@ -53,7 +50,7 @@ export function ImportSyncPage() {
             </TabsTrigger>
             <TabsTrigger value="recovery" className="gap-1.5 sm:gap-2 text-xs sm:text-sm px-2.5 sm:px-3 data-[state=active]:bg-primary/20">
               <RefreshCw className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
-              Recovery
+              Recuperación
             </TabsTrigger>
             <TabsTrigger value="unify" className="gap-1.5 sm:gap-2 text-xs sm:text-sm px-2.5 sm:px-3 data-[state=active]:bg-primary/20">
               <Users className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
