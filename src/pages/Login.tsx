@@ -152,7 +152,7 @@ export default function Login() {
           {/* Footer branding */}
           <div className="mt-8 pt-6 border-t border-border text-center">
             <p className="text-xs text-muted-foreground">
-              VRP Revenue Operations
+              VRP Operaciones de Ingresos
             </p>
           </div>
         </CardContent>

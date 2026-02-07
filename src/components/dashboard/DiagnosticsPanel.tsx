@@ -2,6 +2,8 @@ import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { invokeWithAdminKey } from "@/lib/adminApi";
+import { buildInfo } from "@/lib/buildInfo";
+import { env } from "@/lib/env";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -268,6 +270,14 @@ export default function DiagnosticsPanel() {
   const [aiAnalysis, setAiAnalysis] = useState<string | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
 
+  const supabaseHost = (() => {
+    try {
+      return new URL(env.VITE_SUPABASE_URL).host;
+    } catch {
+      return env.VITE_SUPABASE_URL || "—";
+    }
+  })();
+
   const { data: qualityChecks = [], isLoading: loadingChecks, refetch: refetchChecks } = useQuery({
     queryKey: ['data-quality-checks'],
     queryFn: async () => {
@@ -424,7 +434,7 @@ Responde en español, de forma concisa.`;
         <div>
           <h1 className="text-xl md:text-2xl font-bold text-foreground flex items-center gap-2">
             <Shield className="w-5 h-5 md:w-6 md:h-6 text-primary" />
-            Diagnostics
+            Diagnóstico
           </h1>
           <p className="text-xs md:text-sm text-muted-foreground mt-0.5">
             Reconciliación y calidad de datos
@@ -444,6 +454,38 @@ Responde en español, de forma concisa.`;
           <span className="ml-2 hidden sm:inline">Actualizar</span>
         </Button>
       </div>
+
+      <Card className="border-border/50">
+        <CardHeader className="p-4 md:p-6">
+          <CardTitle className="text-base md:text-lg">Versión y entorno</CardTitle>
+          <CardDescription className="text-xs md:text-sm">
+            Para confirmar que estás viendo el build correcto (y diagnosticar PWA/cache).
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="p-4 md:p-6 pt-0 md:pt-0">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div className="rounded-lg border border-border/50 bg-muted/30 p-3">
+              <p className="text-xs text-muted-foreground">Build</p>
+              <p className="mt-1 font-mono text-sm text-foreground">{buildInfo.gitSha}</p>
+              <p className="mt-0.5 text-[10px] text-muted-foreground">
+                {new Date(buildInfo.buildTime).toLocaleString()}
+              </p>
+            </div>
+            <div className="rounded-lg border border-border/50 bg-muted/30 p-3">
+              <p className="text-xs text-muted-foreground">Supabase</p>
+              <p className="mt-1 font-mono text-sm text-foreground">{supabaseHost}</p>
+              <div className="mt-1 flex items-center gap-2 text-[10px] text-muted-foreground">
+                <span>Anon key:</span>
+                {env.VITE_SUPABASE_PUBLISHABLE_KEY ? (
+                  <Badge className="bg-emerald-500/20 text-emerald-400 text-[10px]">OK</Badge>
+                ) : (
+                  <Badge className="bg-red-500/20 text-red-400 text-[10px]">Falta</Badge>
+                )}
+              </div>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
 
       {/* Critical Alert Banner */}
       {hasCriticalIssues && (

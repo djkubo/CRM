@@ -8,6 +8,7 @@ import { AuthProvider, useAuthContext } from "@/contexts/AuthContext";
 import ErrorBoundary from "@/components/ErrorBoundary";
 import { OfflineBanner } from "@/components/OfflineIndicator";
 import { QueryErrorHandler } from "@/components/QueryErrorHandler";
+import { PwaUpdater } from "@/components/PwaUpdater";
 import { DashboardLayout } from "@/layouts/DashboardLayout";
 import { Skeleton } from "@/components/ui/skeleton";
 
@@ -141,6 +142,7 @@ function DeferredComponents() {
     <>
       <Toaster />
       <Sonner />
+      <PwaUpdater />
       <OfflineBanner />
       <QueryErrorHandler />
     </>

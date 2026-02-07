@@ -413,7 +413,7 @@ export function DashboardHome() {
       navigateTo: 'clients',
     },
     {
-      title: 'Trials',
+      title: 'Pruebas',
       value: kpis.trialsStartedToday,
       icon: Clock,
       color: 'neutral',  // VRP: Neutral instead of blue
@@ -421,7 +421,7 @@ export function DashboardHome() {
       navigateTo: 'subscriptions',
     },
     {
-      title: 'Trial→Paid',
+      title: 'Prueba→Pago',
       value: kpis.trialConversionsToday,
       icon: ArrowRightCircle,
       color: 'neutral',  // VRP: Neutral instead of purple
@@ -719,7 +719,7 @@ export function DashboardHome() {
           <div className="flex items-center justify-between p-4 border-b border-border">
             <div className="flex items-center gap-2">
               <CreditCard className="h-4 w-4 text-primary" />
-              <h3 className="text-sm font-medium text-foreground">Trials por Vencer</h3>
+              <h3 className="text-sm font-medium text-foreground">Pruebas por vencer</h3>
             </div>
             <Button variant="ghost" size="sm" onClick={() => handleNavigate('subscriptions')} className="text-xs gap-1 touch-feedback">
               Ver <ChevronRight className="h-3 w-3" />
@@ -729,7 +729,7 @@ export function DashboardHome() {
             {top10ExpiringTrials.length === 0 ? (
               <div className="p-6 text-center text-muted-foreground text-sm">
                 <CheckCircle className="h-8 w-8 mx-auto mb-2 text-emerald-500/50" />
-                Sin trials
+                Sin pruebas
               </div>
             ) : (
               top10ExpiringTrials.map((sub, i) => (

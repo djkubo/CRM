@@ -242,7 +242,7 @@ export function MRRMovementsChart({ transactions, clients, monthsToShow = 6 }: M
             />
             <Bar
               dataKey="churn"
-              name="Churn"
+              name="Bajas"
               stackId="stack"
               fill="#ef4444"
               radius={[0, 0, 4, 4]}
@@ -266,7 +266,7 @@ export function MRRMovementsChart({ transactions, clients, monthsToShow = 6 }: M
           </p>
         </div>
         <div className="text-center p-2 sm:p-3 rounded-lg bg-red-500/10 border border-red-500/20">
-          <p className="text-[10px] sm:text-xs text-red-400 mb-0.5 sm:mb-1">Churn ({periodLabel})</p>
+          <p className="text-[10px] sm:text-xs text-red-400 mb-0.5 sm:mb-1">Bajas ({periodLabel})</p>
           <p className="text-sm sm:text-lg font-bold text-red-400">
             ${Math.abs(chartData.reduce((sum, d) => sum + d.churn, 0)).toLocaleString()}
           </p>

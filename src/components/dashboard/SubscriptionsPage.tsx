@@ -209,7 +209,7 @@ export function SubscriptionsPage() {
             </div>
             <div className="flex-1">
               <h3 className="font-semibold text-red-400 text-sm md:text-base">
-                Revenue at Risk: ${(revenueAtRisk / 100).toLocaleString('en-US', { minimumFractionDigits: 0 })}/mes
+                Ingresos en riesgo: ${(revenueAtRisk / 100).toLocaleString('en-US', { minimumFractionDigits: 0 })}/mes
               </h3>
               <p className="text-[10px] md:text-xs text-red-400/70 mt-0.5">
                 {statusBreakdown.past_due} pagos vencidos + {statusBreakdown.unpaid} impagos = {atRiskCount} clientes requieren atención
@@ -254,7 +254,7 @@ export function SubscriptionsPage() {
           <SelectContent>
             <SelectItem value="all">Todos ({statusBreakdown.active + statusBreakdown.trialing + statusBreakdown.past_due + statusBreakdown.unpaid + statusBreakdown.canceled})</SelectItem>
             <SelectItem value="active">Activos ({statusBreakdown.active})</SelectItem>
-            <SelectItem value="trialing">Trials ({statusBreakdown.trialing})</SelectItem>
+            <SelectItem value="trialing">Pruebas ({statusBreakdown.trialing})</SelectItem>
             <SelectItem value="at_risk">En Riesgo ({statusBreakdown.past_due + statusBreakdown.unpaid})</SelectItem>
             <SelectItem value="canceled">Cancelados ({statusBreakdown.canceled})</SelectItem>
           </SelectContent>
@@ -285,7 +285,7 @@ export function SubscriptionsPage() {
           {funnel.atRiskList.length === 0 ? (
             <div className="p-6 text-center">
               <CheckCircle className="h-6 w-6 mx-auto mb-2 text-emerald-500/50" />
-              <p className="text-muted-foreground text-xs">Sin pagos pendientes 🎉</p>
+              <p className="text-muted-foreground text-xs">Sin pagos pendientes</p>
             </div>
           ) : (
             <div className="divide-y divide-border/30 max-h-[300px] overflow-y-auto">
@@ -322,12 +322,12 @@ export function SubscriptionsPage() {
         <div className="rounded-xl border border-border/50 bg-card overflow-hidden">
           <div className="p-3 border-b border-border/50 flex items-center gap-2">
             <AlertTriangle className="h-4 w-4 text-amber-500" />
-            <h3 className="font-semibold text-foreground text-sm">Trials por Vencer</h3>
+            <h3 className="font-semibold text-foreground text-sm">Pruebas por vencer</h3>
           </div>
           {funnel.trialsExpiringSoonList.length === 0 ? (
             <div className="p-6 text-center">
               <CheckCircle className="h-6 w-6 mx-auto mb-2 text-emerald-500/50" />
-              <p className="text-muted-foreground text-xs">Sin trials por vencer</p>
+              <p className="text-muted-foreground text-xs">Sin pruebas por vencer</p>
             </div>
           ) : (
             <div className="divide-y divide-border/30 max-h-[300px] overflow-y-auto">

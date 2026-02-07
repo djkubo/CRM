@@ -90,7 +90,7 @@ export function AnalyticsPanel() {
           <div>
             <h1 className="text-2xl md:text-3xl font-display text-foreground flex items-center gap-3">
               <BarChart3 className="h-7 w-7 text-primary" />
-              ANALYTICS
+              ANALÍTICA
             </h1>
             <p className="text-muted-foreground mt-1 text-sm">
               Métricas avanzadas: LTV, MRR, Cohortes
@@ -114,7 +114,7 @@ export function AnalyticsPanel() {
         <div>
           <h1 className="text-2xl md:text-3xl font-display text-foreground flex items-center gap-3">
             <BarChart3 className="h-7 w-7 text-primary" />
-            ANALYTICS
+            ANALÍTICA
           </h1>
           <p className="text-muted-foreground mt-1 text-sm">
             Métricas avanzadas: LTV, MRR, Cohortes

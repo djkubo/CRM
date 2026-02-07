@@ -138,7 +138,7 @@ export function LTVMetrics({ transactions, subscriptions }: LTVMetricsProps) {
         <div>
           <h3 className="text-base sm:text-lg font-semibold text-foreground">Métricas de LTV</h3>
           <p className="text-xs sm:text-sm text-muted-foreground">
-            MRR = Suma de suscripciones activas | LTV = ARPU / Churn
+            MRR = Suma de suscripciones activas | LTV = ARPU / tasa de bajas
           </p>
         </div>
       </div>
@@ -180,9 +180,9 @@ export function LTVMetrics({ transactions, subscriptions }: LTVMetricsProps) {
 
         <MetricCard
           icon={Calendar}
-          label="Churn"
+          label="Bajas"
           value={`${metrics.churnRate.toFixed(1)}%`}
-          subtext={`~${metrics.avgLifespanMonths.toFixed(0)}m vida`}
+          subtext={`~${metrics.avgLifespanMonths.toFixed(0)}m de vida`}
           color="bg-red-500/20 text-red-400"
         />
       </div>
@@ -207,7 +207,7 @@ export function LTVMetrics({ transactions, subscriptions }: LTVMetricsProps) {
             <span className="font-mono text-rose-400">
               {(Math.max(metrics.churnRate, 5) / 100).toFixed(2)}
             </span>
-            <span className="text-gray-500">(Churn)</span>
+            <span className="text-gray-500">(Bajas)</span>
             <span className="text-gray-400">=</span>
             <span className="font-mono font-bold text-indigo-400">
               ${metrics.ltv.toFixed(0)}

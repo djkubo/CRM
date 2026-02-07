@@ -54,8 +54,8 @@ export default function AIChatInsights() {
       setStats(data.stats);
       
       toast({
-        title: "🎯 Inteligencia de Ventas Generada",
-        description: `Análisis de ${data.stats?.totalContacts || 0} contactos · $${(data.stats?.totalRevenue || 0).toLocaleString()} en revenue`,
+        title: "Inteligencia de Ventas generada",
+        description: `Análisis de ${data.stats?.totalContacts || 0} contactos · $${(data.stats?.totalRevenue || 0).toLocaleString()} en ingresos`,
       });
     } catch (err) {
       console.error("Error generating report:", err);
@@ -222,7 +222,7 @@ export default function AIChatInsights() {
             </div>
             <div className="p-3 bg-primary/10 rounded-lg text-center">
               <div className="text-2xl font-bold text-primary">${stats.totalRevenue.toLocaleString()}</div>
-              <div className="text-xs text-muted-foreground">Revenue</div>
+              <div className="text-xs text-muted-foreground">Ingresos</div>
             </div>
           </div>
         )}

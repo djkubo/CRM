@@ -248,7 +248,7 @@ export function AIInsightsWidget() {
           </div>
           <div className="p-2 sm:p-3 rounded-lg bg-blue-500/10 border border-blue-500/20 text-center">
             <p className="text-lg sm:text-2xl font-bold text-blue-400">{metrics.summary.newTrials}</p>
-            <p className="text-[10px] sm:text-xs text-muted-foreground">Nuevos Trials</p>
+            <p className="text-[10px] sm:text-xs text-muted-foreground">Nuevas Pruebas</p>
           </div>
           <div className="p-2 sm:p-3 rounded-lg bg-amber-500/10 border border-amber-500/20 text-center">
             <p className="text-lg sm:text-2xl font-bold text-amber-400">{metrics.summary.failedPayments}</p>

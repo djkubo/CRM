@@ -166,12 +166,12 @@ export function useSmartRecovery() {
           const cp = currentProgress.data.checkpoint as unknown as RecoveryCheckpoint;
           if (currentProgress.data.status === "completed") {
             toast({
-              title: "✅ Smart Recovery Completado",
+              title: "Smart Recovery completado",
               description: `Recuperados: $${cp.recovered_amount.toFixed(2)} | Fallidos: $${cp.failed_amount.toFixed(2)} | Procesados: ${cp.processed}`,
             });
           } else {
             toast({
-              title: "❌ Smart Recovery Fallido",
+              title: "Smart Recovery fallido",
               description: "El proceso terminó con errores. Revisa los logs.",
               variant: "destructive",
             });
@@ -208,7 +208,7 @@ export function useSmartRecovery() {
       }
 
       toast({
-        title: "🚀 Smart Recovery Iniciado",
+        title: "Smart Recovery iniciado",
         description: `Procesando facturas de los últimos ${hours_lookback / 24} días en segundo plano...`,
       });
 
@@ -238,7 +238,7 @@ export function useSmartRecovery() {
         .update({ 
           status: "failed", 
           completed_at: new Date().toISOString(),
-          error_message: "Cancelled by user",
+          error_message: "Cancelado por el usuario",
         })
         .eq("id", progress.syncRunId);
 
@@ -250,7 +250,7 @@ export function useSmartRecovery() {
       setIsRunning(false);
       
       toast({
-        title: "Recovery Cancelado",
+        title: "Smart Recovery cancelado",
         description: `Proceso detenido. Recuperados: $${progress.checkpoint.recovered_amount.toFixed(2)}`,
       });
     } catch (err) {

@@ -219,7 +219,7 @@ export function SourceAnalytics({ period = "30d" }: SourceAnalyticsProps) {
                 <TrendingUp className="h-4 w-4 sm:h-5 sm:w-5 text-primary" />
               </div>
               <div className="min-w-0">
-                <p className="text-[10px] sm:text-sm text-muted-foreground">En Trial</p>
+                <p className="text-[10px] sm:text-sm text-muted-foreground">En prueba</p>
                 <p className="text-lg sm:text-2xl font-bold text-white">{totals.trials.toLocaleString()}</p>
               </div>
             </div>
@@ -247,7 +247,7 @@ export function SourceAnalytics({ period = "30d" }: SourceAnalyticsProps) {
                 <DollarSign className="h-4 w-4 sm:h-5 sm:w-5 text-primary" />
               </div>
               <div className="min-w-0">
-                <p className="text-[10px] sm:text-sm text-muted-foreground">Rev 30d</p>
+                <p className="text-[10px] sm:text-sm text-muted-foreground">Ingresos 30d</p>
                 <p className="text-lg sm:text-2xl font-bold text-white">${totals.revenue.toLocaleString()}</p>
               </div>
             </div>
@@ -270,9 +270,9 @@ export function SourceAnalytics({ period = "30d" }: SourceAnalyticsProps) {
           <Tabs value={activeTab} onValueChange={setActiveTab}>
             <div className="overflow-x-auto -mx-3 px-3 sm:mx-0 sm:px-0">
               <TabsList className="mb-3 sm:mb-4 w-max sm:w-auto">
-                <TabsTrigger value="overview" className="text-xs sm:text-sm px-2 sm:px-3">Overview</TabsTrigger>
-                <TabsTrigger value="revenue" className="text-xs sm:text-sm px-2 sm:px-3">Revenue</TabsTrigger>
-                <TabsTrigger value="conversion" className="text-xs sm:text-sm px-2 sm:px-3">Convers.</TabsTrigger>
+                <TabsTrigger value="overview" className="text-xs sm:text-sm px-2 sm:px-3">Resumen</TabsTrigger>
+                <TabsTrigger value="revenue" className="text-xs sm:text-sm px-2 sm:px-3">Ingresos</TabsTrigger>
+                <TabsTrigger value="conversion" className="text-xs sm:text-sm px-2 sm:px-3">Conv.</TabsTrigger>
                 <TabsTrigger value="ltv" className="text-xs sm:text-sm px-2 sm:px-3">LTV</TabsTrigger>
               </TabsList>
             </div>
@@ -295,7 +295,7 @@ export function SourceAnalytics({ period = "30d" }: SourceAnalyticsProps) {
                         />
                         <ChartTooltip content={<ChartTooltipContent />} />
                         <Bar dataKey="leads" name="Leads" fill="#71717a" stackId="stack" />
-                        <Bar dataKey="trials" name="Trials" fill="#52525b" stackId="stack" />
+                        <Bar dataKey="trials" name="Pruebas" fill="#52525b" stackId="stack" />
                         <Bar dataKey="customers" name="Clientes" fill="#AA0601" stackId="stack" />
                       </BarChart>
                     </ResponsiveContainer>
@@ -346,9 +346,9 @@ export function SourceAnalytics({ period = "30d" }: SourceAnalyticsProps) {
                       <YAxis stroke="#6b7280" fontSize={10} width={40} />
                       <ChartTooltip 
                         content={<ChartTooltipContent />}
-                        formatter={(value) => [`$${Number(value).toLocaleString()}`, 'Revenue 30d']}
+                        formatter={(value) => [`$${Number(value).toLocaleString()}`, 'Ingresos 30d']}
                       />
-                      <Bar dataKey="revenue" name="Revenue 30d" fill="#AA0601" radius={[4, 4, 0, 0]} />
+                      <Bar dataKey="revenue" name="Ingresos 30d" fill="#AA0601" radius={[4, 4, 0, 0]} />
                     </BarChart>
                   </ResponsiveContainer>
                 </ChartContainer>
@@ -371,8 +371,8 @@ export function SourceAnalytics({ period = "30d" }: SourceAnalyticsProps) {
                       />
                       <YAxis stroke="#6b7280" fontSize={10} unit="%" width={35} />
                       <ChartTooltip content={<ChartTooltipContent />} />
-                      <Bar dataKey="conversionRate" name="Lead→Paid" fill="#AA0601" radius={[4, 4, 0, 0]} />
-                      <Bar dataKey="trialToPaid" name="Trial→Paid" fill="#71717a" radius={[4, 4, 0, 0]} />
+                      <Bar dataKey="conversionRate" name="Lead→Pago" fill="#AA0601" radius={[4, 4, 0, 0]} />
+                      <Bar dataKey="trialToPaid" name="Prueba→Pago" fill="#71717a" radius={[4, 4, 0, 0]} />
                     </BarChart>
                   </ResponsiveContainer>
                 </ChartContainer>
@@ -413,11 +413,11 @@ export function SourceAnalytics({ period = "30d" }: SourceAnalyticsProps) {
                 <tr className="border-b border-border">
                   <th className="text-left py-2 sm:py-3 px-1 sm:px-2 text-muted-foreground font-medium sticky left-0 bg-card">Fuente</th>
                   <th className="text-right py-2 sm:py-3 px-1 sm:px-2 text-muted-foreground font-medium">Leads</th>
-                  <th className="text-right py-2 sm:py-3 px-1 sm:px-2 text-muted-foreground font-medium">Trial</th>
-                  <th className="text-right py-2 sm:py-3 px-1 sm:px-2 text-muted-foreground font-medium">Client</th>
+                  <th className="text-right py-2 sm:py-3 px-1 sm:px-2 text-muted-foreground font-medium">Pruebas</th>
+                  <th className="text-right py-2 sm:py-3 px-1 sm:px-2 text-muted-foreground font-medium">Clientes</th>
                   <th className="text-right py-2 sm:py-3 px-1 sm:px-2 text-muted-foreground font-medium hidden sm:table-cell">Conv%</th>
                   <th className="text-right py-2 sm:py-3 px-1 sm:px-2 text-muted-foreground font-medium hidden sm:table-cell">LTV</th>
-                  <th className="text-right py-2 sm:py-3 px-1 sm:px-2 text-muted-foreground font-medium">Rev</th>
+                  <th className="text-right py-2 sm:py-3 px-1 sm:px-2 text-muted-foreground font-medium">Ingresos</th>
                 </tr>
               </thead>
               <tbody>
