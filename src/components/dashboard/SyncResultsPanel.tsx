@@ -486,7 +486,7 @@ export function SyncResultsPanel() {
                 </div>
                 <Badge variant="outline" className="bg-zinc-800/50 text-muted-foreground border-zinc-700 text-xs mt-2">
                   <Clock className="h-3 w-3 mr-1" />
-                  Monitoreando cada 5s
+                  Monitoreo en vivo
                 </Badge>
               </div>
             </div>
