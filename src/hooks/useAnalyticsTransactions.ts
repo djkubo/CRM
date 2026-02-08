@@ -5,6 +5,7 @@ import { supabase } from "@/integrations/supabase/client";
 export type AnalyticsTransaction = {
   id: string;
   amount: number;
+  currency: string | null;
   status: string;
   stripe_created_at: string | null;
   customer_email: string | null;
@@ -43,7 +44,7 @@ export function useAnalyticsTransactions(options: Options = {}) {
 
       let q = supabase
         .from("transactions")
-        .select("id, amount, status, stripe_created_at, customer_email, source", { count: "exact" })
+        .select("id, amount, currency, status, stripe_created_at, customer_email, source", { count: "exact" })
         .order("stripe_created_at", { ascending: false, nullsFirst: false })
         .range(from, to);
 
@@ -88,11 +89,25 @@ export function useAnalyticsTransactions(options: Options = {}) {
   const transactions = pages.flatMap((p) => p.rows);
   const totalCount = pages.length ? pages[pages.length - 1]?.totalCount ?? null : null;
   const loadedCount = transactions.length;
+  const hasNextPage = query.hasNextPage ?? false;
+
+  // react-query reports hasNextPage=false once getNextPageParam returns undefined,
+  // including when we stop early due to maxPages safety. Expose this so UIs can
+  // show "partial" state (and still proceed with best-effort metrics).
+  const reachedMaxPages = (() => {
+    if (pages.length < maxPages) return false;
+    const last = pages[pages.length - 1];
+    if (!last) return false;
+    if (typeof last.totalCount === "number") return loadedCount < last.totalCount;
+    return last.rows.length === pageSize;
+  })();
 
   return {
     transactions,
     totalCount,
     loadedCount,
+    hasNextPage,
+    reachedMaxPages,
     isLoading: query.isLoading,
     isFetching: query.isFetching,
     isFetchingNextPage: query.isFetchingNextPage,
@@ -100,4 +115,3 @@ export function useAnalyticsTransactions(options: Options = {}) {
     refetch: query.refetch,
   };
 }
-

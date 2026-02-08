@@ -72,11 +72,22 @@ export function useAnalyticsActiveSubscriptions(options: Options = {}) {
   const subscriptions = pages.flatMap((p) => p.rows);
   const totalCount = pages.length ? pages[pages.length - 1]?.totalCount ?? null : null;
   const loadedCount = subscriptions.length;
+  const hasNextPage = query.hasNextPage ?? false;
+
+  const reachedMaxPages = (() => {
+    if (pages.length < maxPages) return false;
+    const last = pages[pages.length - 1];
+    if (!last) return false;
+    if (typeof last.totalCount === "number") return loadedCount < last.totalCount;
+    return last.rows.length === pageSize;
+  })();
 
   return {
     subscriptions,
     totalCount,
     loadedCount,
+    hasNextPage,
+    reachedMaxPages,
     isLoading: query.isLoading,
     isFetching: query.isFetching,
     isFetchingNextPage: query.isFetchingNextPage,

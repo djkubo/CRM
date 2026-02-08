@@ -33,7 +33,9 @@ export function AnalyticsPanel() {
   const [period, setPeriod] = useState<AnalyticsPeriod>("30d");
   
   const monthsToShow = getMonthsForPeriod(period);
-  const monthsLookback = Math.max(monthsToShow, 2); // LTV churn needs ~60 days
+  // A bit of extra history improves churn/reactivation accuracy in charts.
+  const monthsLookback = Math.max(monthsToShow + 2, 3); // >= ~90 days
+  const periodLabel = period === "all" ? "12m" : period;
 
   // Load the minimum transaction history required for the selected modules (server-paged, auto-draining).
   const txStartIso = useMemo(() => {
@@ -56,10 +58,10 @@ export function AnalyticsPanel() {
   const activeSubscriptions = subsQuery.subscriptions;
 
   const periodButtons: { value: AnalyticsPeriod; label: string }[] = [
-    { value: "7d", label: "7 días" },
-    { value: "30d", label: "30 días" },
-    { value: "90d", label: "90 días" },
-    { value: "all", label: "Todo" },
+    { value: "7d", label: "7d" },
+    { value: "30d", label: "30d" },
+    { value: "90d", label: "90d" },
+    { value: "all", label: "12m" },
   ];
 
   if (isLoading) {
@@ -104,7 +106,7 @@ export function AnalyticsPanel() {
       {/* Loading/progress hint (auto-draining pages in the background) */}
       {(txQuery.isFetching || subsQuery.isFetching) && (
         <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border/50 bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
-          <span className="font-medium text-foreground">Cargando métricas…</span>
+          <span className="font-medium text-foreground">Cargando métricas ({periodLabel})…</span>
           <span>
             Transacciones: {txQuery.loadedCount.toLocaleString()}
             {typeof txQuery.totalCount === "number" ? ` / ${txQuery.totalCount.toLocaleString()}` : ""}
@@ -115,13 +117,13 @@ export function AnalyticsPanel() {
           </span>
         </div>
       )}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 sm:p-4 rounded-xl border border-zinc-800 bg-card">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 sm:p-4 rounded-xl border border-border bg-card">
         <div className="flex items-center gap-2 sm:gap-3">
           <div className="flex h-8 w-8 sm:h-10 sm:w-10 items-center justify-center rounded-lg bg-primary/10 shrink-0">
             <Sparkles className="h-4 w-4 sm:h-5 sm:w-5 text-primary" />
           </div>
           <div className="min-w-0">
-            <h3 className="font-semibold text-white text-sm sm:text-base">El Oráculo - Análisis IA</h3>
+            <h3 className="font-semibold text-foreground text-sm sm:text-base">El Oráculo - Análisis IA</h3>
             <p className="text-xs sm:text-sm text-muted-foreground truncate">
               Genera un análisis estratégico
             </p>
