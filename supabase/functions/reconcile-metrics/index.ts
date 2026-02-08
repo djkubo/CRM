@@ -13,6 +13,16 @@ interface ReconcileRequest {
   end_date: string;
 }
 
+function toUtcDayStartIso(date: string): string {
+  // Treat the input as a calendar date and anchor it to UTC midnight.
+  return `${date}T00:00:00.000Z`;
+}
+
+function toUtcDayEndIso(date: string): string {
+  // Inclusive end-of-day (UTC).
+  return `${date}T23:59:59.999Z`;
+}
+
 Deno.serve(async (req) => {
   // Handle CORS preflight
   if (req.method === 'OPTIONS') {
@@ -55,6 +65,9 @@ Deno.serve(async (req) => {
     const body: ReconcileRequest = await req.json();
     const { source, start_date, end_date } = body;
 
+    const startIso = toUtcDayStartIso(start_date);
+    const endIso = toUtcDayEndIso(end_date);
+
     console.log(`[reconcile] Starting for ${source} from ${start_date} to ${end_date}`);
 
     let externalTotal = 0;
@@ -62,8 +75,8 @@ Deno.serve(async (req) => {
 
     if (source === 'stripe' && stripeKey) {
       // Fetch from Stripe API
-      const startTimestamp = Math.floor(new Date(start_date).getTime() / 1000);
-      const endTimestamp = Math.floor(new Date(end_date + 'T23:59:59').getTime() / 1000);
+      const startTimestamp = Math.floor(new Date(startIso).getTime() / 1000);
+      const endTimestamp = Math.floor(new Date(endIso).getTime() / 1000);
 
       let hasMore = true;
       let startingAfter: string | undefined;
@@ -98,7 +111,11 @@ Deno.serve(async (req) => {
         for (const charge of data.data) {
           if (charge.status === 'succeeded' && !charge.refunded) {
             externalTotal += charge.amount;
-            externalTransactions.push(charge.id);
+            // Prefer payment_intent id so we can compare apples-to-apples with internal records.
+            const matchId = typeof charge.payment_intent === 'string' && charge.payment_intent
+              ? charge.payment_intent
+              : charge.id;
+            externalTransactions.push(matchId);
           }
         }
 
@@ -135,8 +152,9 @@ Deno.serve(async (req) => {
       const accessToken = tokenData.access_token;
       
       // PayPal API requires ISO 8601 format with timezone
-      const startDateISO = `${start_date}T00:00:00-0600`;
-      const endDateISO = `${end_date}T23:59:59-0600`;
+      // Use UTC to avoid hard-coding a locale offset.
+      const startDateISO = startIso;
+      const endDateISO = endIso;
       
       let page = 1;
       let hasMorePages = true;
@@ -194,18 +212,25 @@ Deno.serve(async (req) => {
     // Get internal totals
     const { data: internalData, error: internalError } = await supabase
       .from('transactions')
-      .select('amount, stripe_payment_intent_id')
+      .select('amount, stripe_payment_intent_id, payment_key')
       .eq('source', source)
-      .eq('status', 'succeeded')
-      .gte('stripe_created_at', start_date)
-      .lte('stripe_created_at', end_date + 'T23:59:59');
+      // The app stores Stripe successes as `paid` (and older data may still use `succeeded`).
+      // PayPal also uses `paid`.
+      .in('status', ['paid', 'succeeded'])
+      .gte('stripe_created_at', startIso)
+      .lte('stripe_created_at', endIso);
 
     if (internalError) {
       throw internalError;
     }
 
     const internalTotal = internalData?.reduce((sum, t) => sum + t.amount, 0) || 0;
-    const internalIds = new Set(internalData?.map(t => t.stripe_payment_intent_id) || []);
+    // ID matching differs by provider:
+    // - Stripe: internal uses PaymentIntent id.
+    // - PayPal: internal uses payment_key=transaction_id (stripe_payment_intent_id is prefixed).
+    const internalIds = new Set(
+      internalData?.map(t => (source === 'paypal' ? t.payment_key : t.stripe_payment_intent_id)) || []
+    );
     const externalIds = new Set(externalTransactions);
 
     // Find discrepancies
