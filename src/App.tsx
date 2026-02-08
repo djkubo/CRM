@@ -255,6 +255,7 @@ function AppRoutes() {
 
         {/* Legacy routes (v1) - keep working for bookmarks */}
         <Route path="analytics" element={<Navigate to={APP_PATHS.analytics} replace />} />
+        <Route path="settings" element={<Navigate to={APP_PATHS.settings} replace />} />
         <Route path="movements" element={<Navigate to={APP_PATHS.movements} replace />} />
         <Route path="messages" element={<Navigate to={APP_PATHS.inbox} replace />} />
         <Route path="clients" element={<Navigate to={APP_PATHS.clients} replace />} />
