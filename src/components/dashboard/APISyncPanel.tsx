@@ -8,7 +8,6 @@ import { toast } from 'sonner';
 import { Progress } from '@/components/ui/progress';
 import { invokeWithAdminKey } from '@/lib/adminApi';
 import { supabase } from '@/integrations/supabase/client';
-import { SyncResultsPanel } from './SyncResultsPanel';
 import type { 
   SyncResult,
   FetchStripeBody,
@@ -1402,8 +1401,7 @@ export function APISyncPanel() {
           💡 Backend procesa todo el historial automáticamente con paginación interna
         </p>
         
-        {/* Realtime Sync Results Panel */}
-        <SyncResultsPanel />
+        {/* Note: SyncResultsPanel is rendered at the /ops/sync page level to avoid duplication. */}
       </CardContent>
     </Card>
   );
