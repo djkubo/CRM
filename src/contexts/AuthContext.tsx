@@ -1,7 +1,7 @@
 import { createContext, useContext, useState, useEffect, useCallback, useRef, ReactNode } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { User, Session } from "@supabase/supabase-js";
-import { getValidSession, refreshSessionLocked } from "@/lib/authSession";
+import { clearSessionBackup, getValidSession, refreshSessionLocked, restoreSessionFromBackupLocked, saveSessionBackup } from "@/lib/authSession";
 
 interface AuthContextValue {
   user: User | null;
@@ -24,6 +24,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   
   // Use ref to track session for interval/visibility without triggering re-renders
   const sessionRef = useRef<Session | null>(null);
+  const intentionalSignOutRef = useRef(false);
 
   // Session refresh function to prevent expiration
   const refreshSession = useCallback(async () => {
@@ -77,18 +78,43 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (!mounted) return;
         
         console.log('[Auth] State change event:', event);
+
+        if (newSession) {
+          // Keep a backup copy of tokens so we can restore if Supabase storage gets cleared.
+          saveSessionBackup(newSession);
+        }
         
         // CRITICAL: Only accept SIGNED_OUT if it's an explicit user action
         // This prevents edge function errors or network issues from logging out the user
         if (event === 'SIGNED_OUT') {
+          if (intentionalSignOutRef.current) {
+            intentionalSignOutRef.current = false;
+            clearSessionBackup();
+            sessionRef.current = null;
+            setSession(null);
+            setUser(null);
+            return;
+          }
+
           // Check if we still have a valid session in storage
           supabase.auth.getSession().then(async ({ data: { session: storedSession } }) => {
             if (storedSession) {
               // We still have a session! Don't log out - this was likely a spurious event
               console.log('[Auth] SIGNED_OUT event ignored - session still valid in storage');
+              saveSessionBackup(storedSession);
               sessionRef.current = storedSession;
               setSession(storedSession);
               setUser(storedSession.user);
+              return;
+            }
+
+            // If Supabase storage is empty but we have a backup, restore it.
+            const restored = await restoreSessionFromBackupLocked({ minIntervalMs: 15_000 });
+            if (restored) {
+              console.log('[Auth] Session restored from backup after SIGNED_OUT event');
+              sessionRef.current = restored;
+              setSession(restored);
+              setUser(restored.user);
               return;
             }
 
@@ -123,9 +149,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
               return;
             }
 
-            sessionRef.current = null;
-            setSession(null);
-            setUser(null);
+            // If we can't refresh right now (offline/timeouts), DON'T force logout.
+            // Keep the last-known session in memory and try again on focus/interval.
+            console.log('[Auth] Could not recover session right now; keeping last-known session');
+            setSession(current);
+            setUser(current.user);
           });
           return; // Don't process SIGNED_OUT normally
         }
@@ -204,6 +232,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const signOut = async () => {
+    intentionalSignOutRef.current = true;
+    clearSessionBackup();
     const { error } = await supabase.auth.signOut();
     return { error };
   };

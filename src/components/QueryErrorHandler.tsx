@@ -103,24 +103,36 @@ export function QueryErrorHandler() {
                   }
 
                   toast.error('Sesión expirada', {
-                    description: 'Vuelve a iniciar sesión para continuar.',
+                    description: navigator.onLine
+                      ? 'No se pudo revalidar automáticamente. Reintenta o inicia sesión.'
+                      : 'Parece que no hay conexión. En cuanto vuelvas a estar online, reintentamos.',
                     duration: 10_000,
                     action: {
-                      label: 'Iniciar sesión',
+                      label: 'Reintentar',
                       onClick: () => {
-                        window.location.href = '/login';
+                        refreshSessionLocked()
+                          .then((s) => {
+                            if (s) queryClient.invalidateQueries();
+                          })
+                          .catch(() => {});
                       },
                     },
                   });
                 })
                 .catch(() => {
                   toast.error('Sesión expirada', {
-                    description: 'Vuelve a iniciar sesión para continuar.',
+                    description: navigator.onLine
+                      ? 'No se pudo revalidar automáticamente. Reintenta o inicia sesión.'
+                      : 'Parece que no hay conexión. En cuanto vuelvas a estar online, reintentamos.',
                     duration: 10_000,
                     action: {
-                      label: 'Iniciar sesión',
+                      label: 'Reintentar',
                       onClick: () => {
-                        window.location.href = '/login';
+                        refreshSessionLocked()
+                          .then((s) => {
+                            if (s) queryClient.invalidateQueries();
+                          })
+                          .catch(() => {});
                       },
                     },
                   });
@@ -130,12 +142,18 @@ export function QueryErrorHandler() {
             }
 
             toast.error('Sesión expirada', {
-              description: 'Vuelve a iniciar sesión para continuar.',
+              description: navigator.onLine
+                ? 'Reintenta. Si sigue fallando, inicia sesión de nuevo.'
+                : 'Sin conexión. Reintenta cuando vuelvas a estar online.',
               duration: 10_000,
               action: {
-                label: 'Iniciar sesión',
+                label: 'Reintentar',
                 onClick: () => {
-                  window.location.href = '/login';
+                  refreshSessionLocked()
+                    .then((s) => {
+                      if (s) queryClient.invalidateQueries();
+                    })
+                    .catch(() => {});
                 },
               },
             });
