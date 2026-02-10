@@ -2,6 +2,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { retryWithBackoff, RETRY_CONFIGS, RETRYABLE_ERRORS } from '../_shared/retry.ts';
 import { createLogger, LogLevel } from '../_shared/logger.ts';
 import { RATE_LIMITERS } from '../_shared/rate-limiter.ts';
+import { readSyncState, writeSyncStateError, writeSyncStateSuccess } from '../_shared/sync_state.ts';
 
 // Declare EdgeRuntime global for Supabase Edge Functions
 declare const EdgeRuntime: { waitUntil: (promise: Promise<unknown>) => void } | undefined;
@@ -642,6 +643,7 @@ Deno.serve(async (req) => {
     let resumeFromCursor: unknown = null;
     let maxPages: number | null = null;
     let noChain = false;
+    let force = false;
 
     try {
       const body = await req.json();
@@ -675,6 +677,7 @@ Deno.serve(async (req) => {
       maxPages = typeof bodyMaxPages === 'number' ? bodyMaxPages : Number.isFinite(Number(bodyMaxPages)) ? Number(bodyMaxPages) : null;
       const chainMode = body.chainMode ?? body.chain_mode ?? null;
       noChain = body.noChain === true || body.no_chain === true || chainMode === 'none' || chainMode === 'client';
+      force = body.force === true;
     } catch {
       // Empty body is OK
     }
@@ -890,6 +893,28 @@ Deno.serve(async (req) => {
       }
     }
 
+    // ============ AUTO-SKIP (avoid redundant re-sync clicks) ============
+    if (!force && !syncRunId) {
+      const syncState = await readSyncState(supabase, 'ghl');
+      const freshUntilMs = syncState?.fresh_until ? Date.parse(syncState.fresh_until) : null;
+      const RECENT_SKIP_MS = 2 * 60 * 60 * 1000; // 2h
+      if (freshUntilMs !== null && Number.isFinite(freshUntilMs) && (Date.now() - freshUntilMs) < RECENT_SKIP_MS) {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            success: true,
+            status: 'skipped',
+            skipped: true,
+            reason: 'already_fresh',
+            message: 'GoHighLevel: ya se sincronizó recientemente (usa Forzar si necesitas re-sincronizar).',
+            syncState,
+            version: FUNCTION_VERSION
+          }),
+          { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+    }
+
     // Create sync run if needed
     if (!syncRunId) {
       const { data: syncRun } = await supabase
@@ -1004,6 +1029,7 @@ Deno.serve(async (req) => {
 	          .eq('id', syncRunId)
 	          // Don't override user cancellation
 	          .in('status', ['running', 'continuing']);
+          await writeSyncStateError({ supabase, source: 'ghl', errorMessage: pageResult.error });
 	        return new Response(JSON.stringify({ ok: false, error: pageResult.error }), { status: 500, headers: corsHeaders });
 	      }
 
@@ -1022,6 +1048,7 @@ Deno.serve(async (req) => {
 	            .eq('id', syncRunId)
 	            // Don't override user cancellation
 	            .in('status', ['running', 'continuing']);
+            await writeSyncStateError({ supabase, source: 'ghl', errorMessage: msg });
 	          return new Response(JSON.stringify({ ok: false, error: msg }), { status: 500, headers: corsHeaders });
 	        }
 	        if (pageResult.nextStartAfterId === currentStartAfterId && pageResult.nextStartAfter === currentStartAfter) {
@@ -1033,6 +1060,7 @@ Deno.serve(async (req) => {
 	            .eq('id', syncRunId)
 	            // Don't override user cancellation
 	            .in('status', ['running', 'continuing']);
+            await writeSyncStateError({ supabase, source: 'ghl', errorMessage: msg });
 	          return new Response(JSON.stringify({ ok: false, error: msg }), { status: 500, headers: corsHeaders });
 	        }
 
@@ -1102,6 +1130,21 @@ Deno.serve(async (req) => {
           );
         }
 
+        await writeSyncStateSuccess({
+          supabase,
+          source: 'ghl',
+          runId: syncRunId,
+          status: 'completed',
+          meta: {
+            stageOnly: true,
+            functionVersion: FUNCTION_VERSION,
+            totalFetched: runningFetched,
+            totalInserted: runningInserted,
+          },
+          rangeStart: null,
+          rangeEnd: new Date().toISOString(),
+        });
+
         return new Response(
           JSON.stringify({
             ok: true,
@@ -1130,6 +1173,7 @@ Deno.serve(async (req) => {
           .from('sync_runs')
           .update({ status: 'failed', completed_at: new Date().toISOString(), error_message: msg })
           .eq('id', syncRunId);
+        await writeSyncStateError({ supabase, source: 'ghl', errorMessage: msg });
         return new Response(JSON.stringify({ ok: false, error: msg }), { status: 500, headers: corsHeaders });
       }
 
@@ -1383,6 +1427,7 @@ Deno.serve(async (req) => {
           .from('sync_runs')
           .update({ status: 'failed', completed_at: new Date().toISOString(), error_message: pageResult.error })
           .eq('id', syncRunId);
+        await writeSyncStateError({ supabase, source: 'ghl', errorMessage: pageResult.error });
         return new Response(JSON.stringify({ ok: false, error: pageResult.error }), { status: 500, headers: corsHeaders });
       }
 
@@ -1402,6 +1447,7 @@ Deno.serve(async (req) => {
             .from('sync_runs')
             .update({ status: 'failed', completed_at: new Date().toISOString(), error_message: msg })
             .eq('id', syncRunId);
+          await writeSyncStateError({ supabase, source: 'ghl', errorMessage: msg });
           return new Response(JSON.stringify({ ok: false, error: msg }), { status: 500, headers: corsHeaders });
         }
         if (pageResult.nextStartAfterId === currentStartAfterId && pageResult.nextStartAfter === currentStartAfter) {
@@ -1411,6 +1457,7 @@ Deno.serve(async (req) => {
             .from('sync_runs')
             .update({ status: 'failed', completed_at: new Date().toISOString(), error_message: msg })
             .eq('id', syncRunId);
+          await writeSyncStateError({ supabase, source: 'ghl', errorMessage: msg });
           return new Response(JSON.stringify({ ok: false, error: msg }), { status: 500, headers: corsHeaders });
         }
 
@@ -1484,6 +1531,24 @@ Deno.serve(async (req) => {
 	        );
 	      }
 
+      await writeSyncStateSuccess({
+        supabase,
+        source: 'ghl',
+        runId: syncRunId,
+        status: 'completed',
+        meta: {
+          stageOnly: false,
+          functionVersion: FUNCTION_VERSION,
+          totalFetched: runningFetched,
+          totalInserted: runningInserted,
+          totalUpdated: runningUpdated,
+          totalSkipped: runningSkipped,
+          totalConflicts: runningConflicts,
+        },
+        rangeStart: null,
+        rangeEnd: new Date().toISOString(),
+      });
+
       return new Response(
         JSON.stringify({ ok: true, status: 'completed', syncRunId, processed: runningFetched, hasMore: false, version: FUNCTION_VERSION }),
         { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
@@ -1502,6 +1567,7 @@ Deno.serve(async (req) => {
 	        .eq('id', syncRunId)
 	        // Don't override user cancellation
 	        .in('status', ['running', 'continuing']);
+        await writeSyncStateError({ supabase, source: 'ghl', errorMessage: msg });
 	      return new Response(JSON.stringify({ ok: false, error: msg }), { status: 500, headers: corsHeaders });
 	    }
 
@@ -1699,6 +1765,7 @@ Deno.serve(async (req) => {
 	          // Don't override user cancellation
 	          .in('status', ['running', 'continuing']);
 	        logger.info('Marked sync run as failed', { id: syncRunId });
+          await writeSyncStateError({ supabase, source: 'ghl', errorMessage });
       } catch (updateErr) {
         const updateErrObj = updateErr instanceof Error ? updateErr : new Error(String(updateErr));
         logger.error('Failed to update sync_runs status', updateErrObj);

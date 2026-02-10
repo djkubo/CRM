@@ -1,13 +1,19 @@
-import { useState, useRef, useCallback } from 'react';
-import { RefreshCw, Loader2, CheckCircle, AlertCircle, Zap, History, Clock, MessageCircle, Users, FileText } from 'lucide-react';
+import { useState, useRef, useCallback, useEffect } from 'react';
+import { RefreshCw, Loader2, CheckCircle, AlertCircle, Zap, History, Clock, MessageCircle, Users, FileText, MoreVertical } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { Progress } from '@/components/ui/progress';
 import { invokeWithAdminKey } from '@/lib/adminApi';
 import { supabase } from '@/integrations/supabase/client';
+import { useSyncState, indexSyncState } from '@/hooks/useSyncState';
+import { getFreshnessBucket } from '@/lib/syncStateUtils';
+import { consumePendingOpsSyncCommand, onOpsSyncCommand, type OpsSyncCommand } from '@/lib/opsSyncCommand';
+import { formatDistanceToNow, format } from 'date-fns';
+import { es } from 'date-fns/locale';
 import type { 
   SyncResult,
   FetchStripeBody,
@@ -37,6 +43,8 @@ const formatError = (error: unknown): string => {
 
 export function APISyncPanel() {
   const queryClient = useQueryClient();
+  const { data: syncStateRows } = useSyncState();
+  const syncState = indexSyncState(syncStateRows);
   const [stripeSyncing, setStripeSyncing] = useState(false);
   const [paypalSyncing, setPaypalSyncing] = useState(false);
   const [manychatSyncing, setManychatSyncing] = useState(false);
@@ -214,6 +222,7 @@ export function APISyncPanel() {
           });
           queryClient.invalidateQueries({ queryKey: ['transactions'] });
           queryClient.invalidateQueries({ queryKey: ['clients'] });
+          queryClient.invalidateQueries({ queryKey: ['sync_state'] });
           setStripeSyncing(false);
         } else if (data.status === 'paused') {
           setStripeProgress(null);
@@ -276,6 +285,7 @@ export function APISyncPanel() {
           });
           queryClient.invalidateQueries({ queryKey: ['invoices'] });
           queryClient.invalidateQueries({ queryKey: ['pending-invoices'] });
+          queryClient.invalidateQueries({ queryKey: ['sync_state'] });
           setInvoicesSyncing(false);
         } else if (data.status === 'paused') {
           setInvoicesProgress(null);
@@ -352,6 +362,7 @@ export function APISyncPanel() {
           });
           queryClient.invalidateQueries({ queryKey: ['transactions'] });
           queryClient.invalidateQueries({ queryKey: ['clients'] });
+          queryClient.invalidateQueries({ queryKey: ['sync_state'] });
           setPaypalSyncing(false);
         } else if (data.status === 'failed' || data.status === 'cancelled') {
           setPaypalProgress(null);
@@ -536,6 +547,7 @@ export function APISyncPanel() {
             id: 'ghl-sync'
           });
           queryClient.invalidateQueries({ queryKey: ['clients'] });
+          queryClient.invalidateQueries({ queryKey: ['sync_state'] });
           setGhlSyncing(false);
         } else if (data.status === 'paused') {
           setGhlProgress(null);
@@ -586,6 +598,7 @@ export function APISyncPanel() {
             id: 'manychat-sync'
           });
           queryClient.invalidateQueries({ queryKey: ['clients'] });
+          queryClient.invalidateQueries({ queryKey: ['sync_state'] });
           setManychatSyncing(false);
         } else {
           setManychatProgress(null);
@@ -600,7 +613,10 @@ export function APISyncPanel() {
     poll();
   }, [queryClient]);
 
-  const syncStripe = async (mode: 'last24h' | 'last31d' | 'all6months' | 'allHistory') => {
+  const syncStripe = async (
+    mode: 'last24h' | 'last7d' | 'last31d' | 'all6months' | 'allHistory',
+    opts?: { force?: boolean }
+  ) => {
     setStripeSyncing(true);
     setStripeResult(null);
     
@@ -612,6 +628,9 @@ export function APISyncPanel() {
       switch (mode) {
         case 'last24h':
           startDate = new Date(endDate.getTime() - 24 * 60 * 60 * 1000);
+          break;
+        case 'last7d':
+          startDate = new Date(endDate.getTime() - 7 * 24 * 60 * 60 * 1000);
           break;
         case 'last31d':
           startDate = new Date(endDate.getTime() - 31 * 24 * 60 * 60 * 1000);
@@ -631,7 +650,8 @@ export function APISyncPanel() {
         { 
           fetchAll: true,
           startDate: startDate.toISOString(),
-          endDate: endDate.toISOString()
+          endDate: endDate.toISOString(),
+          ...(opts?.force ? { force: true } : {})
         }
       );
 
@@ -655,7 +675,16 @@ export function APISyncPanel() {
         return;
       } else if (data.success) {
         setStripeResult(data);
-        const modeLabel = mode === 'last24h' ? '24h' : mode === 'last31d' ? '31 días' : mode === 'all6months' ? '6 meses' : 'historial completo';
+        const modeLabel =
+          mode === 'last24h'
+            ? '24h'
+            : mode === 'last7d'
+              ? '7 días'
+              : mode === 'last31d'
+                ? '31 días'
+                : mode === 'all6months'
+                  ? '6 meses'
+                  : 'historial completo';
         toast.success(`Stripe (${modeLabel}): ${(data.synced_transactions ?? 0).toLocaleString()} transacciones sincronizadas`);
       }
       
@@ -677,7 +706,10 @@ export function APISyncPanel() {
     }
   };
 
-  const syncPayPal = async (mode: 'last24h' | 'last31d' | 'all6months' | 'allHistory') => {
+  const syncPayPal = async (
+    mode: 'last24h' | 'last7d' | 'last31d' | 'all6months' | 'allHistory',
+    opts?: { force?: boolean }
+  ) => {
     setPaypalSyncing(true);
     setPaypalResult(null);
     setPaypalProgress(null);
@@ -690,6 +722,9 @@ export function APISyncPanel() {
       switch (mode) {
         case 'last24h':
           startDate = new Date(endDate.getTime() - 24 * 60 * 60 * 1000);
+          break;
+        case 'last7d':
+          startDate = new Date(endDate.getTime() - 7 * 24 * 60 * 60 * 1000);
           break;
         case 'last31d':
           startDate = new Date(endDate.getTime() - 31 * 24 * 60 * 60 * 1000);
@@ -710,7 +745,8 @@ export function APISyncPanel() {
         { 
           fetchAll: true,
           startDate: startDate.toISOString(),
-          endDate: endDate.toISOString()
+          endDate: endDate.toISOString(),
+          ...(opts?.force ? { force: true } : {})
         }
       );
 
@@ -733,7 +769,16 @@ export function APISyncPanel() {
         return;
       } else if (data.success) {
         setPaypalResult(data);
-        const modeLabel = mode === 'last24h' ? '24h' : mode === 'last31d' ? '31 días' : mode === 'all6months' ? '6 meses' : 'historial completo';
+        const modeLabel =
+          mode === 'last24h'
+            ? '24h'
+            : mode === 'last7d'
+              ? '7 días'
+              : mode === 'last31d'
+                ? '31 días'
+                : mode === 'all6months'
+                  ? '6 meses'
+                  : 'historial completo';
         toast.success(`PayPal (${modeLabel}): ${(data.synced_transactions ?? 0).toLocaleString()} transacciones sincronizadas`);
       }
       
@@ -775,7 +820,7 @@ export function APISyncPanel() {
   }
 
   // REFACTORED: Fire & Forget + Polling (no more frontend loops)
-  const syncManyChat = async () => {
+  const syncManyChat = async (opts?: { force?: boolean }) => {
     setManychatSyncing(true);
     setManychatResult(null);
     setManychatProgress({ current: 0, total: 0 });
@@ -784,7 +829,7 @@ export function APISyncPanel() {
       // Single "Fire and Forget" call - backend handles all pagination in background
       const data = await invokeWithAdminKey<StandardSyncResponse>(
         'sync-manychat', 
-        { dry_run: false }
+        { dry_run: false, ...(opts?.force ? { force: true } : {}) }
       );
 
       if (!data?.ok) {
@@ -795,6 +840,22 @@ export function APISyncPanel() {
           return;
         }
         throw new Error(data?.error || 'Sync failed');
+      }
+
+      if ((data as any)?.status === 'skipped' || (data as any)?.skipped === true) {
+        const msg = (data as any)?.message || 'ManyChat: Ya está al día';
+        toast.info(msg, { id: 'manychat-sync' });
+        setManychatResult({ success: true, message: msg });
+        setManychatProgress(null);
+        setManychatSyncing(false);
+        queryClient.invalidateQueries({ queryKey: ['sync_state'] });
+        return;
+      }
+
+      if ((data as any)?.status === 'already_running' && data.syncRunId) {
+        toast.info('ManyChat: ya hay un sync en progreso. Monitoreando...', { id: 'manychat-sync' });
+        pollManyChatProgress(data.syncRunId);
+        return;
       }
 
       // If it returned a syncRunId, start polling for progress
@@ -836,7 +897,7 @@ export function APISyncPanel() {
   }
 
   // REFACTORED: Fire & Forget + Polling (no more frontend loops)
-  const syncGHL = async () => {
+  const syncGHL = async (opts?: { force?: boolean }) => {
     setGhlSyncing(true);
     setGhlResult(null);
     setGhlProgress({ current: 0, total: 0 });
@@ -847,7 +908,8 @@ export function APISyncPanel() {
         'sync-ghl', 
         { 
           dry_run: false, 
-          stageOnly: true // Stage only - no immediate merge
+          stageOnly: true, // Stage only - no immediate merge
+          ...(opts?.force ? { force: true } : {})
         }
       );
 
@@ -867,6 +929,16 @@ export function APISyncPanel() {
           return;
         }
         throw new Error(data?.error || 'Sync failed');
+      }
+
+      if ((data as any)?.status === 'skipped' || (data as any)?.skipped === true) {
+        const msg = (data as any)?.message || 'GoHighLevel: Ya está al día';
+        toast.info(msg, { id: 'ghl-sync' });
+        setGhlResult({ success: true, message: msg });
+        setGhlProgress(null);
+        setGhlSyncing(false);
+        queryClient.invalidateQueries({ queryKey: ['sync_state'] });
+        return;
       }
 
       // If it returned a syncRunId and has more pages, start polling
@@ -898,17 +970,24 @@ export function APISyncPanel() {
     }
   };
 
-  const syncInvoices = async (mode: 'recent' | 'full') => {
+  const syncInvoices = async (
+    mode: 'last24h' | 'last7d' | 'last31d' | 'full',
+    opts?: { force?: boolean }
+  ) => {
     setInvoicesSyncing(true);
     setInvoicesResult(null);
     setInvoicesProgress(null);
     
     try {
-      // Calculate date range for 'recent' mode (last 90 days)
       const endDate = new Date();
-      const startDate = mode === 'recent' 
-        ? new Date(endDate.getTime() - 90 * 24 * 60 * 60 * 1000) 
-        : undefined;
+      const startDate =
+        mode === 'last24h'
+          ? new Date(endDate.getTime() - 24 * 60 * 60 * 1000)
+          : mode === 'last7d'
+            ? new Date(endDate.getTime() - 7 * 24 * 60 * 60 * 1000)
+            : mode === 'last31d'
+              ? new Date(endDate.getTime() - 31 * 24 * 60 * 60 * 1000)
+              : undefined;
 
       // ONE single call with fetchAll=true - backend handles all pagination in background
       const data = await invokeWithAdminKey<{
@@ -918,24 +997,42 @@ export function APISyncPanel() {
         hasMore: boolean;
         nextCursor: string | null;
         syncRunId: string | null;
-        status?: 'running' | 'completed' | 'error';
+        status?: 'running' | 'resuming' | 'continuing' | 'completed' | 'error' | 'skipped';
+        skipped?: boolean;
+        reason?: string;
+        message?: string;
         stats?: { draft: number; open: number; paid: number; void: number; uncollectible: number };
         error?: string;
       }>('fetch-invoices', {
-        mode: mode === 'recent' ? 'range' : 'all', // Use 'range' for recent, 'all' for full
+        mode: mode === 'full' ? 'full' : 'range',
         fetchAll: true, // CRÍTICO: Process all pages in background
-        ...(mode === 'recent' && {
+        ...(mode !== 'full' && {
           startDate: startDate?.toISOString(),
           endDate: endDate.toISOString()
-        })
+        }),
+        ...(opts?.force ? { force: true } : {})
       });
 
       if (!data.success && data.error) {
         throw new Error(data.error);
       }
 
+      if (data.status === 'skipped' || data.skipped === true) {
+        const msg = data.message || data.reason || 'Facturas: Ya está al día';
+        setInvoicesResult({
+          success: true,
+          message: msg,
+          synced_transactions: 0,
+        });
+        toast.info(msg, { id: 'invoices-sync' });
+        setInvoicesSyncing(false);
+        setInvoicesProgress(null);
+        queryClient.invalidateQueries({ queryKey: ['sync_state'] });
+        return;
+      }
+
       // Check if it's running in background
-      if (data.status === 'running' && data.syncRunId) {
+      if ((data.status === 'running' || data.status === 'resuming' || data.status === 'continuing') && data.syncRunId) {
         toast.info('Facturas: Sincronización iniciada en background...', { id: 'invoices-sync' });
         pollInvoiceProgress(data.syncRunId);
         // Don't setInvoicesSyncing(false) - polling will handle it
@@ -969,6 +1066,51 @@ export function APISyncPanel() {
     await syncPayPal('allHistory');
   };
 
+  // Allow other tabs (Overview) to trigger a sync without prop drilling.
+  const dispatchSyncCommandRef = useRef<(cmd: OpsSyncCommand) => void>(() => {});
+  dispatchSyncCommandRef.current = (cmd: OpsSyncCommand) => {
+    const force = cmd.force === true;
+    switch (cmd.source) {
+      case 'stripe': {
+        const mode =
+          cmd.mode === 'last24h' || cmd.mode === 'last7d' || cmd.mode === 'last31d' || cmd.mode === 'all6months' || cmd.mode === 'allHistory'
+            ? cmd.mode
+            : 'last7d';
+        void syncStripe(mode, { force });
+        return;
+      }
+      case 'paypal': {
+        const mode =
+          cmd.mode === 'last24h' || cmd.mode === 'last7d' || cmd.mode === 'last31d' || cmd.mode === 'all6months' || cmd.mode === 'allHistory'
+            ? cmd.mode
+            : 'last7d';
+        void syncPayPal(mode, { force });
+        return;
+      }
+      case 'stripe_invoices': {
+        const mode = cmd.mode === 'full' || cmd.mode === 'last24h' || cmd.mode === 'last7d' || cmd.mode === 'last31d'
+          ? (cmd.mode as 'full' | 'last24h' | 'last7d' | 'last31d')
+          : 'last7d';
+        void syncInvoices(mode, { force });
+        return;
+      }
+      case 'ghl':
+        void syncGHL({ force });
+        return;
+      case 'manychat':
+        void syncManyChat({ force });
+        return;
+    }
+  };
+
+  useEffect(() => {
+    const handle = (cmd: OpsSyncCommand) => dispatchSyncCommandRef.current(cmd);
+    const pending = consumePendingOpsSyncCommand();
+    if (pending) handle(pending);
+    return onOpsSyncCommand(handle);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const getResultBadge = (r: SyncResult | null) => {
     if (!r) return null;
     return r.success ? (
@@ -989,6 +1131,63 @@ export function APISyncPanel() {
     ghlSyncing ||
     manychatSyncing ||
     Boolean(stripeProgress || paypalProgress || invoicesProgress || ghlProgress || manychatProgress);
+
+  const now = new Date();
+  const nowMs = now.getTime();
+  const BACKFILL_TOLERANCE_MS = 24 * 60 * 60 * 1000; // 24h
+  const BIG_BACKFILL_COOLDOWN_MS = 30 * 24 * 60 * 60 * 1000; // 30d
+
+  const formatTs = (iso: string | null | undefined) =>
+    iso
+      ? `${format(new Date(iso), "PPp", { locale: es })} (${formatDistanceToNow(new Date(iso), { addSuffix: true, locale: es })})`
+      : "—";
+
+  const bucketBadgeClass = (bucket: ReturnType<typeof getFreshnessBucket>) =>
+    bucket === "green"
+      ? "bg-emerald-500/15 text-emerald-400 border border-emerald-500/25"
+      : bucket === "yellow"
+        ? "bg-amber-500/15 text-amber-400 border border-amber-500/25"
+        : "bg-red-500/15 text-red-400 border border-red-500/25";
+
+  const isBackfillCoveredRecently = (row: any | undefined, requestedStartMs: number): boolean => {
+    const backfillStartMs = row?.backfill_start ? Date.parse(row.backfill_start) : null;
+    const lastSuccessMs = row?.last_success_at ? Date.parse(row.last_success_at) : null;
+    if (backfillStartMs === null || !Number.isFinite(backfillStartMs)) return false;
+    if (lastSuccessMs === null || !Number.isFinite(lastSuccessMs)) return false;
+    const covers = backfillStartMs <= (requestedStartMs + BACKFILL_TOLERANCE_MS);
+    const recent = (nowMs - lastSuccessMs) < BIG_BACKFILL_COOLDOWN_MS;
+    return covers && recent;
+  };
+
+  const stripeStateRow = syncState.stripe;
+  const paypalStateRow = syncState.paypal;
+  const invoicesStateRow = syncState.stripe_invoices;
+  const ghlStateRow = syncState.ghl;
+  const manychatStateRow = syncState.manychat;
+
+  const stripeBucket = getFreshnessBucket(stripeStateRow?.fresh_until ?? null, now);
+  const paypalBucket = getFreshnessBucket(paypalStateRow?.fresh_until ?? null, now);
+  const invoicesBucket = getFreshnessBucket(invoicesStateRow?.fresh_until ?? null, now);
+  const ghlBucket = getFreshnessBucket(ghlStateRow?.fresh_until ?? null, now);
+  const manychatBucket = getFreshnessBucket(manychatStateRow?.fresh_until ?? null, now);
+
+  const stripeStart6mMs = nowMs - 6 * 30 * 24 * 60 * 60 * 1000;
+  const stripeStartAllMs = nowMs - 3 * 365 * 24 * 60 * 60 * 1000;
+  const disableStripe6m = isBackfillCoveredRecently(stripeStateRow, stripeStart6mMs);
+  const disableStripeAll = isBackfillCoveredRecently(stripeStateRow, stripeStartAllMs);
+
+  const paypalStart6mMs = nowMs - 6 * 30 * 24 * 60 * 60 * 1000;
+  const paypalStartAllMs = nowMs - 2.5 * 365 * 24 * 60 * 60 * 1000;
+  const disablePayPal6m = isBackfillCoveredRecently(paypalStateRow, paypalStart6mMs);
+  const disablePayPalAll = isBackfillCoveredRecently(paypalStateRow, paypalStartAllMs);
+
+  const invoicesLastMode = (invoicesStateRow?.last_success_meta as any)?.mode;
+  const invoicesLastSuccessMs = invoicesStateRow?.last_success_at ? Date.parse(invoicesStateRow.last_success_at) : null;
+  const disableInvoicesFull =
+    (invoicesLastMode === "full" || invoicesLastMode === "all") &&
+    invoicesLastSuccessMs !== null &&
+    Number.isFinite(invoicesLastSuccessMs) &&
+    (nowMs - invoicesLastSuccessMs) < BIG_BACKFILL_COOLDOWN_MS;
 
   // Each sync can run independently - no global blocking
   return (
@@ -1159,24 +1358,77 @@ export function APISyncPanel() {
                         : 'Sincroniza desde Stripe API'}
                     </CardDescription>
                   </div>
-                  {getResultBadge(stripeResult)}
+                  <div className="flex items-center gap-2">
+                    <Badge className={bucketBadgeClass(stripeBucket)}>
+                      {stripeBucket === "green" ? "Al día" : stripeBucket === "yellow" ? "Atención" : "Urgente"}
+                    </Badge>
+                    {getResultBadge(stripeResult)}
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="ghost" size="icon" className="h-8 w-8" disabled={stripeSyncing}>
+                          <MoreVertical className="h-4 w-4" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem disabled={stripeSyncing} onSelect={() => syncStripe("last24h", { force: true })}>
+                          Forzar 24h
+                        </DropdownMenuItem>
+                        <DropdownMenuItem disabled={stripeSyncing} onSelect={() => syncStripe("last7d", { force: true })}>
+                          Forzar 7d
+                        </DropdownMenuItem>
+                        <DropdownMenuItem disabled={stripeSyncing} onSelect={() => syncStripe("last31d", { force: true })}>
+                          Forzar 31d
+                        </DropdownMenuItem>
+                        <DropdownMenuItem disabled={stripeSyncing} onSelect={() => syncStripe("all6months", { force: true })}>
+                          Forzar 6m
+                        </DropdownMenuItem>
+                        <DropdownMenuItem disabled={stripeSyncing} onSelect={() => syncStripe("allHistory", { force: true })}>
+                          Forzar Todo
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </div>
                 </div>
               </CardHeader>
               <CardContent className="p-4 pt-0 space-y-2">
+                <div className="rounded-lg border border-border/50 bg-muted/20 p-2 text-xs text-muted-foreground">
+                  <p>
+                    Al día hasta: <span className="text-foreground/80">{formatTs(stripeStateRow?.fresh_until)}</span>
+                  </p>
+                  <p className="mt-0.5">
+                    Backfill desde: <span className="text-foreground/80">{formatTs(stripeStateRow?.backfill_start)}</span>
+                  </p>
+                </div>
+
                 <div className="grid grid-cols-2 gap-2">
                   <Button variant="outline" size="sm" onClick={() => syncStripe('last24h')} disabled={stripeSyncing} className="gap-2">
                     {stripeSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Clock className="h-4 w-4" />}
                     24h
                   </Button>
+                  <Button variant="outline" size="sm" onClick={() => syncStripe('last7d')} disabled={stripeSyncing} className="gap-2">
+                    {stripeSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                    7d
+                  </Button>
                   <Button variant="outline" size="sm" onClick={() => syncStripe('last31d')} disabled={stripeSyncing} className="gap-2">
                     {stripeSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
                     31d
                   </Button>
-                  <Button variant="outline" size="sm" onClick={() => syncStripe('all6months')} disabled={stripeSyncing} className="gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => syncStripe('all6months')}
+                    disabled={stripeSyncing || disableStripe6m}
+                    className="gap-2"
+                  >
                     {stripeSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
                     6m
                   </Button>
-                  <Button size="sm" onClick={() => syncStripe('allHistory')} disabled={stripeSyncing} className="gap-2">
+                  <Button
+                    size="sm"
+                    onClick={() => syncStripe('allHistory')}
+                    disabled={stripeSyncing || disableStripeAll}
+                    className="gap-2 col-span-2"
+                  >
                     {stripeSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <History className="h-4 w-4" />}
                     Todo
                   </Button>
@@ -1195,24 +1447,77 @@ export function APISyncPanel() {
                         : 'Sincroniza desde PayPal API'}
                     </CardDescription>
                   </div>
-                  {getResultBadge(paypalResult)}
+                  <div className="flex items-center gap-2">
+                    <Badge className={bucketBadgeClass(paypalBucket)}>
+                      {paypalBucket === "green" ? "Al día" : paypalBucket === "yellow" ? "Atención" : "Urgente"}
+                    </Badge>
+                    {getResultBadge(paypalResult)}
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="ghost" size="icon" className="h-8 w-8" disabled={paypalSyncing}>
+                          <MoreVertical className="h-4 w-4" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem disabled={paypalSyncing} onSelect={() => syncPayPal("last24h", { force: true })}>
+                          Forzar 24h
+                        </DropdownMenuItem>
+                        <DropdownMenuItem disabled={paypalSyncing} onSelect={() => syncPayPal("last7d", { force: true })}>
+                          Forzar 7d
+                        </DropdownMenuItem>
+                        <DropdownMenuItem disabled={paypalSyncing} onSelect={() => syncPayPal("last31d", { force: true })}>
+                          Forzar 31d
+                        </DropdownMenuItem>
+                        <DropdownMenuItem disabled={paypalSyncing} onSelect={() => syncPayPal("all6months", { force: true })}>
+                          Forzar 6m
+                        </DropdownMenuItem>
+                        <DropdownMenuItem disabled={paypalSyncing} onSelect={() => syncPayPal("allHistory", { force: true })}>
+                          Forzar Todo
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </div>
                 </div>
               </CardHeader>
               <CardContent className="p-4 pt-0 space-y-2">
+                <div className="rounded-lg border border-border/50 bg-muted/20 p-2 text-xs text-muted-foreground">
+                  <p>
+                    Al día hasta: <span className="text-foreground/80">{formatTs(paypalStateRow?.fresh_until)}</span>
+                  </p>
+                  <p className="mt-0.5">
+                    Backfill desde: <span className="text-foreground/80">{formatTs(paypalStateRow?.backfill_start)}</span>
+                  </p>
+                </div>
+
                 <div className="grid grid-cols-2 gap-2">
                   <Button variant="outline" size="sm" onClick={() => syncPayPal('last24h')} disabled={paypalSyncing} className="gap-2">
                     {paypalSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Clock className="h-4 w-4" />}
                     24h
                   </Button>
+                  <Button variant="outline" size="sm" onClick={() => syncPayPal('last7d')} disabled={paypalSyncing} className="gap-2">
+                    {paypalSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                    7d
+                  </Button>
                   <Button variant="outline" size="sm" onClick={() => syncPayPal('last31d')} disabled={paypalSyncing} className="gap-2">
                     {paypalSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
                     31d
                   </Button>
-                  <Button variant="outline" size="sm" onClick={() => syncPayPal('all6months')} disabled={paypalSyncing} className="gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => syncPayPal('all6months')}
+                    disabled={paypalSyncing || disablePayPal6m}
+                    className="gap-2"
+                  >
                     {paypalSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
                     6m
                   </Button>
-                  <Button size="sm" onClick={() => syncPayPal('allHistory')} disabled={paypalSyncing} className="gap-2">
+                  <Button
+                    size="sm"
+                    onClick={() => syncPayPal('allHistory')}
+                    disabled={paypalSyncing || disablePayPalAll}
+                    className="gap-2 col-span-2"
+                  >
                     {paypalSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <History className="h-4 w-4" />}
                     Todo
                   </Button>
@@ -1229,16 +1534,64 @@ export function APISyncPanel() {
                       {invoicesResult?.success ? invoicesResult.message : 'Draft/open/paid/void (incluye raw_data y link a cliente)'}
                     </CardDescription>
                   </div>
-                  {getResultBadge(invoicesResult)}
+                  <div className="flex items-center gap-2">
+                    <Badge className={bucketBadgeClass(invoicesBucket)}>
+                      {invoicesBucket === "green" ? "Al día" : invoicesBucket === "yellow" ? "Atención" : "Urgente"}
+                    </Badge>
+                    {getResultBadge(invoicesResult)}
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="ghost" size="icon" className="h-8 w-8" disabled={invoicesSyncing}>
+                          <MoreVertical className="h-4 w-4" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem disabled={invoicesSyncing} onSelect={() => syncInvoices("last24h", { force: true })}>
+                          Forzar 24h
+                        </DropdownMenuItem>
+                        <DropdownMenuItem disabled={invoicesSyncing} onSelect={() => syncInvoices("last7d", { force: true })}>
+                          Forzar 7d
+                        </DropdownMenuItem>
+                        <DropdownMenuItem disabled={invoicesSyncing} onSelect={() => syncInvoices("last31d", { force: true })}>
+                          Forzar 31d
+                        </DropdownMenuItem>
+                        <DropdownMenuItem disabled={invoicesSyncing} onSelect={() => syncInvoices("full", { force: true })}>
+                          Forzar Todo
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </div>
                 </div>
               </CardHeader>
               <CardContent className="p-4 pt-0 space-y-2">
+                <div className="rounded-lg border border-border/50 bg-muted/20 p-2 text-xs text-muted-foreground">
+                  <p>
+                    Al día hasta: <span className="text-foreground/80">{formatTs(invoicesStateRow?.fresh_until)}</span>
+                  </p>
+                  <p className="mt-0.5">
+                    Backfill desde: <span className="text-foreground/80">{formatTs(invoicesStateRow?.backfill_start)}</span>
+                  </p>
+                </div>
+
                 <div className="grid grid-cols-2 gap-2">
-                  <Button variant="outline" size="sm" onClick={() => syncInvoices('recent')} disabled={invoicesSyncing} className="gap-2">
+                  <Button variant="outline" size="sm" onClick={() => syncInvoices('last24h')} disabled={invoicesSyncing} className="gap-2">
                     {invoicesSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Clock className="h-4 w-4" />}
-                    90d
+                    24h
                   </Button>
-                  <Button size="sm" onClick={() => syncInvoices('full')} disabled={invoicesSyncing} className="gap-2">
+                  <Button variant="outline" size="sm" onClick={() => syncInvoices('last7d')} disabled={invoicesSyncing} className="gap-2">
+                    {invoicesSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                    7d
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => syncInvoices('last31d')} disabled={invoicesSyncing} className="gap-2">
+                    {invoicesSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                    31d
+                  </Button>
+                  <Button
+                    size="sm"
+                    onClick={() => syncInvoices('full')}
+                    disabled={invoicesSyncing || disableInvoicesFull}
+                    className="gap-2 col-span-2"
+                  >
                     {invoicesSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileText className="h-4 w-4" />}
                     Todo
                   </Button>
@@ -1261,14 +1614,22 @@ export function APISyncPanel() {
                 <div className="rounded-lg border border-border/50 bg-muted/20 p-3">
                   <div className="flex items-center justify-between">
                     <p className="text-sm font-medium">ManyChat</p>
-                    {getResultBadge(manychatResult)}
+                    <div className="flex items-center gap-2">
+                      <Badge className={bucketBadgeClass(manychatBucket)}>
+                        {manychatBucket === "green" ? "Al día" : manychatBucket === "yellow" ? "Atención" : "Urgente"}
+                      </Badge>
+                      {getResultBadge(manychatResult)}
+                    </div>
                   </div>
                   <p className="mt-1 text-xs text-muted-foreground">
                     {manychatResult?.success
                       ? `${(manychatResult.total_inserted ?? 0).toLocaleString()} nuevos, ${(manychatResult.total_updated ?? 0).toLocaleString()} actualizados`
                       : 'Importa suscriptores'}
                   </p>
-                  <Button onClick={syncManyChat} disabled={manychatSyncing} size="sm" className="mt-2 w-full gap-2">
+                  <p className="mt-1 text-[11px] text-muted-foreground">
+                    Al día hasta: <span className="text-foreground/80">{formatTs(manychatStateRow?.fresh_until)}</span>
+                  </p>
+                  <Button onClick={() => syncManyChat()} disabled={manychatSyncing} size="sm" className="mt-2 w-full gap-2">
                     {manychatSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <MessageCircle className="h-4 w-4" />}
                     Importar
                   </Button>
@@ -1277,7 +1638,12 @@ export function APISyncPanel() {
                 <div className="rounded-lg border border-border/50 bg-muted/20 p-3">
                   <div className="flex items-center justify-between">
                     <p className="text-sm font-medium">GoHighLevel</p>
-                    {getResultBadge(ghlResult)}
+                    <div className="flex items-center gap-2">
+                      <Badge className={bucketBadgeClass(ghlBucket)}>
+                        {ghlBucket === "green" ? "Al día" : ghlBucket === "yellow" ? "Atención" : "Urgente"}
+                      </Badge>
+                      {getResultBadge(ghlResult)}
+                    </div>
                   </div>
                   <p className="mt-1 text-xs text-muted-foreground">
                     {ghlResult?.success
@@ -1286,7 +1652,10 @@ export function APISyncPanel() {
                         ? ghlResult.error
                         : '150k+ soportado'}
                   </p>
-                  <Button onClick={syncGHL} disabled={ghlSyncing} size="sm" className="mt-2 w-full gap-2">
+                  <p className="mt-1 text-[11px] text-muted-foreground">
+                    Al día hasta: <span className="text-foreground/80">{formatTs(ghlStateRow?.fresh_until)}</span>
+                  </p>
+                  <Button onClick={() => syncGHL()} disabled={ghlSyncing} size="sm" className="mt-2 w-full gap-2">
                     {ghlSyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Users className="h-4 w-4" />}
                     Importar
                   </Button>

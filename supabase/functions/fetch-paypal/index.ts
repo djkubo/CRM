@@ -1,6 +1,7 @@
 import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 import { retryWithBackoff, RETRY_CONFIGS, RETRYABLE_ERRORS } from '../_shared/retry.ts';
 import { createLogger, LogLevel } from '../_shared/logger.ts';
+import { readSyncState, writeSyncStateError, writeSyncStateSuccess } from '../_shared/sync_state.ts';
 
 // Declare EdgeRuntime global for Supabase Edge Functions (used for true fire-and-forget continuation)
 declare const EdgeRuntime: { waitUntil: (promise: Promise<unknown>) => void } | undefined;
@@ -918,6 +919,52 @@ Deno.serve(async (req) => {
       MAX_MAX_PAGES
     );
 
+    // ============ AUTO-SKIP (avoid redundant heavy syncs) ============
+    const force = body.force === true;
+    if (!force && !syncRunId && !isContinuation && !resumeSync && !forceCancel && !cleanupStale) {
+      const syncState = await readSyncState(supabase, 'paypal');
+      const backfillStartMs = syncState?.backfill_start ? Date.parse(syncState.backfill_start) : null;
+      const freshUntilMs = syncState?.fresh_until ? Date.parse(syncState.fresh_until) : null;
+      const reqStartMs = originalStartDate ? Date.parse(originalStartDate) : null;
+      const reqEndMs = originalEndDate ? Date.parse(originalEndDate) : null;
+
+      if (reqEndMs && Number.isFinite(reqEndMs)) {
+        const FRESH_TOLERANCE_MS = 2 * 60 * 60 * 1000; // 2h
+        const BACKFILL_TOLERANCE_MS = 24 * 60 * 60 * 1000; // 24h
+        const days = reqStartMs ? (reqEndMs - reqStartMs) / (24 * 60 * 60 * 1000) : 0;
+
+        const coversRange =
+          freshUntilMs !== null &&
+          Number.isFinite(freshUntilMs) &&
+          freshUntilMs >= (reqEndMs - FRESH_TOLERANCE_MS) &&
+          (reqStartMs === null || (backfillStartMs !== null && Number.isFinite(backfillStartMs) && backfillStartMs <= (reqStartMs + BACKFILL_TOLERANCE_MS)));
+
+        const recentlySucceeded =
+          syncState?.last_success_at ? (Date.now() - Date.parse(syncState.last_success_at)) < (30 * 24 * 60 * 60 * 1000) : false;
+
+        const bigBackfill = reqStartMs !== null && days >= 120;
+
+        if (coversRange && (!bigBackfill || recentlySucceeded)) {
+          const reason = bigBackfill ? 'backfill_recently_completed' : 'already_fresh';
+          return new Response(
+            JSON.stringify({
+              success: true,
+              status: 'skipped',
+              skipped: true,
+              reason,
+              message: bigBackfill
+                ? 'PayPal: Backfill grande ya está cubierto recientemente. Recomendado: 24h o 7d (usa Forzar si necesitas re-sincronizar).'
+                : 'PayPal: Ya está al día para este rango (usa Forzar si necesitas re-sincronizar).',
+              syncState,
+              requested: { fetchAll, startDate: originalStartDate, endDate: originalEndDate },
+              version: FUNCTION_VERSION
+            }),
+            { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
+      }
+    }
+
     // Create sync run if needed
     if (!syncRunId) {
       const { data: syncRun, error: syncError } = await supabase
@@ -1025,6 +1072,8 @@ Deno.serve(async (req) => {
 	        // Don't override user cancellation
 	        .in('status', ['running', 'continuing']);
 
+        await writeSyncStateError({ supabase, source: 'paypal', errorMessage: errorMsg });
+
 	      return new Response(
 	        JSON.stringify({ success: false, status: 'failed', syncRunId, error: errorMsg }),
 	        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
@@ -1044,6 +1093,8 @@ Deno.serve(async (req) => {
 	        .eq('id', syncRunId)
 	        // Don't override user cancellation
 	        .in('status', ['running', 'continuing']);
+
+        await writeSyncStateError({ supabase, source: 'paypal', errorMessage: errorMsg });
 
 	      return new Response(
 	        JSON.stringify({ success: false, status: 'failed', syncRunId, error: errorMsg }),
@@ -1369,6 +1420,25 @@ Deno.serve(async (req) => {
 	    } else {
 	      logger.info(`PAYPAL SYNC COMPLETE: ${finalFetched} total transactions across ${totalChunks} chunks in ${Date.now() - startTime}ms`);
 	    }
+
+    // Update persistent sync_state (coverage + freshness).
+    await writeSyncStateSuccess({
+      supabase,
+      source: 'paypal',
+      runId: syncRunId!,
+      status: 'completed',
+      meta: {
+        fetchAll,
+        originalStartDate,
+        originalEndDate,
+        totalChunks,
+        finalFetched,
+        functionVersion: FUNCTION_VERSION,
+        maxPagesPerInvocation,
+      },
+      rangeStart: originalStartDate,
+      rangeEnd: originalEndDate,
+    });
 
     return new Response(
       JSON.stringify({

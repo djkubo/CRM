@@ -1,10 +1,12 @@
 import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
+import { readSyncState, writeSyncStateError, writeSyncStateSuccess } from "../_shared/sync_state.ts";
 
 // Declare EdgeRuntime for background processing
 declare const EdgeRuntime: { waitUntil: (promise: Promise<unknown>) => void };
 
 // Auto-continuation: max pages per execution to avoid 60s timeout
 const PAGES_PER_BATCH = 25;
+const FUNCTION_VERSION = "2026-02-10-1";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -652,6 +654,26 @@ async function runFullInvoiceSync(
     } else {
       console.log(`✅ [Background] Sync FULLY complete: ${totalFetched} fetched, ${totalInserted} inserted`);
       console.log(`📊 [Background] Final stats: draft=${stats.draft} open=${stats.open} paid=${stats.paid} void=${stats.void} uncollectible=${stats.uncollectible}`);
+
+      const rangeEndIso = endDate ?? new Date().toISOString();
+      await writeSyncStateSuccess({
+        supabase,
+        source: "stripe_invoices",
+        runId: syncRunId,
+        status: "completed",
+        meta: {
+          mode,
+          startDate,
+          endDate: rangeEndIso,
+          fetchAll: true,
+          functionVersion: FUNCTION_VERSION,
+          totalFetched,
+          totalInserted,
+          stats,
+        },
+        rangeStart: startDate,
+        rangeEnd: rangeEndIso,
+      });
     }
     
   } catch (error) {
@@ -668,6 +690,8 @@ async function runFullInvoiceSync(
     .eq('id', syncRunId)
     // Don't override user cancellation
     .in('status', ['running', 'continuing']);
+
+    await writeSyncStateError({ supabase, source: "stripe_invoices", errorMessage });
   }
 }
 
@@ -696,6 +720,7 @@ Deno.serve(async (req) => {
     let syncRunId: string | null = null;
     let fetchAll = false;
     let isContinuation = false;
+    let force = false;
 
     try {
       const body: FetchInvoicesRequest = await req.json();
@@ -704,6 +729,7 @@ Deno.serve(async (req) => {
       syncRunId = body.syncRunId || null;
       fetchAll = body.fetchAll === true || !!syncRunId;
       isContinuation = body._continuation === true;
+      force = (body as any).force === true;
       
       if (body.startDate) startDate = body.startDate;
       if (body.endDate) endDate = body.endDate;
@@ -712,6 +738,52 @@ Deno.serve(async (req) => {
     }
 
     console.log(`🧾 fetch-invoices: mode=${mode}, fetchAll=${fetchAll}, continuation=${isContinuation}, cursor=${cursor ? cursor.slice(0, 10) + '...' : 'null'}, syncRunId=${syncRunId || 'new'}`);
+
+    // ============= SECURITY (continuations must be service_role) =============
+    if (isContinuation) {
+      const authHeader = req.headers.get("Authorization") || "";
+      const token = authHeader.startsWith("Bearer ") ? authHeader.replace("Bearer ", "") : "";
+      if (!token || token !== supabaseServiceKey) {
+        return new Response(
+          JSON.stringify({ success: false, status: "error", error: "Forbidden", message: "Service role required for continuations" }),
+          { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+        );
+      }
+    } else {
+      // Admin-only for normal requests
+      const authCheck = await verifyAdmin(req);
+      if (!authCheck.valid) {
+        console.error("❌ Auth failed:", authCheck.error);
+        return new Response(
+          JSON.stringify({ success: false, error: "Forbidden", message: authCheck.error }),
+          { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+      console.log("✅ Admin verified");
+    }
+
+    // ============= KILL SWITCH: Check if sync is paused =============
+    const { data: syncPausedConfig } = await supabase
+      .from("system_settings")
+      .select("value")
+      .eq("key", "sync_paused")
+      .single();
+
+    const syncPaused = syncPausedConfig?.value === "true";
+
+    if (syncPaused) {
+      console.log("⏸️ Sync paused globally, skipping execution");
+      return new Response(
+        JSON.stringify({
+          success: true,
+          status: "skipped",
+          skipped: true,
+          reason: "Feature disabled: sync_paused is ON",
+        }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+    // ================================================================
 
     // ============= HANDLE CONTINUATION REQUESTS =============
     if (isContinuation && syncRunId && cursor) {
@@ -734,19 +806,6 @@ Deno.serve(async (req) => {
         }),
         { headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
-    }
-
-    // ============= SECURITY: Verify JWT + admin role (skip for internal continuations) =============
-    if (!isContinuation) {
-      const authCheck = await verifyAdmin(req);
-      if (!authCheck.valid) {
-        console.error("❌ Auth failed:", authCheck.error);
-        return new Response(
-          JSON.stringify({ success: false, error: "Forbidden", message: authCheck.error }),
-          { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      }
-      console.log("✅ Admin verified");
     }
 
     // ============= RESUME LOGIC: Check if we should resume an existing sync =============
@@ -850,6 +909,73 @@ Deno.serve(async (req) => {
         { headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
+
+    // ============= AUTO-SKIP (avoid redundant backfills) =============
+    if (!force) {
+      const syncState = await readSyncState(supabase, "stripe_invoices");
+      const backfillStartMs = syncState?.backfill_start ? Date.parse(syncState.backfill_start) : null;
+      const freshUntilMs = syncState?.fresh_until ? Date.parse(syncState.fresh_until) : null;
+
+      const now = Date.now();
+      const FRESH_TOLERANCE_MS = 2 * 60 * 60 * 1000; // 2h
+      const BACKFILL_TOLERANCE_MS = 24 * 60 * 60 * 1000; // 24h
+
+      // Normalize the requested range for skip checks.
+      const reqStartIso =
+        startDate
+          ? startDate
+          : mode === "recent"
+            ? new Date(now - 90 * 24 * 60 * 60 * 1000).toISOString()
+            : null;
+      const reqEndIso = endDate ? endDate : new Date(now).toISOString();
+      const reqStartMs = reqStartIso ? Date.parse(reqStartIso) : null;
+      const reqEndMs = Date.parse(reqEndIso);
+
+      const coversRange =
+        freshUntilMs !== null &&
+        Number.isFinite(freshUntilMs) &&
+        freshUntilMs >= (reqEndMs - FRESH_TOLERANCE_MS) &&
+        (reqStartMs === null || (backfillStartMs !== null && Number.isFinite(backfillStartMs) && backfillStartMs <= (reqStartMs + BACKFILL_TOLERANCE_MS)));
+
+      const recentlySucceeded =
+        syncState?.last_success_at ? (now - Date.parse(syncState.last_success_at)) < (30 * 24 * 60 * 60 * 1000) : false;
+
+      const lastMode = (syncState?.last_success_meta as any)?.mode;
+      const isFullMode = mode === "full" || mode === "all" || lastMode === "full" || lastMode === "all";
+
+      // Only treat it as a true range-coverage check when we have a finite start bound.
+      if (reqStartMs !== null && coversRange) {
+        return new Response(
+          JSON.stringify({
+            success: true,
+            status: "skipped",
+            skipped: true,
+            reason: "already_fresh",
+            message: "Facturas: Ya está al día para este rango (usa Forzar si necesitas re-sincronizar).",
+            syncState,
+            requested: { mode, startDate: reqStartIso, endDate: reqEndIso },
+            version: FUNCTION_VERSION
+          }),
+          { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      if (isFullMode && recentlySucceeded) {
+        return new Response(
+          JSON.stringify({
+            success: true,
+            status: "skipped",
+            skipped: true,
+            reason: "backfill_recently_completed",
+            message: "Facturas: Backfill completo ya se corrió recientemente. Recomendado: 24h/7d/31d (usa Forzar si necesitas re-sincronizar).",
+            syncState,
+            requested: { mode, startDate: reqStartIso, endDate: reqEndIso },
+            version: FUNCTION_VERSION
+          }),
+          { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+    }
     
     // Cancel any old stuck syncs before creating new one
     await supabase
@@ -871,7 +997,7 @@ Deno.serve(async (req) => {
         status: 'running',
         total_fetched: 0,
         total_inserted: 0,
-        metadata: { mode, startDate, endDate, fetchAll }
+        metadata: { mode, startDate, endDate, fetchAll, functionVersion: FUNCTION_VERSION }
       })
       .select('id')
       .single();
@@ -973,6 +1099,27 @@ Deno.serve(async (req) => {
         .eq('id', syncRunId);
       
       console.log(`📈 Sync progress: ${currentFetched}+${invoices.length}=${newTotalFetched} fetched, ${currentInserted}+${upsertedCount}=${newTotalInserted} inserted`);
+
+      if (!hasMore) {
+        const rangeStartIso = startDate;
+        const rangeEndIso = endDate ?? new Date().toISOString();
+        await writeSyncStateSuccess({
+          supabase,
+          source: "stripe_invoices",
+          runId: syncRunId,
+          status: "completed",
+          meta: {
+            mode,
+            startDate: rangeStartIso,
+            endDate: rangeEndIso,
+            fetchAll: false,
+            functionVersion: FUNCTION_VERSION,
+            inserted: newTotalInserted,
+          },
+          rangeStart: rangeStartIso,
+          rangeEnd: rangeEndIso,
+        });
+      }
     }
 
     console.log(`✅ Page complete | Stats: draft=${stats.draft} open=${stats.open} paid=${stats.paid} void=${stats.void}`);
@@ -994,6 +1141,17 @@ Deno.serve(async (req) => {
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : "Unknown error";
     console.error("❌ Fatal error:", errorMessage);
+
+    // Best-effort: write error state (ignore missing table).
+    // We only know the source here.
+    try {
+      const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+      const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+      const supabase = createClient(supabaseUrl, supabaseServiceKey);
+      await writeSyncStateError({ supabase, source: "stripe_invoices", errorMessage });
+    } catch {
+      // ignore
+    }
     
     return new Response(
       JSON.stringify({ success: false, error: errorMessage }),

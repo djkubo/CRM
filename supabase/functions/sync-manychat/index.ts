@@ -1,4 +1,5 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { readSyncState, writeSyncStateError, writeSyncStateSuccess } from "../_shared/sync_state.ts";
 
 // Declare EdgeRuntime global for Supabase Edge Functions
 declare const EdgeRuntime: { waitUntil: (promise: Promise<unknown>) => void } | undefined;
@@ -99,6 +100,7 @@ const logger = {
 const RATE_LIMIT_REQUESTS = 10;
 const RATE_LIMIT_PAUSE_MS = 1100;
 const TAGS_PER_CHUNK = 5; // Process 5 tags per function invocation
+const FUNCTION_VERSION = '2026-02-10-1';
 
 // Fetch all tags from ManyChat page
 async function fetchAllTags(apiKey: string): Promise<ManyChatTag[]> {
@@ -323,6 +325,8 @@ Deno.serve(async (req) => {
         error: 'MANYCHAT_API_KEY not configured'
       }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
+
+    const force = body.force === true;
     
     // Parse continuation parameters
     const syncRunId = body.syncRunId || null;
@@ -333,6 +337,42 @@ Deno.serve(async (req) => {
     
     let currentSyncRunId = syncRunId;
     let tags = allTags;
+
+    // Prevent duplicate runs (and DB load) if someone clicks twice.
+    if (!currentSyncRunId && !force) {
+      const { data: active } = await supabase
+        .from('sync_runs')
+        .select('id')
+        .eq('source', 'manychat')
+        .in('status', ['running', 'continuing'])
+        .order('started_at', { ascending: false })
+        .limit(1);
+
+      if (active && active.length > 0) {
+        return new Response(JSON.stringify({
+          ok: true,
+          success: true,
+          status: 'already_running',
+          syncRunId: active[0].id,
+          message: 'Ya hay un sync de ManyChat en progreso. Monitoreando...'
+        }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+      }
+
+      const syncState = await readSyncState(supabase, 'manychat');
+      const freshUntilMs = syncState?.fresh_until ? Date.parse(syncState.fresh_until) : null;
+      const RECENT_SKIP_MS = 2 * 60 * 60 * 1000; // 2h
+      if (freshUntilMs !== null && Number.isFinite(freshUntilMs) && (Date.now() - freshUntilMs) < RECENT_SKIP_MS) {
+        return new Response(JSON.stringify({
+          ok: true,
+          success: true,
+          status: 'skipped',
+          skipped: true,
+          reason: 'already_fresh',
+          message: 'ManyChat: ya se sincronizó recientemente (usa Forzar si necesitas re-sincronizar).',
+          syncState
+        }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+      }
+    }
     
     // If no syncRunId, this is a fresh start - fetch all tags and create sync run
     if (!currentSyncRunId) {
@@ -490,6 +530,21 @@ Deno.serve(async (req) => {
     }
     
     logger.info(`=== ManyChat Sync Complete: ${newAccumulatedStored} stored ===`);
+
+    await writeSyncStateSuccess({
+      supabase,
+      source: 'manychat',
+      runId: currentSyncRunId!,
+      status: 'completed',
+      meta: {
+        totalTags: tags.length,
+        functionVersion: FUNCTION_VERSION,
+        stored: newAccumulatedStored,
+        totalFetched: newAccumulatedTotal,
+      },
+      rangeStart: null,
+      rangeEnd: new Date().toISOString(),
+    });
     
     // AUTO-UNIFY: Trigger identity unification in background after sync completes
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
@@ -536,6 +591,8 @@ Deno.serve(async (req) => {
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     logger.error('Fatal error in sync-manychat', { error: errorMessage });
+
+    await writeSyncStateError({ supabase, source: 'manychat', errorMessage });
     
     return new Response(JSON.stringify({
       ok: false,

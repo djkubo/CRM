@@ -10,10 +10,18 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { useNavigate } from 'react-router-dom';
 import { APP_PATHS } from '@/config/appPaths';
+import { Badge } from '@/components/ui/badge';
+import { useSyncState, indexSyncState, type SyncSource } from '@/hooks/useSyncState';
+import { getFreshnessBucket, getRecommendedRangeAction } from '@/lib/syncStateUtils';
+import { setPendingOpsSyncCommand } from '@/lib/opsSyncCommand';
+import { formatDistanceToNow, format } from 'date-fns';
+import { es } from 'date-fns/locale';
 
 export function ImportSyncPage() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const { data: syncStateRows, isLoading: syncStateLoading } = useSyncState();
+  const syncState = indexSyncState(syncStateRows);
 
   const handleProcessingComplete = () => {
     queryClient.invalidateQueries({ queryKey: ['clients'] });
@@ -81,7 +89,7 @@ export function ImportSyncPage() {
                   variant="secondary"
                   className="gap-2"
                   onClick={() => {
-                    const el = document.querySelector('[data-value=\"api\"]') as HTMLElement | null;
+                    const el = document.querySelector('[data-value="api"]') as HTMLElement | null;
                     el?.click();
                   }}
                 >
@@ -124,6 +132,94 @@ export function ImportSyncPage() {
                   <ArrowRight className="h-4 w-4" />
                   Abrir Diagnóstico
                 </Button>
+              </CardContent>
+            </Card>
+
+            <Card className="border-border/50 lg:col-span-3">
+              <CardContent className="p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-medium text-foreground">Estado de datos</p>
+                    <p className="text-xs text-muted-foreground">
+                      Cobertura (backfill) + frescura (hasta qué fecha está al día). Esto se guarda aunque <span className="font-medium">sync_runs</span> se limpie.
+                    </p>
+                  </div>
+                  {syncStateLoading ? (
+                    <Badge variant="outline" className="text-muted-foreground">Cargando…</Badge>
+                  ) : (
+                    <Badge variant="outline" className="text-muted-foreground">Actualiza cada 60s</Badge>
+                  )}
+                </div>
+
+                <div className="mt-3 grid gap-2">
+                  {([
+                    { source: "stripe", label: "Stripe" },
+                    { source: "paypal", label: "PayPal" },
+                    { source: "stripe_invoices", label: "Facturas" },
+                    { source: "ghl", label: "GoHighLevel" },
+                    { source: "manychat", label: "ManyChat" },
+                  ] as Array<{ source: SyncSource; label: string }>).map(({ source, label }) => {
+                    const row = syncState[source];
+                    const bucket = getFreshnessBucket(row?.fresh_until ?? null);
+                    const badgeClass =
+                      bucket === "green"
+                        ? "bg-emerald-500/15 text-emerald-400 border border-emerald-500/25"
+                        : bucket === "yellow"
+                          ? "bg-amber-500/15 text-amber-400 border border-amber-500/25"
+                          : "bg-red-500/15 text-red-400 border border-red-500/25";
+
+                    const isRangeSource = source === "stripe" || source === "paypal" || source === "stripe_invoices";
+                    const action = isRangeSource
+                      ? getRecommendedRangeAction(bucket)
+                      : bucket === "green"
+                        ? { mode: null, label: "No hace falta" as const }
+                        : { mode: "now", label: "Correr" as const };
+
+                    const freshText = row?.fresh_until
+                      ? `Al día hasta: ${format(new Date(row.fresh_until), "PPp", { locale: es })} (${formatDistanceToNow(new Date(row.fresh_until), { addSuffix: true, locale: es })})`
+                      : "Sin historial de sync (aún)";
+
+                    const backfillText =
+                      isRangeSource && row?.backfill_start
+                        ? `Backfill desde: ${format(new Date(row.backfill_start), "PPp", { locale: es })}`
+                        : null;
+
+                    const isDisabled = action.mode === null;
+
+                    return (
+                      <div key={source} className="rounded-lg border border-border/50 bg-muted/20 p-3">
+                        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2">
+                              <p className="text-sm font-medium text-foreground">{label}</p>
+                              <Badge className={badgeClass}>
+                                {bucket === "green" ? "OK" : bucket === "yellow" ? "Atención" : "Urgente"}
+                              </Badge>
+                            </div>
+                            <p className="mt-1 text-xs text-muted-foreground break-words">{freshText}</p>
+                            {backfillText && <p className="mt-0.5 text-xs text-muted-foreground break-words">{backfillText}</p>}
+                          </div>
+
+                          <Button
+                            size="sm"
+                            variant={isDisabled ? "outline" : "secondary"}
+                            disabled={isDisabled}
+                            onClick={() => {
+                              if (!action.mode) return;
+                              setPendingOpsSyncCommand({ source, mode: action.mode });
+                              const el = document.querySelector('[data-value="api"]') as HTMLElement | null;
+                              el?.click();
+                            }}
+                            className="gap-2 self-start sm:self-auto"
+                          >
+                            <ArrowRight className="h-4 w-4" />
+                            {action.label}
+                          </Button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
               </CardContent>
             </Card>
           </div>

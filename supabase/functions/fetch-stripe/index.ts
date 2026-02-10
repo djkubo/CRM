@@ -1,11 +1,13 @@
 import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 import { retryWithBackoff, RETRY_CONFIGS, RETRYABLE_ERRORS } from '../_shared/retry.ts';
 import { createLogger, LogLevel } from '../_shared/logger.ts';
+import { readSyncState, writeSyncStateError, writeSyncStateSuccess } from '../_shared/sync_state.ts';
 
 // Declare EdgeRuntime for background tasks
 declare const EdgeRuntime: { waitUntil: (promise: Promise<unknown>) => void };
 
 const logger = createLogger('fetch-stripe', LogLevel.INFO);
+const FUNCTION_VERSION = '2026-02-10-1';
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -374,6 +376,12 @@ async function processChunk(
         .eq('id', syncRunId)
         // Don't override user cancellation
         .in('status', ['running', 'continuing']);
+
+        await writeSyncStateError({
+          supabase,
+          source: 'stripe',
+          errorMessage: `Pausado: ${consecutiveErrors} errores consecutivos. Último: ${result.error}`,
+        });
         
         logger.warn('Sync paused due to consecutive errors - can resume later');
         return; // Exit gracefully, can resume
@@ -413,6 +421,12 @@ async function processChunk(
         .eq('id', syncRunId)
         // Don't override user cancellation
         .in('status', ['running', 'continuing']);
+
+        await writeSyncStateError({
+          supabase,
+          source: 'stripe',
+          errorMessage: `Pausado: Error DB - ${upsertError.message}`,
+        });
         return;
       } else {
         totalInChunk += result.transactions.length;
@@ -554,6 +568,12 @@ async function processChunk(
       .eq('id', syncRunId)
       // Don't override user cancellation
       .in('status', ['running', 'continuing']);
+
+      await writeSyncStateError({
+        supabase,
+        source: 'stripe',
+        errorMessage: `Chain falló después de 3 reintentos en chunk ${chunkNumber}. Haz clic en "Reanudar" para continuar.`,
+      });
     })());
 
     logger.info('Chain invocation scheduled via waitUntil');
@@ -580,6 +600,26 @@ async function processChunk(
     }
 
     logger.info('SYNC COMPLETE', { totalTransactions: newTotal, chunks: chunkNumber });
+
+    // Update persistent sync_state (coverage + freshness).
+    const rangeStartIso = startDate ? new Date(startDate * 1000).toISOString() : null;
+    const rangeEndIso = endDate ? new Date(endDate * 1000).toISOString() : new Date().toISOString();
+    await writeSyncStateSuccess({
+      supabase,
+      source: 'stripe',
+      runId: syncRunId,
+      status: lastError ? 'completed_with_errors' : 'completed',
+      meta: {
+        fetchAll: true,
+        startDate: rangeStartIso,
+        endDate: rangeEndIso,
+        chunks: chunkNumber,
+        finalTotal: newTotal,
+        functionVersion: FUNCTION_VERSION,
+      },
+      rangeStart: rangeStartIso,
+      rangeEnd: rangeEndIso,
+    });
   }
 }
 
@@ -907,14 +947,63 @@ Deno.serve(async (req) => {
       );
     }
 
-    // ========== CREATE NEW SYNC ==========
+    // ========== AUTO-SKIP (avoid redundant heavy syncs) ==========
+    const force = body.force === true;
     const fetchAll = body.fetchAll === true;
+    const requestedStart = body.startDate ? Math.floor(new Date(body.startDate).getTime() / 1000) : null;
+    const requestedEnd = body.endDate ? Math.floor(new Date(body.endDate).getTime() / 1000) : Math.floor(Date.now() / 1000);
+
+    if (!force) {
+      const syncState = await readSyncState(supabase, 'stripe');
+      const backfillStartMs = syncState?.backfill_start ? Date.parse(syncState.backfill_start) : null;
+      const freshUntilMs = syncState?.fresh_until ? Date.parse(syncState.fresh_until) : null;
+      const reqStartMs = requestedStart ? requestedStart * 1000 : null;
+      const reqEndMs = requestedEnd * 1000;
+
+      const FRESH_TOLERANCE_MS = 2 * 60 * 60 * 1000; // 2h
+      const BACKFILL_TOLERANCE_MS = 24 * 60 * 60 * 1000; // 24h
+      const days = reqStartMs ? (reqEndMs - reqStartMs) / (24 * 60 * 60 * 1000) : 0;
+
+      const coversRange =
+        freshUntilMs !== null &&
+        freshUntilMs >= (reqEndMs - FRESH_TOLERANCE_MS) &&
+        (reqStartMs === null || (backfillStartMs !== null && backfillStartMs <= (reqStartMs + BACKFILL_TOLERANCE_MS)));
+
+      const recentlySucceeded =
+        syncState?.last_success_at ? (Date.now() - Date.parse(syncState.last_success_at)) < (30 * 24 * 60 * 60 * 1000) : false;
+
+      const bigBackfill = reqStartMs !== null && days >= 120;
+
+      if (coversRange && (!bigBackfill || recentlySucceeded)) {
+        const reason = bigBackfill ? 'backfill_recently_completed' : 'already_fresh';
+        const startIso = reqStartMs ? new Date(reqStartMs).toISOString() : null;
+        const endIso = new Date(reqEndMs).toISOString();
+
+        return new Response(
+          JSON.stringify({
+            success: true,
+            status: 'skipped',
+            skipped: true,
+            reason,
+            message: bigBackfill
+              ? 'Stripe: Backfill grande ya está cubierto recientemente. Recomendado: 24h o 7d (usa Forzar si necesitas re-sincronizar).'
+              : 'Stripe: Ya está al día para este rango (usa Forzar si necesitas re-sincronizar).',
+            syncState,
+            requested: { fetchAll, startDate: startIso, endDate: endIso },
+            version: FUNCTION_VERSION
+          }),
+          { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+    }
+
+    // ========== CREATE NEW SYNC ==========
     const startDate = body.startDate ? Math.floor(new Date(body.startDate).getTime() / 1000) : null;
     const endDate = body.endDate ? Math.floor(new Date(body.endDate).getTime() / 1000) : null;
 
     const { data: syncRun, error: syncError } = await supabase
       .from('sync_runs')
-      .insert({ source: 'stripe', status: 'running', metadata: { fetchAll, startDate, endDate } })
+      .insert({ source: 'stripe', status: 'running', metadata: { fetchAll, startDate, endDate, functionVersion: FUNCTION_VERSION } })
       .select('id')
       .single();
 
@@ -957,6 +1046,26 @@ Deno.serve(async (req) => {
       total_fetched: result.transactions.length,
       total_inserted: result.transactions.length
     }).eq('id', syncRun.id);
+
+    // Update persistent sync_state (single-page mode).
+    const rangeStartIso = startDate ? new Date(startDate * 1000).toISOString() : null;
+    const rangeEndIso = endDate ? new Date(endDate * 1000).toISOString() : new Date().toISOString();
+    await writeSyncStateSuccess({
+      supabase,
+      source: 'stripe',
+      runId: syncRun.id,
+      status: 'completed',
+      meta: {
+        fetchAll,
+        startDate: rangeStartIso,
+        endDate: rangeEndIso,
+        functionVersion: FUNCTION_VERSION,
+        singlePage: true,
+        inserted: result.transactions.length,
+      },
+      rangeStart: rangeStartIso,
+      rangeEnd: rangeEndIso,
+    });
 
     return new Response(
       JSON.stringify({
