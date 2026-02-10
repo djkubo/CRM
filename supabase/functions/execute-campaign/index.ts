@@ -5,6 +5,85 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
+function parseHHMM(value: string | null | undefined): { h: number; m: number } | null {
+  if (!value || typeof value !== 'string') return null;
+  const s = value.trim();
+  const m = /^(\d{1,2}):(\d{2})$/.exec(s);
+  if (!m) return null;
+  const h = Number(m[1]);
+  const mm = Number(m[2]);
+  if (!Number.isFinite(h) || !Number.isFinite(mm)) return null;
+  if (h < 0 || h > 23 || mm < 0 || mm > 59) return null;
+  return { h, m: mm };
+}
+
+function getMinutesInTimezone(date: Date, timeZone: string): number | null {
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone,
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23',
+    }).formatToParts(date);
+
+    const hourStr = parts.find((p) => p.type === 'hour')?.value;
+    const minuteStr = parts.find((p) => p.type === 'minute')?.value;
+    const hour = hourStr != null ? Number(hourStr) : NaN;
+    const minute = minuteStr != null ? Number(minuteStr) : NaN;
+    if (!Number.isFinite(hour) || !Number.isFinite(minute)) return null;
+    return hour * 60 + minute;
+  } catch {
+    return null;
+  }
+}
+
+function isInQuietHours(params: {
+  now: Date;
+  timeZone: string;
+  quietStart: string | null;
+  quietEnd: string | null;
+}): boolean {
+  const start = parseHHMM(params.quietStart);
+  const end = parseHHMM(params.quietEnd);
+  if (!start || !end) return false;
+
+  const nowMinutes = getMinutesInTimezone(params.now, params.timeZone);
+  if (nowMinutes === null) return false;
+
+  const startMinutes = start.h * 60 + start.m;
+  const endMinutes = end.h * 60 + end.m;
+
+  if (startMinutes === endMinutes) return false;
+
+  if (startMinutes > endMinutes) {
+    // Overnight (e.g., 21:00 -> 08:00)
+    return nowMinutes >= startMinutes || nowMinutes < endMinutes;
+  }
+
+  return nowMinutes >= startMinutes && nowMinutes < endMinutes;
+}
+
+async function loadSystemSettings(
+  supabase: any,
+  keys: string[],
+): Promise<Record<string, string | null>> {
+  const { data, error } = await supabase
+    .from('system_settings')
+    .select('key, value')
+    .in('key', keys);
+
+  if (error) {
+    console.warn('Failed to load system_settings', { error: error.message });
+    return Object.fromEntries(keys.map((k) => [k, null]));
+  }
+
+  const map = new Map<string, string>();
+  for (const row of (data || []) as Array<{ key: string; value: string }>) {
+    map.set(row.key, row.value);
+  }
+  return Object.fromEntries(keys.map((k) => [k, map.get(k) ?? null]));
+}
+
 // SECURITY: JWT + is_admin() verification
 async function verifyAdmin(req: Request): Promise<{ valid: boolean; userId?: string; error?: string }> {
   const authHeader = req.headers.get('Authorization');
@@ -102,6 +181,14 @@ Deno.serve(async (req: Request) => {
     const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
+    const systemSettings = await loadSystemSettings(supabase, [
+      'quiet_hours_start',
+      'quiet_hours_end',
+      'timezone',
+      'company_name',
+    ]);
+    const effectiveTimezone = systemSettings.timezone || 'UTC';
+
     const payload: TriggerPayload = await req.json();
     console.log('Campaign trigger received:', payload);
 
@@ -189,6 +276,54 @@ Deno.serve(async (req: Request) => {
     const channelPriority = rule.channel_priority || ['whatsapp', 'sms', 'manychat', 'ghl'];
     let successChannel: string | null = null;
     let externalMessageId: string | null = null;
+
+    // Quiet hours apply to all outbound channels for this execution.
+    // (If you need per-channel behavior later, split this into channel-specific checks.)
+    const inQuiet = isInQuietHours({
+      now: new Date(),
+      timeZone: effectiveTimezone,
+      quietStart: systemSettings.quiet_hours_start,
+      quietEnd: systemSettings.quiet_hours_end,
+    });
+    if (inQuiet) {
+      console.log('Skipping execution due to quiet hours', {
+        timezone: effectiveTimezone,
+        quiet_hours_start: systemSettings.quiet_hours_start,
+        quiet_hours_end: systemSettings.quiet_hours_end,
+      });
+
+      const execution = {
+        rule_id: rule.id,
+        client_id: client.id,
+        trigger_event: payload.trigger_event,
+        channel_used: null,
+        status: 'quiet_hours',
+        attempt_number: (recentCampaigns?.length || 0) + 1,
+        message_content: message,
+        external_message_id: null,
+        revenue_at_risk: payload.revenue_at_risk || 0,
+        metadata: {
+          ...(payload.metadata || {}),
+          quiet_hours: {
+            timezone: effectiveTimezone,
+            start: systemSettings.quiet_hours_start,
+            end: systemSettings.quiet_hours_end,
+          },
+        },
+      };
+
+      const { error: execInsertError } = await supabase.from('campaign_executions').insert(execution);
+      if (execInsertError) console.error('Error inserting campaign execution:', execInsertError);
+
+      return new Response(
+        JSON.stringify({
+          success: false,
+          skipped: true,
+          reason: 'quiet_hours',
+        }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
 
     for (const channel of channelPriority) {
       try {
@@ -321,6 +456,8 @@ Deno.serve(async (req: Request) => {
               customField: { 
                 message_content: message,
                 revenue_at_risk: payload.revenue_at_risk,
+                company_name: systemSettings.company_name ?? undefined,
+                timezone: systemSettings.timezone ?? undefined,
               }
             };
 

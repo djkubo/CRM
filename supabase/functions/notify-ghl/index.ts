@@ -13,6 +13,27 @@ interface GHLNotification {
   message_data?: Record<string, unknown>;
 }
 
+async function loadSystemSettings(
+  supabase: any,
+  keys: string[],
+): Promise<Record<string, string | null>> {
+  const { data, error } = await supabase
+    .from('system_settings')
+    .select('key, value')
+    .in('key', keys);
+
+  if (error) {
+    console.warn('Failed to load system_settings', { error: error.message });
+    return Object.fromEntries(keys.map((k) => [k, null]));
+  }
+
+  const map = new Map<string, string>();
+  for (const row of (data || []) as Array<{ key: string; value: string }>) {
+    map.set(row.key, row.value);
+  }
+  return Object.fromEntries(keys.map((k) => [k, map.get(k) ?? null]));
+}
+
 /**
  * Edge Function: notify-ghl
  * 
@@ -73,6 +94,8 @@ Deno.serve(async (req) => {
     const webhookUrl = setting.value;
     console.log(`🔗 Using webhook URL: ${webhookUrl.substring(0, 50)}...`);
 
+    const settings = await loadSystemSettings(supabase, ['company_name', 'timezone']);
+
     // Prepare GHL payload
     const ghlPayload = {
       // Contact fields
@@ -90,6 +113,8 @@ Deno.serve(async (req) => {
         tag: payload.tag,
         source: 'lovable_crm',
         timestamp: new Date().toISOString(),
+        company_name: settings.company_name ?? undefined,
+        timezone: settings.timezone ?? undefined,
         ...payload.message_data
       },
       

@@ -15,6 +15,97 @@ interface DebtInfo {
   daysUntilDue: number | null;
 }
 
+type SystemSettingsSnapshot = {
+  quiet_hours_start: string | null;
+  quiet_hours_end: string | null;
+  timezone: string | null;
+  company_name: string | null;
+};
+
+async function loadSystemSettings(supabase: SupabaseClient): Promise<SystemSettingsSnapshot> {
+  const keys = ['quiet_hours_start', 'quiet_hours_end', 'timezone', 'company_name'];
+  const { data, error } = await supabase
+    .from('system_settings')
+    .select('key, value')
+    .in('key', keys);
+
+  if (error) {
+    console.warn('Failed to load system_settings for send-campaign', { error: error.message });
+    return { quiet_hours_start: null, quiet_hours_end: null, timezone: null, company_name: null };
+  }
+
+  const map = new Map<string, string>();
+  for (const row of data || []) map.set(row.key, row.value);
+
+  return {
+    quiet_hours_start: map.get('quiet_hours_start') ?? null,
+    quiet_hours_end: map.get('quiet_hours_end') ?? null,
+    timezone: map.get('timezone') ?? null,
+    company_name: map.get('company_name') ?? null,
+  };
+}
+
+function parseHHMM(value: string | null | undefined): { h: number; m: number } | null {
+  if (!value || typeof value !== 'string') return null;
+  const s = value.trim();
+  // Accept "HH:mm" (24h)
+  const m = /^(\d{1,2}):(\d{2})$/.exec(s);
+  if (!m) return null;
+  const h = Number(m[1]);
+  const mm = Number(m[2]);
+  if (!Number.isFinite(h) || !Number.isFinite(mm)) return null;
+  if (h < 0 || h > 23 || mm < 0 || mm > 59) return null;
+  return { h, m: mm };
+}
+
+function getMinutesInTimezone(date: Date, timeZone: string): number | null {
+  try {
+    // hourCycle: 'h23' ensures 00-23.
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone,
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23',
+    }).formatToParts(date);
+
+    const hourStr = parts.find((p) => p.type === 'hour')?.value;
+    const minuteStr = parts.find((p) => p.type === 'minute')?.value;
+    const hour = hourStr != null ? Number(hourStr) : NaN;
+    const minute = minuteStr != null ? Number(minuteStr) : NaN;
+    if (!Number.isFinite(hour) || !Number.isFinite(minute)) return null;
+    return hour * 60 + minute;
+  } catch {
+    return null;
+  }
+}
+
+function isInQuietHours(params: {
+  now: Date;
+  timeZone: string;
+  quietStart: string | null;
+  quietEnd: string | null;
+}): boolean {
+  const start = parseHHMM(params.quietStart);
+  const end = parseHHMM(params.quietEnd);
+  if (!start || !end) return false;
+
+  const nowMinutes = getMinutesInTimezone(params.now, params.timeZone);
+  if (nowMinutes === null) return false;
+
+  const startMinutes = start.h * 60 + start.m;
+  const endMinutes = end.h * 60 + end.m;
+
+  if (startMinutes === endMinutes) return false; // treat as "disabled"
+
+  if (startMinutes > endMinutes) {
+    // Overnight window (e.g., 21:00 -> 08:00)
+    return nowMinutes >= startMinutes || nowMinutes < endMinutes;
+  }
+
+  // Same day window
+  return nowMinutes >= startMinutes && nowMinutes < endMinutes;
+}
+
 // Helper function to get client's real debt information
 async function getClientDebtInfo(
   supabase: SupabaseClient,
@@ -73,6 +164,9 @@ Deno.serve(async (req) => {
   try {
     const { campaign_id, dry_run }: SendCampaignRequest = await req.json();
     console.log('Starting campaign:', campaign_id, 'dry_run:', dry_run);
+
+    const systemSettings = await loadSystemSettings(supabase);
+    const effectiveTimezone = systemSettings.timezone || 'UTC';
 
     // Get campaign with template and segment
     const { data: campaign, error: campaignError } = await supabase
@@ -182,22 +276,16 @@ Deno.serve(async (req) => {
 
       // 6. Quiet hours check
       if (!exclusionReason && campaign.respect_quiet_hours) {
-        const now = new Date();
-        const currentHour = now.getHours();
-        const startHour = parseInt(campaign.quiet_hours_start?.split(':')[0] || '22');
-        const endHour = parseInt(campaign.quiet_hours_end?.split(':')[0] || '9');
-        
-        if (startHour > endHour) {
-          // Overnight quiet hours (e.g., 22:00 - 09:00)
-          if (currentHour >= startHour || currentHour < endHour) {
-            exclusionReason = 'quiet_hours';
-          }
-        } else {
-          // Same day quiet hours
-          if (currentHour >= startHour && currentHour < endHour) {
-            exclusionReason = 'quiet_hours';
-          }
-        }
+        const quietStart = campaign.quiet_hours_start || systemSettings.quiet_hours_start || null;
+        const quietEnd = campaign.quiet_hours_end || systemSettings.quiet_hours_end || null;
+        const inQuiet = isInQuietHours({
+          now: new Date(),
+          timeZone: effectiveTimezone,
+          quietStart,
+          quietEnd,
+        });
+
+        if (inQuiet) exclusionReason = 'quiet_hours';
       }
 
       // If excluded, update recipient and continue
