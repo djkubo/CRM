@@ -12,6 +12,7 @@ import { PwaUpdater } from "@/components/PwaUpdater";
 import { DashboardLayout } from "@/layouts/DashboardLayout";
 import { Skeleton } from "@/components/ui/skeleton";
 import { APP_PATHS } from "@/config/appPaths";
+import { formatUnknownError } from "@/lib/errorUtils";
 
 // Pages - eager load critical auth pages
 import Login from "./pages/Login";
@@ -80,7 +81,7 @@ const queryClient = new QueryClient({
     queries: {
       retry: (failureCount, error) => {
         // Don't retry on auth errors
-        const message = error instanceof Error ? error.message.toLowerCase() : '';
+        const message = formatUnknownError(error, { fallback: "", maxLen: 500, includeDetails: true }).toLowerCase();
         if (message.includes('unauthorized') || message.includes('401') || message.includes('jwt')) {
           return false;
         }

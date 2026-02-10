@@ -2,10 +2,11 @@ import { useEffect, useRef } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { refreshSessionLocked } from '@/lib/authSession';
+import { formatUnknownError } from '@/lib/errorUtils';
 
 // Friendly error messages for common scenarios
 const getErrorMessage = (error: unknown): { title: string; description: string } => {
-  const errorMessage = error instanceof Error ? error.message : String(error);
+  const errorMessage = formatUnknownError(error, { maxLen: 400, includeDetails: true });
   const lowerMessage = errorMessage.toLowerCase();
 
   // Network errors
@@ -76,7 +77,7 @@ export function QueryErrorHandler() {
         // Only show toast for queries that don't have their own error handling
         const meta = event.query.options.meta as { suppressErrorToast?: boolean } | undefined;
         if (!meta?.suppressErrorToast) {
-          const errorMessage = error instanceof Error ? error.message : String(error);
+          const errorMessage = formatUnknownError(error, { maxLen: 400, includeDetails: true });
           const lowerMessage = errorMessage.toLowerCase();
 
           // Helper: simple per-title throttle to avoid toast spam.

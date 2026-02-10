@@ -9,6 +9,7 @@ import { RefreshCw, Play, Pause, CheckCircle, AlertCircle, Clock, Database, User
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { FullRecoveryPanel } from "./FullRecoveryPanel";
+import { formatUnknownError } from "@/lib/errorUtils";
 
 // Time range options for Stripe sync
 type TimeRange = '24h' | '7d' | '31d' | '6m' | 'all';
@@ -164,7 +165,7 @@ export function SyncOrchestrator() {
 
       setLoading(false);
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorMessage = formatUnknownError(error, { maxLen: 400, includeDetails: true });
       console.error('Error fetching counts:', errorMessage);
       setLoading(false);
     }
@@ -477,7 +478,7 @@ export function SyncOrchestrator() {
       toast.success(`GHL: ${totalProcessed} contactos descargados`);
       fetchCounts();
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorMessage = formatUnknownError(error, { maxLen: 400, includeDetails: true });
       setSyncStatuses(prev => ({ 
         ...prev, 
         ghl: { ...prev.ghl, status: 'error', error: errorMessage } 
@@ -530,7 +531,7 @@ export function SyncOrchestrator() {
       toast.success(`ManyChat: ${totalProcessed} contactos descargados`);
       fetchCounts();
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorMessage = formatUnknownError(error, { maxLen: 400, includeDetails: true });
       setSyncStatuses(prev => ({ 
         ...prev, 
         manychat: { ...prev.manychat, status: 'error', error: errorMessage } 
@@ -587,7 +588,7 @@ export function SyncOrchestrator() {
         );
       }
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorMessage = formatUnknownError(error, { maxLen: 400, includeDetails: true });
       setSyncStatuses(prev => ({ 
         ...prev, 
         stripe: { ...prev.stripe, status: 'error', error: errorMessage } 
@@ -626,7 +627,7 @@ export function SyncOrchestrator() {
       }));
       toast.success(`PayPal: ${data?.synced || 0} transacciones sincronizadas`);
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorMessage = formatUnknownError(error, { maxLen: 400, includeDetails: true });
       setSyncStatuses(prev => ({ 
         ...prev, 
         paypal: { ...prev.paypal, status: 'error', error: errorMessage } 
@@ -680,7 +681,7 @@ export function SyncOrchestrator() {
       console.error('[SyncOrchestrator] unifyAll failed:', error);
       setIsUnifying(false);
       
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorMessage = formatUnknownError(error, { maxLen: 600, includeDetails: true });
       toast.error(`❌ Error al iniciar unificación`, {
         duration: 10000,
         description: errorMessage
@@ -708,7 +709,7 @@ export function SyncOrchestrator() {
       }
     } catch (error) {
       setIsUnifying(false);
-      toast.error(`Error: ${error instanceof Error ? error.message : String(error)}`);
+      toast.error(`Error: ${formatUnknownError(error, { maxLen: 400, includeDetails: true })}`);
     }
   };
 

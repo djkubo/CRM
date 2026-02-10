@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
+import { formatUnknownError } from '@/lib/errorUtils';
 
 export type SyncStep = 'paypal' | 'ghl' | 'manychat' | 'unify' | 'cleanup';
 
@@ -229,7 +230,7 @@ export function useSyncQueue() {
         });
         toast.success(`✅ ${step.label}: ${result.processed.toLocaleString()} registros`);
       } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
+        const errorMessage = formatUnknownError(error, { maxLen: 400, includeDetails: true });
         updateStep(step.id, { status: 'error', error: errorMessage });
         toast.error(`❌ ${step.label}: ${errorMessage}`);
         

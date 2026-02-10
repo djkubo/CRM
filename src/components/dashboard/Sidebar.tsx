@@ -12,6 +12,7 @@ import { toast } from "sonner";
 import vrpLogo from "@/assets/vrp-logo.png";
 import { NAVIGATION_GROUPS } from "@/config/appNavigation";
 import { CommandMenu } from "@/components/dashboard/CommandMenu";
+import { formatUnknownError } from "@/lib/errorUtils";
 
 export function Sidebar() {
   const [isOpen, setIsOpen] = useState(false);
@@ -71,7 +72,7 @@ export function Sidebar() {
       navigate("/login");
     } catch (err) {
       toast.error("No se pudo cerrar sesión", {
-        description: err instanceof Error ? err.message : "Error inesperado",
+        description: formatUnknownError(err, { fallback: "Error inesperado", maxLen: 300 }),
       });
     }
   };
