@@ -15,11 +15,12 @@ const logger = createLogger('sync-ghl', LogLevel.INFO);
 const rateLimiter = RATE_LIMITERS.GHL;
 
 // ============ CONFIGURATION ============
-const FUNCTION_VERSION = '2026-02-10-2';
+const FUNCTION_VERSION = '2026-02-10-3';
 const CONTACTS_PER_PAGE = 100;
 const STALE_TIMEOUT_MINUTES = 5; // Reduced from 30 to 5 for faster recovery
 const CHAIN_RETRY_ATTEMPTS = 3;
 const CHAIN_FETCH_TIMEOUT_MS = 10_000;
+const GHL_API_FETCH_TIMEOUT_MS = 25_000;
 const INVOCATION_TIME_BUDGET_MS = 50_000; // keep under common 60s function limits
 const DEFAULT_MAX_PAGES_STAGE_ONLY = 10;
 const DEFAULT_MAX_PAGES_MERGE = 3;
@@ -170,18 +171,34 @@ async function processSinglePageStageOnly(
     });
 
     const ghlResponse = await retryWithBackoff(
-      () => rateLimiter.execute(() =>
-        fetch(ghlUrl, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${ghlApiKey}`,
-            'Version': '2021-07-28',
-            'Accept': 'application/json',
-            'Content-Type': 'application/json'
-          },
-          body: finalBody
-        })
-      ),
+      () => rateLimiter.execute(async () => {
+        try {
+          return await fetchWithTimeout(
+            ghlUrl,
+            {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${ghlApiKey}`,
+                'Version': '2021-07-28',
+                'Accept': 'application/json',
+                'Content-Type': 'application/json'
+              },
+              body: finalBody
+            },
+            GHL_API_FETCH_TIMEOUT_MS
+          );
+        } catch (err) {
+          // Ensure timeouts are treated as retryable (retry.ts checks ETIMEDOUT string/code).
+          const name =
+            (err && typeof err === 'object' && 'name' in err) ? String((err as { name?: unknown }).name) : '';
+          if (name === 'AbortError') {
+            const e = new Error('ETIMEDOUT: GHL request timed out');
+            (e as { code?: string }).code = 'ETIMEDOUT';
+            throw e;
+          }
+          throw err;
+        }
+      }),
       {
         ...RETRY_CONFIGS.STANDARD,
         retryableErrors: [...RETRYABLE_ERRORS.NETWORK, ...RETRYABLE_ERRORS.GHL, ...RETRYABLE_ERRORS.HTTP]
@@ -347,18 +364,34 @@ async function processSinglePage(
     });
 
     const ghlResponse = await retryWithBackoff(
-      () => rateLimiter.execute(() =>
-        fetch(ghlUrl, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${ghlApiKey}`,
-            'Version': '2021-07-28',
-            'Accept': 'application/json',
-            'Content-Type': 'application/json'
-          },
-          body: finalBody
-        })
-      ),
+      () => rateLimiter.execute(async () => {
+        try {
+          return await fetchWithTimeout(
+            ghlUrl,
+            {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${ghlApiKey}`,
+                'Version': '2021-07-28',
+                'Accept': 'application/json',
+                'Content-Type': 'application/json'
+              },
+              body: finalBody
+            },
+            GHL_API_FETCH_TIMEOUT_MS
+          );
+        } catch (err) {
+          // Ensure timeouts are treated as retryable (retry.ts checks ETIMEDOUT string/code).
+          const name =
+            (err && typeof err === 'object' && 'name' in err) ? String((err as { name?: unknown }).name) : '';
+          if (name === 'AbortError') {
+            const e = new Error('ETIMEDOUT: GHL request timed out');
+            (e as { code?: string }).code = 'ETIMEDOUT';
+            throw e;
+          }
+          throw err;
+        }
+      }),
       {
         ...RETRY_CONFIGS.STANDARD,
         retryableErrors: [...RETRYABLE_ERRORS.NETWORK, ...RETRYABLE_ERRORS.GHL, ...RETRYABLE_ERRORS.HTTP]
@@ -778,27 +811,82 @@ Deno.serve(async (req) => {
 
     // ============ CLEANUP STALE SYNCS ============
     if (cleanupStale) {
-      const staleThreshold = new Date(Date.now() - STALE_TIMEOUT_MINUTES * 60 * 1000).toISOString();
-      const { data: staleSyncs } = await supabase
+      const thresholdMs = Date.now() - STALE_TIMEOUT_MINUTES * 60 * 1000;
+      const nowIso = new Date().toISOString();
+
+      const { data: running } = await supabase
         .from('sync_runs')
-        .update({ status: 'failed', completed_at: new Date().toISOString(), error_message: 'Timeout - stale' })
+        .select('id, started_at, checkpoint')
         .eq('source', 'ghl')
-        .in('status', ['running', 'continuing'])
-        .lt('started_at', staleThreshold)
-        .select('id');
-      return new Response(JSON.stringify({ ok: true, cleaned: staleSyncs?.length || 0, version: FUNCTION_VERSION }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+        .in('status', ['running', 'continuing']);
+
+      const staleIds = (running || [])
+        .filter((r: { started_at: string; checkpoint: unknown }) => {
+          const cp = (typeof r.checkpoint === 'object' && r.checkpoint !== null)
+            ? (r.checkpoint as Record<string, unknown>)
+            : null;
+          const lastActivity = cp && typeof cp.lastActivity === 'string' ? (cp.lastActivity as string) : null;
+          const lastActivityMs = lastActivity ? new Date(lastActivity).getTime() : NaN;
+          const lastMs = Number.isFinite(lastActivityMs) ? lastActivityMs : new Date(r.started_at).getTime();
+          return lastMs < thresholdMs;
+        })
+        .map((r: { id: string }) => r.id);
+
+      const { data: staleSyncs } = staleIds.length > 0
+        ? await supabase
+            .from('sync_runs')
+            .update({ status: 'failed', completed_at: nowIso, error_message: 'Timeout - stale' })
+            .in('id', staleIds)
+            .select('id')
+        : { data: [] as Array<{ id: string }> };
+
+      return new Response(
+        JSON.stringify({ ok: true, cleaned: staleSyncs?.length || 0, version: FUNCTION_VERSION }),
+        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
     }
 
     // ============ CHECK FOR EXISTING SYNC ============
     if (!syncRunId) {
-      const staleThreshold = new Date(Date.now() - STALE_TIMEOUT_MINUTES * 60 * 1000).toISOString();
-      // Clean stale first
-      await supabase.from('sync_runs').update({ status: 'failed', completed_at: new Date().toISOString(), error_message: 'Timeout' })
-        .eq('source', 'ghl').in('status', ['running', 'continuing']).lt('started_at', staleThreshold);
+      const thresholdMs = Date.now() - STALE_TIMEOUT_MINUTES * 60 * 1000;
+      const nowIso = new Date().toISOString();
 
-      const { data: existingRuns } = await supabase.from('sync_runs').select('id').eq('source', 'ghl').in('status', ['running', 'continuing']).limit(1);
-      if (existingRuns && existingRuns.length > 0) {
-        return new Response(JSON.stringify({ ok: false, status: 'already_running', error: 'Sync in progress', syncRunId: existingRuns[0].id, version: FUNCTION_VERSION }), { status: 409, headers: corsHeaders });
+      const { data: active } = await supabase
+        .from('sync_runs')
+        .select('id, started_at, checkpoint')
+        .eq('source', 'ghl')
+        .in('status', ['running', 'continuing'])
+        .order('started_at', { ascending: false });
+
+      if (active && active.length > 0) {
+        let existingActiveId: string | null = null;
+        const staleIds: string[] = [];
+
+        for (const r of active as Array<{ id: string; started_at: string; checkpoint: unknown }>) {
+          const cp = (typeof r.checkpoint === 'object' && r.checkpoint !== null)
+            ? (r.checkpoint as Record<string, unknown>)
+            : null;
+          const lastActivity = cp && typeof cp.lastActivity === 'string' ? (cp.lastActivity as string) : null;
+          const lastActivityMs = lastActivity ? new Date(lastActivity).getTime() : NaN;
+          const lastMs = Number.isFinite(lastActivityMs) ? lastActivityMs : new Date(r.started_at).getTime();
+          const isStale = lastMs < thresholdMs;
+          if (isStale) staleIds.push(r.id);
+          else if (!existingActiveId) existingActiveId = r.id;
+        }
+
+        if (staleIds.length > 0) {
+          await supabase
+            .from('sync_runs')
+            .update({ status: 'failed', completed_at: nowIso, error_message: 'Timeout' })
+            .in('id', staleIds);
+        }
+
+        if (existingActiveId) {
+          return new Response(
+            JSON.stringify({ ok: false, status: 'already_running', error: 'Sync in progress', syncRunId: existingActiveId, version: FUNCTION_VERSION }),
+            { status: 409, headers: corsHeaders }
+          );
+        }
       }
     }
 

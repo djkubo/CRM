@@ -446,7 +446,10 @@ export function SyncResultsPanel() {
             toast.error('No hay punto de reanudación', { description: 'El sync no tiene un cursor guardado para continuar.' });
             return;
           }
-          payload = { resumeFromCursor: cursor as string };
+          payload = {
+            syncRunId: sync.id,
+            resumeFromCursor: cursor as string
+          };
           break;
         case 'stripe_invoices':
           endpoint = 'fetch-invoices';
