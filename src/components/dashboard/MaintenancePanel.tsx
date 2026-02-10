@@ -7,6 +7,17 @@ import { invokeWithAdminKey } from "@/lib/adminApi";
 import { formatDistanceToNow } from "date-fns";
 import { es } from "date-fns/locale";
 import { supabase } from "@/integrations/supabase/client";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 
 interface CleanupResult {
   success: boolean;
@@ -29,6 +40,8 @@ export default function MaintenancePanel() {
   const [isClearingFailed, setIsClearingFailed] = useState(false);
   const [lastResult, setLastResult] = useState<CleanupResult | null>(null);
   const [lastRunAt, setLastRunAt] = useState<Date | null>(null);
+  const [confirmClearFailedOpen, setConfirmClearFailedOpen] = useState(false);
+  const [confirmCleanupOpen, setConfirmCleanupOpen] = useState(false);
 
   const handleClearFailedSyncs = async () => {
     setIsClearingFailed(true);
@@ -121,28 +134,51 @@ export default function MaintenancePanel() {
                 Limpiar Syncs Fallidos
               </h4>
               <p className="text-xs text-muted-foreground mt-1">
-                Elimina todos los registros de syncs fallidos, cancelados o pausados
+                Elimina registros de control (sync_runs) en estado fallido/cancelado/pausado. No borra clientes ni transacciones.
               </p>
             </div>
-            <Button
-              onClick={handleClearFailedSyncs}
-              disabled={isClearingFailed}
-              variant="destructive"
-              size="sm"
-              className="gap-2"
-            >
-              {isClearingFailed ? (
-                <>
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  Limpiando...
-                </>
-              ) : (
-                <>
-                  <Trash2 className="h-4 w-4" />
-                  Borrar Fallidos
-                </>
-              )}
-            </Button>
+            <AlertDialog open={confirmClearFailedOpen} onOpenChange={setConfirmClearFailedOpen}>
+              <AlertDialogTrigger asChild>
+                <Button
+                  disabled={isClearingFailed}
+                  variant="destructive"
+                  size="sm"
+                  className="gap-2"
+                >
+                  {isClearingFailed ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Limpiando...
+                    </>
+                  ) : (
+                    <>
+                      <Trash2 className="h-4 w-4" />
+                      Borrar Fallidos
+                    </>
+                  )}
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent className="bg-card border-border">
+                <AlertDialogHeader>
+                  <AlertDialogTitle className="text-destructive">¿Borrar syncs fallidos/cancelados?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    Esto borra filas de <span className="font-mono">sync_runs</span> con estado fallido/cancelado/pausado para limpiar la UI.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel className="border-border">Cancelar</AlertDialogCancel>
+                  <AlertDialogAction
+                    onClick={async () => {
+                      setConfirmClearFailedOpen(false);
+                      await handleClearFailedSyncs();
+                    }}
+                    className="bg-destructive hover:bg-destructive/90 text-white"
+                  >
+                    Sí, borrar
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
           </div>
         </div>
 
@@ -171,25 +207,48 @@ export default function MaintenancePanel() {
                 : "La limpieza automática se ejecuta diariamente"}
             </span>
           </div>
-          <Button
-            onClick={handleRunCleanup}
-            disabled={isRunning}
-            variant="outline"
-            size="sm"
-            className="gap-2"
-          >
-            {isRunning ? (
-              <>
-                <Loader2 className="h-4 w-4 animate-spin" />
-                Limpiando...
-              </>
-            ) : (
-              <>
-                <Trash2 className="h-4 w-4" />
-                Ejecutar Limpieza Manual
-              </>
-            )}
-          </Button>
+          <AlertDialog open={confirmCleanupOpen} onOpenChange={setConfirmCleanupOpen}>
+            <AlertDialogTrigger asChild>
+              <Button
+                disabled={isRunning}
+                variant="outline"
+                size="sm"
+                className="gap-2"
+              >
+                {isRunning ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Limpiando...
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="h-4 w-4" />
+                    Ejecutar Limpieza Manual
+                  </>
+                )}
+              </Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent className="bg-card border-border">
+              <AlertDialogHeader>
+                <AlertDialogTitle>¿Ejecutar limpieza ahora?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  Corre la función de limpieza y elimina registros antiguos según la política de retención. Esto puede tardar un poco.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel className="border-border">Cancelar</AlertDialogCancel>
+                <AlertDialogAction
+                  onClick={async () => {
+                    setConfirmCleanupOpen(false);
+                    await handleRunCleanup();
+                  }}
+                  className="bg-primary hover:bg-primary/90 text-primary-foreground"
+                >
+                  Ejecutar
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
         </div>
 
         {/* Results Display */}

@@ -54,7 +54,10 @@ const integrations: Integration[] = [
 
 export function IntegrationsStatusPanel() {
   const [testing, setTesting] = useState<string | null>(null);
+  const [testingAll, setTestingAll] = useState(false);
   const [statuses, setStatuses] = useState<Record<string, 'connected' | 'error' | 'unknown' | 'paused'>>({});
+
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
   const testConnection = async (integration: Integration) => {
     if (!integration.testEndpoint) {
@@ -110,6 +113,22 @@ export function IntegrationsStatusPanel() {
     }
   };
 
+  const testAllConnections = async () => {
+    if (testingAll) return;
+    setTestingAll(true);
+    toast.info('Probando integraciones...', { id: 'integrations-test-all' });
+    try {
+      for (const integration of integrations) {
+        if (!integration.testEndpoint) continue;
+        await testConnection(integration);
+        await sleep(250);
+      }
+      toast.success('Pruebas finalizadas', { id: 'integrations-test-all' });
+    } finally {
+      setTestingAll(false);
+    }
+  };
+
   const getStatusBadge = (integrationId: string) => {
     const status = statuses[integrationId];
     
@@ -150,12 +169,25 @@ export function IntegrationsStatusPanel() {
   return (
     <Card className="card-base">
       <CardHeader className="pb-3">
-        <CardTitle className="text-lg flex items-center gap-2">
-          <Zap className="h-5 w-5 text-primary" />
-          Estado de Integraciones
-        </CardTitle>
+        <div className="flex items-center justify-between gap-3">
+          <CardTitle className="text-lg flex items-center gap-2">
+            <Zap className="h-5 w-5 text-primary" />
+            Estado de Integraciones
+          </CardTitle>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={testAllConnections}
+            disabled={testingAll || testing !== null}
+            className="gap-2"
+            title="Probar todas las integraciones"
+          >
+            {testingAll ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+            Probar todo
+          </Button>
+        </div>
         <CardDescription>
-          Verifica la conexión con APIs externas
+          Estas pruebas no sincronizan datos: solo validan credenciales y conectividad.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">

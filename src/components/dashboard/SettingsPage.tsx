@@ -1,6 +1,10 @@
 import { Suspense, lazy } from 'react';
-import { Settings } from 'lucide-react';
+import { useSearchParams } from 'react-router-dom';
+import { Settings, Settings2, Zap, HardDrive, Users } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
 // Lazy load heavy components for better performance
 const SystemTogglesPanel = lazy(() => import('./SystemTogglesPanel'));
@@ -41,6 +45,13 @@ function SettingsSkeleton() {
 }
 
 export function SettingsPage() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tabParam = searchParams.get('tab');
+  const currentTab =
+    tabParam === 'integrations' || tabParam === 'ghl' || tabParam === 'maintenance' || tabParam === 'system'
+      ? tabParam
+      : 'system';
+
   return (
     <div className="space-y-4 md:space-y-6">
       {/* Header - Responsive */}
@@ -51,25 +62,111 @@ export function SettingsPage() {
             Ajustes
           </h1>
           <p className="text-xs md:text-sm text-muted-foreground mt-1">
-            Configuración e integraciones
+            Menos scroll, más claro: elige una sección y ajusta lo necesario.
           </p>
         </div>
       </div>
 
-      {/* Panels with Suspense for lazy loading */}
-      <Suspense fallback={<SettingsSkeleton />}>
-        {/* System Toggles */}
-        <SystemTogglesPanel />
+      {/* Quick actions */}
+      <Card className="card-base">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base">¿Qué quieres hacer?</CardTitle>
+          <CardDescription>Accesos directos a lo más común.</CardDescription>
+        </CardHeader>
+        <CardContent className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
+          <Button
+            variant={currentTab === 'system' ? 'default' : 'outline'}
+            className="justify-start gap-2"
+            onClick={() => setSearchParams({ tab: 'system' }, { replace: true })}
+          >
+            <Settings2 className="h-4 w-4" />
+            Sistema
+          </Button>
+          <Button
+            variant={currentTab === 'integrations' ? 'default' : 'outline'}
+            className="justify-start gap-2"
+            onClick={() => setSearchParams({ tab: 'integrations' }, { replace: true })}
+          >
+            <Zap className="h-4 w-4" />
+            Probar APIs
+          </Button>
+          <Button
+            variant={currentTab === 'ghl' ? 'default' : 'outline'}
+            className="justify-start gap-2"
+            onClick={() => setSearchParams({ tab: 'ghl' }, { replace: true })}
+          >
+            <Users className="h-4 w-4" />
+            GoHighLevel
+          </Button>
+          <Button
+            variant={currentTab === 'maintenance' ? 'default' : 'outline'}
+            className="justify-start gap-2"
+            onClick={() => setSearchParams({ tab: 'maintenance' }, { replace: true })}
+          >
+            <HardDrive className="h-4 w-4" />
+            Mantenimiento
+          </Button>
+        </CardContent>
+      </Card>
 
-        {/* Integrations Status */}
-        <IntegrationsStatusPanel />
+      <Tabs
+        value={currentTab}
+        onValueChange={(v) => setSearchParams({ tab: v }, { replace: true })}
+        className="space-y-4"
+      >
+        <div className="overflow-x-auto -mx-4 px-4 sm:mx-0 sm:px-0">
+          <TabsList className="bg-card border border-border/50 w-max sm:w-auto">
+            <TabsTrigger value="system" className="gap-2 px-3 data-[state=active]:bg-primary/20">
+              <Settings2 className="h-4 w-4" />
+              Sistema
+            </TabsTrigger>
+            <TabsTrigger value="integrations" className="gap-2 px-3 data-[state=active]:bg-primary/20">
+              <Zap className="h-4 w-4" />
+              Integraciones
+            </TabsTrigger>
+            <TabsTrigger value="ghl" className="gap-2 px-3 data-[state=active]:bg-primary/20">
+              <Users className="h-4 w-4" />
+              GoHighLevel
+            </TabsTrigger>
+            <TabsTrigger value="maintenance" className="gap-2 px-3 data-[state=active]:bg-primary/20">
+              <HardDrive className="h-4 w-4" />
+              Mantenimiento
+            </TabsTrigger>
+          </TabsList>
+        </div>
 
-        {/* GHL Integration */}
-        <GHLSettingsPanel />
+        <TabsContent value="system">
+          {currentTab === 'system' && (
+            <Suspense fallback={<SettingsSkeleton />}>
+              <SystemTogglesPanel />
+            </Suspense>
+          )}
+        </TabsContent>
 
-        {/* Database Maintenance */}
-        <MaintenancePanel />
-      </Suspense>
+        <TabsContent value="integrations">
+          {currentTab === 'integrations' && (
+            <Suspense fallback={<SettingsSkeleton />}>
+              <IntegrationsStatusPanel />
+            </Suspense>
+          )}
+        </TabsContent>
+
+        <TabsContent value="ghl">
+          {currentTab === 'ghl' && (
+            <Suspense fallback={<SettingsSkeleton />}>
+              <GHLSettingsPanel />
+            </Suspense>
+          )}
+        </TabsContent>
+
+        <TabsContent value="maintenance">
+          {currentTab === 'maintenance' && (
+            <Suspense fallback={<SettingsSkeleton />}>
+              <MaintenancePanel />
+            </Suspense>
+          )}
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

@@ -4,11 +4,22 @@ import { Switch } from '@/components/ui/switch';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
+import { Separator } from '@/components/ui/separator';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Settings2, Loader2, Save, Bell, Pause, Clock, Building } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 
 interface SystemSettings {
   auto_dunning_enabled: boolean;
@@ -75,6 +86,7 @@ export default function SystemTogglesPanel() {
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [hasChanges, setHasChanges] = useState(false);
+  const [confirmEmergencyKey, setConfirmEmergencyKey] = useState<null | 'ghl_paused' | 'manychat_paused'>(null);
 
   useEffect(() => {
     loadSettings();
@@ -144,6 +156,11 @@ export default function SystemTogglesPanel() {
     return <SettingsSkeleton />;
   }
 
+  const confirmEmergencyPause = (key: 'ghl_paused' | 'manychat_paused') => {
+    updateSetting(key, true);
+    setConfirmEmergencyKey(null);
+  };
+
   return (
     <Card className="card-base">
       <CardHeader className="pb-3">
@@ -156,74 +173,48 @@ export default function SystemTogglesPanel() {
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
-        {/* Auto Dunning Toggle */}
-        <div className="flex items-center justify-between p-3 rounded-lg bg-muted/30 border border-border/30">
-          <div className="flex items-center gap-3">
-            <Bell className="h-5 w-5 text-zinc-400" />
-            <div>
-              <Label className="font-medium">Auto-Dunning</Label>
-              <p className="text-xs text-muted-foreground">
-                Envía recordatorios automáticos de pago
-              </p>
+        <div className="space-y-3">
+          <div className="text-sm font-medium text-foreground">Operación</div>
+
+          {/* Auto Dunning Toggle */}
+          <div className="flex items-center justify-between p-3 rounded-lg bg-muted/30 border border-border/30">
+            <div className="flex items-center gap-3">
+              <Bell className="h-5 w-5 text-zinc-400" />
+              <div>
+                <Label className="font-medium">Auto-Dunning</Label>
+                <p className="text-xs text-muted-foreground">
+                  Envía recordatorios automáticos de pago
+                </p>
+              </div>
             </div>
+            <Switch
+              checked={settings.auto_dunning_enabled}
+              onCheckedChange={(checked) => updateSetting('auto_dunning_enabled', checked)}
+            />
           </div>
-          <Switch
-            checked={settings.auto_dunning_enabled}
-            onCheckedChange={(checked) => updateSetting('auto_dunning_enabled', checked)}
-          />
+
+          {/* Sync Paused Toggle */}
+          <div className="flex items-center justify-between p-3 rounded-lg bg-muted/30 border border-border/30">
+            <div className="flex items-center gap-3">
+              <Pause className="h-5 w-5 text-zinc-400" />
+              <div>
+                <Label className="font-medium">Pausar Sincronización</Label>
+                <p className="text-xs text-muted-foreground">
+                  Detiene todas las sincronizaciones automáticas
+                </p>
+              </div>
+            </div>
+            <Switch
+              checked={settings.sync_paused}
+              onCheckedChange={(checked) => updateSetting('sync_paused', checked)}
+            />
+          </div>
         </div>
 
-        {/* Sync Paused Toggle */}
-        <div className="flex items-center justify-between p-3 rounded-lg bg-muted/30 border border-border/30">
-          <div className="flex items-center gap-3">
-            <Pause className="h-5 w-5 text-zinc-400" />
-            <div>
-              <Label className="font-medium">Pausar Sincronización</Label>
-              <p className="text-xs text-muted-foreground">
-                Detiene todas las sincronizaciones automáticas
-              </p>
-            </div>
-          </div>
-          <Switch
-            checked={settings.sync_paused}
-            onCheckedChange={(checked) => updateSetting('sync_paused', checked)}
-          />
-        </div>
+        <Separator className="bg-border/40" />
 
-        {/* GHL Paused Toggle - EMERGENCY KILL SWITCH */}
-        <div className="flex items-center justify-between p-3 rounded-lg bg-destructive/10 border border-destructive/30">
-          <div className="flex items-center gap-3">
-            <Pause className="h-5 w-5 text-destructive" />
-            <div>
-              <Label className="font-medium text-destructive">Pausar GoHighLevel (emergencia)</Label>
-              <p className="text-xs text-muted-foreground">
-                Detiene TODOS los webhooks y syncs de GHL
-              </p>
-            </div>
-          </div>
-          <Switch
-            checked={settings.ghl_paused}
-            onCheckedChange={(checked) => updateSetting('ghl_paused', checked)}
-          />
-        </div>
-
-        {/* ManyChat Paused Toggle - EMERGENCY KILL SWITCH */}
-        <div className="flex items-center justify-between p-3 rounded-lg bg-destructive/10 border border-destructive/30">
-          <div className="flex items-center gap-3">
-            <Pause className="h-5 w-5 text-destructive" />
-            <div>
-              <Label className="font-medium text-destructive">Pausar ManyChat (emergencia)</Label>
-              <p className="text-xs text-muted-foreground">
-                Detiene TODOS los syncs de ManyChat
-              </p>
-            </div>
-          </div>
-          <Switch
-            checked={settings.manychat_paused}
-            onCheckedChange={(checked) => updateSetting('manychat_paused', checked)}
-          />
-        </div>
         <div className="p-3 rounded-lg bg-muted/30 border border-border/30 space-y-3">
+          <div className="text-sm font-medium text-foreground">Mensajería</div>
           <div className="flex items-center gap-3">
             <Clock className="h-5 w-5 text-zinc-400" />
             <div>
@@ -250,52 +241,145 @@ export default function SystemTogglesPanel() {
           </div>
         </div>
 
-        {/* Company Name */}
-        <div className="p-3 rounded-lg bg-muted/30 border border-border/30 space-y-3">
-          <div className="flex items-center gap-3">
-            <Building className="h-5 w-5 text-zinc-400" />
-            <div>
-              <Label className="font-medium">Nombre de Empresa</Label>
-              <p className="text-xs text-muted-foreground">
-                Se usa en mensajes y reportes
-              </p>
+        <div className="space-y-3">
+          <div className="text-sm font-medium text-foreground">Empresa</div>
+
+          {/* Company Name */}
+          <div className="p-3 rounded-lg bg-muted/30 border border-border/30 space-y-3">
+            <div className="flex items-center gap-3">
+              <Building className="h-5 w-5 text-zinc-400" />
+              <div>
+                <Label className="font-medium">Nombre de Empresa</Label>
+                <p className="text-xs text-muted-foreground">
+                  Se usa en mensajes y reportes
+                </p>
+              </div>
             </div>
+            <Input
+              value={settings.company_name}
+              onChange={(e) => updateSetting('company_name', e.target.value)}
+              placeholder="Mi Empresa S.A."
+              className="ml-8 w-auto input-base"
+            />
           </div>
-          <Input
-            value={settings.company_name}
-            onChange={(e) => updateSetting('company_name', e.target.value)}
-            placeholder="Mi Empresa S.A."
-            className="ml-8 w-auto input-base"
-          />
+
+          {/* Timezone */}
+          <div className="p-3 rounded-lg bg-muted/30 border border-border/30 space-y-3">
+            <div className="flex items-center gap-3">
+              <Clock className="h-5 w-5 text-zinc-400" />
+              <div>
+                <Label className="font-medium">Zona Horaria</Label>
+                <p className="text-xs text-muted-foreground">
+                  Para reportes y métricas
+                </p>
+              </div>
+            </div>
+            <Select
+              value={settings.timezone}
+              onValueChange={(value) => updateSetting('timezone', value)}
+            >
+              <SelectTrigger className="ml-8 w-64 input-base">
+                <SelectValue placeholder="Selecciona zona horaria" />
+              </SelectTrigger>
+              <SelectContent>
+                {timezones.map((tz) => (
+                  <SelectItem key={tz.value} value={tz.value}>
+                    {tz.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
         </div>
 
-        {/* Timezone */}
-        <div className="p-3 rounded-lg bg-muted/30 border border-border/30 space-y-3">
-          <div className="flex items-center gap-3">
-            <Clock className="h-5 w-5 text-zinc-400" />
-            <div>
-              <Label className="font-medium">Zona Horaria</Label>
-              <p className="text-xs text-muted-foreground">
-                Para reportes y métricas
-              </p>
-            </div>
+        <Separator className="bg-border/40" />
+
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="text-sm font-medium text-foreground">Emergencia</div>
+            <span className="text-[11px] text-muted-foreground">Usa solo si un sync se descontrola</span>
           </div>
-          <Select
-            value={settings.timezone}
-            onValueChange={(value) => updateSetting('timezone', value)}
-          >
-            <SelectTrigger className="ml-8 w-64 input-base">
-              <SelectValue placeholder="Selecciona zona horaria" />
-            </SelectTrigger>
-            <SelectContent>
-              {timezones.map((tz) => (
-                <SelectItem key={tz.value} value={tz.value}>
-                  {tz.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+
+          {/* GHL Paused Toggle - EMERGENCY KILL SWITCH */}
+          <div className="flex items-center justify-between p-3 rounded-lg bg-destructive/10 border border-destructive/30">
+            <div className="flex items-center gap-3">
+              <Pause className="h-5 w-5 text-destructive" />
+              <div>
+                <Label className="font-medium text-destructive">Pausar GoHighLevel</Label>
+                <p className="text-xs text-muted-foreground">
+                  Detiene webhooks y syncs de GHL
+                </p>
+              </div>
+            </div>
+            <Switch
+              checked={settings.ghl_paused}
+              onCheckedChange={(checked) => {
+                if (checked) setConfirmEmergencyKey('ghl_paused');
+                else updateSetting('ghl_paused', false);
+              }}
+            />
+          </div>
+
+          {/* ManyChat Paused Toggle - EMERGENCY KILL SWITCH */}
+          <div className="flex items-center justify-between p-3 rounded-lg bg-destructive/10 border border-destructive/30">
+            <div className="flex items-center gap-3">
+              <Pause className="h-5 w-5 text-destructive" />
+              <div>
+                <Label className="font-medium text-destructive">Pausar ManyChat</Label>
+                <p className="text-xs text-muted-foreground">
+                  Detiene syncs de ManyChat
+                </p>
+              </div>
+            </div>
+            <Switch
+              checked={settings.manychat_paused}
+              onCheckedChange={(checked) => {
+                if (checked) setConfirmEmergencyKey('manychat_paused');
+                else updateSetting('manychat_paused', false);
+              }}
+            />
+          </div>
         </div>
+
+        <AlertDialog open={confirmEmergencyKey === 'ghl_paused'} onOpenChange={(open) => !open && setConfirmEmergencyKey(null)}>
+          <AlertDialogContent className="bg-card border-border">
+            <AlertDialogHeader>
+              <AlertDialogTitle className="text-destructive">¿Pausar GoHighLevel?</AlertDialogTitle>
+              <AlertDialogDescription>
+                Esto detiene webhooks y sincronizaciones de GHL. Úsalo solo para cortar loops/errores. Puedes desactivarlo cuando el sistema esté estable.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel className="border-border">Cancelar</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={() => confirmEmergencyPause('ghl_paused')}
+                className="bg-destructive hover:bg-destructive/90 text-white"
+              >
+                Sí, pausar GHL
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+
+        <AlertDialog open={confirmEmergencyKey === 'manychat_paused'} onOpenChange={(open) => !open && setConfirmEmergencyKey(null)}>
+          <AlertDialogContent className="bg-card border-border">
+            <AlertDialogHeader>
+              <AlertDialogTitle className="text-destructive">¿Pausar ManyChat?</AlertDialogTitle>
+              <AlertDialogDescription>
+                Esto detiene sincronizaciones de ManyChat. Úsalo solo si está causando errores o consumo excesivo. Puedes desactivarlo cuando termines.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel className="border-border">Cancelar</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={() => confirmEmergencyPause('manychat_paused')}
+                className="bg-destructive hover:bg-destructive/90 text-white"
+              >
+                Sí, pausar ManyChat
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
 
         {/* Save Button */}
         <div className="flex justify-end pt-2">
