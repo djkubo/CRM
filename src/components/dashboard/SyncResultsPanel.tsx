@@ -106,7 +106,7 @@ export function SyncResultsPanel() {
 	      .order("started_at", { ascending: false })
 	      .limit(25);
     
-    setActiveSyncs((active || []) as SyncRun[]);
+    setActiveSyncs((active || []) as unknown as SyncRun[]);
 
     // Recent completed/failed syncs (last hour)
     const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
@@ -118,7 +118,7 @@ export function SyncResultsPanel() {
       .order("completed_at", { ascending: false })
       .limit(10);
 
-    setRecentRuns((recent || []) as SyncRun[]);
+    setRecentRuns((recent || []) as unknown as SyncRun[]);
     
     // Failed AND paused syncs with checkpoint (resumable) - last 24 hours
     const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
@@ -132,12 +132,13 @@ export function SyncResultsPanel() {
       .limit(10);
     
     // Filter to only those with real checkpoint data (canResume or cursor)
-    const resumableFailed = (failed || []).filter((run: SyncRun) => {
+    const typedFailed = (failed || []) as unknown as SyncRun[];
+    const resumableFailed = typedFailed.filter((run) => {
       const cp = run.checkpoint as Record<string, unknown> | null;
       return cp && (cp.canResume === true || cp.cursor || cp.runningTotal);
     });
     
-    setFailedResumable(resumableFailed as SyncRun[]);
+    setFailedResumable(resumableFailed);
   };
 
   useEffect(() => {
