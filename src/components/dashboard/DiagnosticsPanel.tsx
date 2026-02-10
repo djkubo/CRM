@@ -4,13 +4,17 @@ import { supabase } from "@/integrations/supabase/client";
 import { invokeWithAdminKey } from "@/lib/adminApi";
 import { buildInfo } from "@/lib/buildInfo";
 import { env } from "@/lib/env";
+import { APP_PATHS } from "@/config/appPaths";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
+import { useNavigate } from "react-router-dom";
 import { 
   Shield, 
   AlertTriangle, 
@@ -25,7 +29,10 @@ import {
   ArrowRightLeft,
   Brain,
   BarChart3,
-  Calendar
+  Calendar,
+  Copy,
+  Wrench,
+  ArrowRight
 } from "lucide-react";
 import { format, subDays } from "date-fns";
 
@@ -109,7 +116,7 @@ const getStatusBadge = (status: string) => {
 };
 
 // Sync Health Panel Component
-function SyncHealthPanel({ enabled }: { enabled: boolean }) {
+function SyncHealthPanel({ enabled, autoRefresh }: { enabled: boolean; autoRefresh: boolean }) {
   const { data: syncRuns = [], isLoading, error: syncRunsError } = useQuery({
     queryKey: ['sync-runs-health'],
     queryFn: async () => {
@@ -122,7 +129,7 @@ function SyncHealthPanel({ enabled }: { enabled: boolean }) {
       return data as SyncRun[];
     },
     enabled,
-    refetchInterval: enabled ? 30000 : false
+    refetchInterval: enabled && autoRefresh ? 30000 : false
   });
 
   const { data: webhookStats = [], error: webhookError } = useQuery({
@@ -292,12 +299,23 @@ function SyncHealthPanel({ enabled }: { enabled: boolean }) {
 
 export default function DiagnosticsPanel() {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const [reconcileSource, setReconcileSource] = useState<string>('stripe');
   const [reconcileRange, setReconcileRange] = useState<string>('7d');
   const [isReconciling, setIsReconciling] = useState(false);
   const [aiAnalysis, setAiAnalysis] = useState<string | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isRepairing, setIsRepairing] = useState(false);
+  const [autoRefresh, setAutoRefresh] = useState(true);
+
+  const copyToClipboard = async (text: string, okMessage = "Copiado") => {
+    try {
+      await navigator.clipboard.writeText(text);
+      toast.success(okMessage);
+    } catch {
+      toast.error("No se pudo copiar");
+    }
+  };
 
   const supabaseHost = (() => {
     try {
@@ -428,6 +446,30 @@ export default function DiagnosticsPanel() {
   const checksLoaded = isAdmin === true && !loadingChecks && !checksError;
   const hasCriticalIssues = checksLoaded ? qualityChecks.some(c => c.status === 'critical') : false;
   const hasWarnings = checksLoaded ? qualityChecks.some(c => c.status === 'warning') : false;
+
+  const refreshAll = async () => {
+    if (isAdmin !== true) {
+      toast.error("No autorizado", { description: "Se requieren permisos de administrador." });
+      return;
+    }
+
+    const res = await refetchChecks();
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['reconciliation-runs'] }),
+      queryClient.invalidateQueries({ queryKey: ['rebuild-logs'] }),
+      queryClient.invalidateQueries({ queryKey: ['sync-runs-health'] }),
+      queryClient.invalidateQueries({ queryKey: ['webhook-stats'] }),
+      queryClient.invalidateQueries({ queryKey: ['system-timezone'] }),
+    ]);
+
+    if (res.error) {
+      toast.error("No se pudo actualizar", {
+        description: res.error instanceof Error ? res.error.message : "Error desconocido",
+      });
+    } else {
+      toast.success("Actualizado");
+    }
+  };
 
   const runReconciliation = async () => {
     setIsReconciling(true);
@@ -578,42 +620,90 @@ Responde en español, de forma concisa.`;
             Diagnóstico
           </h1>
           <p className="text-xs md:text-sm text-muted-foreground mt-0.5">
-            Reconciliación y calidad de datos
+            Estado operativo, calidad y herramientas de reparación
           </p>
         </div>
-        <Button 
-          onClick={async () => {
-            if (isAdmin !== true) {
-              toast.error("No autorizado", { description: "Se requieren permisos de administrador." });
-              return;
-            }
-
-            const res = await refetchChecks();
-            await Promise.all([
-              queryClient.invalidateQueries({ queryKey: ['reconciliation-runs'] }),
-              queryClient.invalidateQueries({ queryKey: ['rebuild-logs'] }),
-              queryClient.invalidateQueries({ queryKey: ['sync-runs-health'] }),
-              queryClient.invalidateQueries({ queryKey: ['webhook-stats'] }),
-              queryClient.invalidateQueries({ queryKey: ['system-timezone'] }),
-            ]);
-
-            if (res.error) {
-              toast.error("No se pudo actualizar", {
-                description: res.error instanceof Error ? res.error.message : "Error desconocido",
-              });
-            } else {
-              toast.success("Actualizado");
-            }
-          }} 
-          variant="outline" 
-          size="sm"
-          disabled={loadingChecks || loadingAdmin || isAdmin !== true}
-          className="self-start sm:self-auto touch-feedback"
-        >
-          <RefreshCw className={`w-4 h-4 ${loadingChecks ? 'animate-spin' : ''}`} />
-          <span className="ml-2 hidden sm:inline">Actualizar</span>
-        </Button>
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
+          <div className="flex items-center gap-2 rounded-lg border border-border/50 bg-muted/20 px-3 py-2">
+            <Switch
+              checked={autoRefresh}
+              onCheckedChange={setAutoRefresh}
+              id="diag-auto-refresh"
+              disabled={loadingAdmin}
+            />
+            <Label htmlFor="diag-auto-refresh" className="text-xs text-muted-foreground">
+              Auto-actualizar
+              <span className="hidden sm:inline"> (30s)</span>
+            </Label>
+          </div>
+          <Button
+            onClick={refreshAll}
+            variant="outline"
+            size="sm"
+            disabled={loadingChecks || loadingAdmin || isAdmin !== true}
+            className="self-start sm:self-auto touch-feedback"
+          >
+            <RefreshCw className={`w-4 h-4 ${loadingChecks ? 'animate-spin' : ''}`} />
+            <span className="ml-2 hidden sm:inline">Actualizar</span>
+          </Button>
+        </div>
       </div>
+
+      {/* Quick Guidance */}
+      <Card className="border-border/50">
+        <CardContent className="p-4 md:p-6">
+          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div className="space-y-1">
+              <p className="text-sm font-medium text-foreground">Qué hacer aquí</p>
+              <p className="text-xs text-muted-foreground">
+                Si algo no cuadra: revisa Calidad, valida Reconciliación y, si hace falta, vuelve a Sincronizar.
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => navigate(APP_PATHS.sync)}
+                className="gap-2"
+              >
+                <ArrowRight className="h-4 w-4" />
+                Ir a Sincronizar
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => copyToClipboard(buildInfo.gitSha, "Build copiado")}
+                className="gap-2"
+              >
+                <Copy className="h-4 w-4" />
+                Copiar build
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={repairApp}
+                disabled={isRepairing}
+                className="gap-2"
+              >
+                <Wrench className={`h-4 w-4 ${isRepairing ? "animate-pulse" : ""}`} />
+                Reparar app
+              </Button>
+            </div>
+          </div>
+
+          {(adminError || (isAdmin === false && !loadingAdmin)) && (
+            <div className="mt-3 rounded-lg border border-orange-500/40 bg-orange-500/10 px-3 py-2 text-xs text-orange-300">
+              Este panel muestra más información con permisos de administrador (RPC `is_admin()`).
+            </div>
+          )}
+
+          {isAdmin === true && hasCriticalIssues && (
+            <div className="mt-3 rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-300">
+              Hay checks en estado <span className="font-medium">Crítico</span>. Revisa la pestaña <span className="font-medium">Datos</span> antes de reconstruir o promover métricas.
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       <Card className="border-border/50">
         <CardHeader className="p-4 md:p-6">
@@ -630,6 +720,17 @@ Responde en español, de forma concisa.`;
               <p className="mt-0.5 text-[10px] text-muted-foreground">
                 {new Date(buildInfo.buildTime).toLocaleString()}
               </p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 px-2 text-xs"
+                  onClick={() => copyToClipboard(buildInfo.gitSha, "Build copiado")}
+                >
+                  <Copy className="h-3.5 w-3.5" />
+                  <span className="ml-2">Copiar</span>
+                </Button>
+              </div>
             </div>
             <div className="rounded-lg border border-border/50 bg-muted/30 p-3">
               <p className="text-xs text-muted-foreground">Supabase</p>
@@ -815,24 +916,28 @@ Responde en español, de forma concisa.`;
       </div>
 
       {/* Tabs - Scrollable on mobile */}
-      <Tabs defaultValue="sync-health" className="space-y-4">
+      <Tabs defaultValue="overview" className="space-y-4">
         <div className="overflow-x-auto -mx-4 px-4 md:mx-0 md:px-0">
           <TabsList className="inline-flex min-w-max md:min-w-0">
+            <TabsTrigger value="overview" className="gap-1 md:gap-2 text-xs md:text-sm px-2 md:px-3">
+              <Shield className="w-3 h-3 md:w-4 md:h-4" />
+              <span className="hidden sm:inline">Resumen</span>
+            </TabsTrigger>
             <TabsTrigger value="sync-health" className="gap-1 md:gap-2 text-xs md:text-sm px-2 md:px-3">
               <RefreshCw className="w-3 h-3 md:w-4 md:h-4" />
               <span className="hidden sm:inline">Sincronización</span>
             </TabsTrigger>
             <TabsTrigger value="quality" className="gap-1 md:gap-2 text-xs md:text-sm px-2 md:px-3">
               <Database className="w-3 h-3 md:w-4 md:h-4" />
-              <span className="hidden sm:inline">Calidad</span>
+              <span className="hidden sm:inline">Datos</span>
             </TabsTrigger>
             <TabsTrigger value="reconciliation" className="gap-1 md:gap-2 text-xs md:text-sm px-2 md:px-3">
               <ArrowRightLeft className="w-3 h-3 md:w-4 md:h-4" />
-              <span className="hidden sm:inline">Reconc.</span>
+              <span className="hidden sm:inline">Pagos</span>
             </TabsTrigger>
             <TabsTrigger value="rebuild" className="gap-1 md:gap-2 text-xs md:text-sm px-2 md:px-3">
               <BarChart3 className="w-3 h-3 md:w-4 md:h-4" />
-              <span className="hidden sm:inline">Reconstrucción</span>
+              <span className="hidden sm:inline">Métricas</span>
             </TabsTrigger>
             <TabsTrigger value="ai-audit" className="gap-1 md:gap-2 text-xs md:text-sm px-2 md:px-3">
               <Brain className="w-3 h-3 md:w-4 md:h-4" />
@@ -841,9 +946,65 @@ Responde en español, de forma concisa.`;
           </TabsList>
         </div>
 
+        {/* Overview Tab */}
+        <TabsContent value="overview">
+          <Card>
+            <CardHeader className="p-4 md:p-6">
+              <CardTitle className="text-base md:text-lg">Resumen</CardTitle>
+              <CardDescription className="text-xs md:text-sm">
+                Lectura rápida para decidir el siguiente paso
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="p-4 md:p-6 pt-0 md:pt-0 space-y-3">
+              <div className="grid gap-3 grid-cols-1 lg:grid-cols-3">
+                <div className="rounded-lg border border-border/50 bg-muted/30 p-3">
+                  <p className="text-xs font-medium text-foreground">Si ves diferencias grandes en pagos</p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Primero sincroniza Stripe/PayPal en <span className="font-mono">/ops/sync</span>, luego corre Reconciliación.
+                  </p>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    className="mt-2 gap-2"
+                    onClick={() => navigate(APP_PATHS.sync)}
+                  >
+                    <ArrowRight className="h-4 w-4" />
+                    Abrir Sincronizar
+                  </Button>
+                </div>
+
+                <div className="rounded-lg border border-border/50 bg-muted/30 p-3">
+                  <p className="text-xs font-medium text-foreground">Si la app se ve “vieja” o rara</p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Es casi siempre cache/PWA. Usa “Reparar app” y valida el build.
+                  </p>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="mt-2 gap-2"
+                    onClick={repairApp}
+                    disabled={isRepairing}
+                  >
+                    <Wrench className="h-4 w-4" />
+                    Reparar app
+                  </Button>
+                </div>
+
+                <div className="rounded-lg border border-border/50 bg-muted/30 p-3">
+                  <p className="text-xs font-medium text-foreground">Si no puedes ver datos aquí</p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Falta permiso admin. Confirma que tu usuario pasa <span className="font-mono">is_admin()</span>.
+                  </p>
+                  <div className="mt-2">{getStatusBadge(isAdmin ? 'ok' : 'warning')}</div>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
         {/* Sync Health Tab */}
         <TabsContent value="sync-health">
-          <SyncHealthPanel enabled={isAdmin === true} />
+          <SyncHealthPanel enabled={isAdmin === true} autoRefresh={autoRefresh} />
         </TabsContent>
 
         {/* Data Quality Tab */}
