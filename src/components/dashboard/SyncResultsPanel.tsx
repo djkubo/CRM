@@ -405,13 +405,11 @@ export function SyncResultsPanel() {
           break;
         case 'paypal':
           endpoint = 'fetch-paypal';
-          if (!cursor) {
-            toast.error('No hay punto de reanudación', { description: 'El sync no tiene un cursor guardado para continuar.' });
-            return;
-          }
-          payload = { 
+          // PayPal resumes from checkpoint (page/chunk). The edge function reads it from sync_runs.
+          payload = {
             syncRunId: sync.id,
-            resumeFromCursor: cursor as string
+            resumeSync: true,
+            fetchAll: true
           };
           break;
         case 'ghl':
@@ -714,12 +712,29 @@ export function SyncResultsPanel() {
                           </Badge>
                         )}
                       </div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs text-muted-foreground">{elapsed}</span>
-                        <AlertDialog>
-                          <AlertDialogTrigger asChild>
-                            <Button
-                              variant="ghost"
+	                      <div className="flex items-center gap-2">
+	                        <span className="text-xs text-muted-foreground">{elapsed}</span>
+	                        {isStale && (
+	                          <Button
+	                            variant="ghost"
+	                            size="sm"
+	                            onClick={() => handleResumeSync(sync)}
+	                            disabled={isResuming === sync.id}
+	                            className="h-7 px-2 text-xs text-emerald-400 hover:text-emerald-300 hover:bg-emerald-500/10"
+	                            title="Reanudar este sync"
+	                          >
+	                            {isResuming === sync.id ? (
+	                              <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+	                            ) : (
+	                              <PlayCircle className="h-3 w-3 mr-1" />
+	                            )}
+	                            Reanudar
+	                          </Button>
+	                        )}
+	                        <AlertDialog>
+	                          <AlertDialogTrigger asChild>
+	                            <Button
+	                              variant="ghost"
                               size="sm"
                               disabled={cancellingRunId === sync.id}
                               className="h-7 px-2 text-xs text-red-400 hover:text-red-300 hover:bg-red-500/10"

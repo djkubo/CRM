@@ -2,9 +2,36 @@ import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-
 import { retryWithBackoff, RETRY_CONFIGS, RETRYABLE_ERRORS } from '../_shared/retry.ts';
 import { createLogger, LogLevel } from '../_shared/logger.ts';
 
+// Declare EdgeRuntime global for Supabase Edge Functions (used for true fire-and-forget continuation)
+declare const EdgeRuntime: { waitUntil: (promise: Promise<unknown>) => void } | undefined;
+
 const logger = createLogger('fetch-paypal', LogLevel.INFO);
 const STALE_TIMEOUT_MINUTES = 3;
 const MAX_DAYS_PER_CHUNK = 31; // PayPal API maximum range
+const FUNCTION_VERSION = '2026-02-10-1';
+
+// Continuation reliability (prevents "stuck at N" when the auto-chain request fails silently)
+const CHAIN_RETRY_ATTEMPTS = 3;
+const CHAIN_FETCH_TIMEOUT_MS = 10_000;
+
+// Process multiple pages per invocation to reduce dependency on auto-chain
+const INVOCATION_TIME_BUDGET_MS = 50_000; // keep under common 60s function limits
+const DEFAULT_MAX_PAGES_PER_INVOCATION = 3;
+const MAX_MAX_PAGES = 20;
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -89,6 +116,13 @@ interface DateChunk {
   index: number;
   total: number;
 }
+
+type PayPalSyncRunRow = {
+  id: string;
+  status: string;
+  checkpoint: unknown;
+  metadata: unknown;
+};
 
 // ============= SECURITY =============
 
@@ -248,7 +282,8 @@ async function triggerNextChunkOrPage(
   totalChunks: number,
   originalStartDate: string,
   originalEndDate: string,
-  totalPages: number
+  totalPages: number,
+  maxPagesPerInvocation: number
 ): Promise<boolean> {
   const { data: updated, error } = await supabase
     .from('sync_runs')
@@ -260,7 +295,10 @@ async function triggerNextChunkOrPage(
         chunkEnd,
         totalChunks,
         totalPages,
-        lastActivity: new Date().toISOString()
+        lastActivity: new Date().toISOString(),
+        canResume: true,
+        functionVersion: FUNCTION_VERSION,
+        maxPagesPerInvocation
       }
     })
     .eq('id', syncRunId)
@@ -276,13 +314,9 @@ async function triggerNextChunkOrPage(
   const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
   const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
 
-  fetch(`${supabaseUrl}/functions/v1/fetch-paypal`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${serviceKey}`
-    },
-    body: JSON.stringify({
+  const invokeNext = async () => {
+    const url = `${supabaseUrl}/functions/v1/fetch-paypal`;
+    const payload = JSON.stringify({
       fetchAll: true,
       syncRunId,
       page: nextPage,
@@ -292,11 +326,107 @@ async function triggerNextChunkOrPage(
       totalChunks,
       originalStartDate,
       originalEndDate,
+      maxPages: maxPagesPerInvocation,
       _continuation: true
-    })
-  }).catch(err => logger.error('Auto-continuation fetch failed', err));
+    });
 
-  logger.info(`✅ Triggered continuation: chunk ${chunkIndex + 1}/${totalChunks}, page ${nextPage}/${totalPages}`, { syncRunId });
+    await delay(500);
+
+    for (let attempt = 1; attempt <= CHAIN_RETRY_ATTEMPTS; attempt++) {
+      try {
+        const response = await fetchWithTimeout(
+          url,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${serviceKey}`,
+              // Some gateways require explicit apikey even when Authorization is present.
+              'apikey': Deno.env.get('SUPABASE_ANON_KEY') ?? serviceKey
+            },
+            body: payload
+          },
+          CHAIN_FETCH_TIMEOUT_MS
+        );
+
+        if (response.ok) {
+          logger.info(`✅ Triggered continuation: chunk ${chunkIndex + 1}/${totalChunks}, page ${nextPage}/${totalPages}`, { syncRunId, attempt });
+          return;
+        }
+
+        const respText = await response.text();
+        logger.warn(`Continuation returned ${response.status} (attempt ${attempt}/${CHAIN_RETRY_ATTEMPTS})`, {
+          syncRunId,
+          status: response.status,
+          bodyPreview: respText.substring(0, 200)
+        });
+      } catch (err) {
+        logger.error(`Continuation attempt ${attempt} failed`, err instanceof Error ? err : new Error(String(err)), { syncRunId });
+      }
+
+      if (attempt < CHAIN_RETRY_ATTEMPTS) {
+        await delay(2000 * attempt);
+      }
+    }
+
+    // All retries failed - mark sync paused for manual resume.
+    logger.error(
+      'All continuation retries exhausted - sync paused for manual resume',
+      new Error('Continuation failed'),
+      { syncRunId }
+    );
+    try {
+      await supabase
+        .from('sync_runs')
+        .update({
+          status: 'paused',
+          error_message: 'Auto-chain falló. Haz clic en Reanudar para continuar.',
+          checkpoint: {
+            page: nextPage,
+            chunkIndex,
+            chunkStart,
+            chunkEnd,
+            totalChunks,
+            totalPages,
+            lastActivity: new Date().toISOString(),
+            canResume: true,
+            chainFailed: true,
+            functionVersion: FUNCTION_VERSION,
+            maxPagesPerInvocation
+          }
+        })
+        .eq('id', syncRunId);
+    } catch (updateErr) {
+      logger.error('Failed to mark sync as paused after continuation failure', updateErr instanceof Error ? updateErr : new Error(String(updateErr)), { syncRunId });
+    }
+  };
+
+  if (typeof EdgeRuntime !== 'undefined' && EdgeRuntime?.waitUntil) {
+    EdgeRuntime.waitUntil(invokeNext());
+  } else {
+    // No waitUntil: do not attempt best-effort background work, pause instead so user can resume.
+    await supabase
+      .from('sync_runs')
+      .update({
+        status: 'paused',
+        error_message: 'Continuación automática no disponible en este runtime. Usa Reanudar para continuar.',
+        checkpoint: {
+          page: nextPage,
+          chunkIndex,
+          chunkStart,
+          chunkEnd,
+          totalChunks,
+          totalPages,
+          lastActivity: new Date().toISOString(),
+          canResume: true,
+          chainFailed: true,
+          functionVersion: FUNCTION_VERSION,
+          maxPagesPerInvocation
+        }
+      })
+      .eq('id', syncRunId);
+  }
+
   return true;
 }
 
@@ -427,6 +557,9 @@ Deno.serve(async (req) => {
     let cleanupStale = false;
     let forceCancel = false;
     let isContinuation = false;
+    let resumeSync = false;
+    let maxPages: number | null = null;
+    let noChain = false;
 
     // Calculate safe date boundaries
     const nowMs = Date.now();
@@ -440,13 +573,140 @@ Deno.serve(async (req) => {
     cleanupStale = body.cleanupStale === true;
     forceCancel = body.forceCancel === true;
     isContinuation = body._continuation === true;
+    resumeSync = body.resumeSync === true || body.resume_sync === true || body.resume === true || body.resumeFromCheckpoint === true;
+    noChain = body.noChain === true || body.no_chain === true || body.chainMode === 'none' || body.chain_mode === 'none';
+    const bodyMaxPages = body.maxPages ?? body.max_pages ?? null;
+    maxPages = typeof bodyMaxPages === 'number' ? bodyMaxPages : Number.isFinite(Number(bodyMaxPages)) ? Number(bodyMaxPages) : null;
     page = body.page || 1;
     chunkIndex = body.chunkIndex || 0;
     totalChunks = body.totalChunks || 1;
     syncRunId = body.syncRunId || null;
 
-    // For continuations, use the chunk dates passed
-    if (isContinuation && body.chunkStart && body.chunkEnd) {
+    // ============= RESUME FROM CHECKPOINT (Admin-triggered) =============
+    // Allows continuing a stuck/paused/failed sync without losing progress.
+    if (resumeSync) {
+      let runToResume: PayPalSyncRunRow | null = null;
+
+      if (syncRunId) {
+        const { data } = await supabase
+          .from('sync_runs')
+          .select('id, status, checkpoint, metadata')
+          .eq('id', syncRunId)
+          .eq('source', 'paypal')
+          .single();
+        runToResume = (data ?? null) as unknown as PayPalSyncRunRow | null;
+      } else {
+        const { data } = await supabase
+          .from('sync_runs')
+          .select('id, status, checkpoint, metadata')
+          .eq('source', 'paypal')
+          .in('status', ['paused', 'failed', 'running', 'continuing'])
+          .not('checkpoint', 'is', null)
+          .order('started_at', { ascending: false })
+          .limit(1);
+        runToResume = (Array.isArray(data) && data.length > 0 ? data[0] : null) as unknown as PayPalSyncRunRow | null;
+        syncRunId = runToResume?.id ?? null;
+      }
+
+      if (!runToResume || !syncRunId) {
+        return new Response(
+          JSON.stringify({ success: false, status: 'failed', error: 'No resumable PayPal sync found' }),
+          { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      if (runToResume.status === 'completed' || runToResume.status === 'cancelled' || runToResume.status === 'canceled') {
+        return new Response(
+          JSON.stringify({ success: false, status: 'failed', error: `Sync not resumable (status=${runToResume.status})`, syncRunId }),
+          { status: 409, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      const cp = (typeof runToResume.checkpoint === 'object' && runToResume.checkpoint !== null)
+        ? runToResume.checkpoint as Record<string, unknown>
+        : null;
+      const md = (typeof runToResume.metadata === 'object' && runToResume.metadata !== null)
+        ? runToResume.metadata as Record<string, unknown>
+        : null;
+
+      const lastActivity = cp && typeof cp.lastActivity === 'string' ? (cp.lastActivity as string) : null;
+      if ((runToResume.status === 'running' || runToResume.status === 'continuing') && lastActivity) {
+        const msAgo = Date.now() - new Date(lastActivity).getTime();
+        // If it's actually active, don't spawn duplicate work.
+        if (msAgo < 60_000) {
+          return new Response(
+            JSON.stringify({ success: true, status: 'running', syncRunId, message: 'Sync already in progress' }),
+            { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
+      }
+
+      // Pull pagination state from checkpoint.
+      const cpPageRaw = cp?.page;
+      const cpChunkIndexRaw = cp?.chunkIndex;
+      const cpTotalChunksRaw = cp?.totalChunks;
+      const cpChunkStart = typeof cp?.chunkStart === 'string' ? (cp.chunkStart as string) : null;
+      const cpChunkEnd = typeof cp?.chunkEnd === 'string' ? (cp.chunkEnd as string) : null;
+
+      if (!cpChunkStart || !cpChunkEnd) {
+        return new Response(
+          JSON.stringify({ success: false, status: 'failed', error: 'Cannot resume: checkpoint missing chunkStart/chunkEnd', syncRunId }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      const cpPage = typeof cpPageRaw === 'number' ? cpPageRaw : Number.isFinite(Number(cpPageRaw)) ? Number(cpPageRaw) : 1;
+      const cpChunkIndex = typeof cpChunkIndexRaw === 'number' ? cpChunkIndexRaw : Number.isFinite(Number(cpChunkIndexRaw)) ? Number(cpChunkIndexRaw) : 0;
+      const cpTotalChunks = typeof cpTotalChunksRaw === 'number' ? cpTotalChunksRaw : Number.isFinite(Number(cpTotalChunksRaw)) ? Number(cpTotalChunksRaw) : null;
+
+      const mdStart = typeof md?.originalStartDate === 'string' ? (md.originalStartDate as string) : null;
+      const mdEnd = typeof md?.originalEndDate === 'string' ? (md.originalEndDate as string) : null;
+
+      originalStartDate = mdStart || cpChunkStart;
+      originalEndDate = mdEnd || cpChunkEnd;
+      chunkStart = cpChunkStart;
+      chunkEnd = cpChunkEnd;
+      page = cpPage;
+      chunkIndex = cpChunkIndex;
+      totalChunks = cpTotalChunks ?? (typeof md?.totalChunks === 'number' ? (md.totalChunks as number) : 1);
+      // Resume should continue the full run (unless explicitly overridden)
+      fetchAll = body.fetchAll === false ? false : (typeof md?.fetchAll === 'boolean' ? (md.fetchAll as boolean) : true);
+
+      // Mark as running again. IMPORTANT: don't resurrect cancelled/completed runs.
+      const resumeCount = cp && typeof cp.resumeCount === 'number' ? (cp.resumeCount as number) : 0;
+      await supabase
+        .from('sync_runs')
+        .update({
+          status: 'running',
+          error_message: null,
+          checkpoint: {
+            ...cp,
+            page,
+            chunkIndex,
+            chunkStart,
+            chunkEnd,
+            totalChunks,
+            lastActivity: new Date().toISOString(),
+            canResume: true,
+            resumed: true,
+            resumeCount: resumeCount + 1,
+            functionVersion: FUNCTION_VERSION,
+          },
+          metadata: {
+            ...(md || {}),
+            fetchAll,
+            originalStartDate,
+            originalEndDate,
+            totalChunks,
+            currentChunk: chunkIndex + 1,
+          }
+        })
+        .eq('id', syncRunId)
+        .in('status', ['running', 'continuing', 'paused', 'failed']);
+
+      logger.info('🔁 Resuming PayPal sync from checkpoint', { syncRunId, page, chunkIndex, totalChunks });
+    } else if (isContinuation && body.chunkStart && body.chunkEnd) {
+      // For continuations, use the chunk dates passed
       chunkStart = body.chunkStart;
       chunkEnd = body.chunkEnd;
       originalStartDate = body.originalStartDate || body.chunkStart;
@@ -520,61 +780,109 @@ Deno.serve(async (req) => {
 
     // ============ CLEANUP STALE SYNCS ============
     if (cleanupStale) {
-      const staleThreshold = new Date(Date.now() - STALE_TIMEOUT_MINUTES * 60 * 1000).toISOString();
+      const thresholdMs = Date.now() - STALE_TIMEOUT_MINUTES * 60 * 1000;
+      const nowIso = new Date().toISOString();
 
-      const { data: staleSyncs } = await supabase
+      const { data: running } = await supabase
         .from('sync_runs')
-        .update({
-          status: 'failed',
-          completed_at: new Date().toISOString(),
-          error_message: `Timeout - sin actividad por ${STALE_TIMEOUT_MINUTES} minutos`
-        })
+        .select('id, started_at, checkpoint')
         .eq('source', 'paypal')
-        .in('status', ['running', 'continuing'])
-        .lt('started_at', staleThreshold)
-        .select('id');
+        .in('status', ['running', 'continuing']);
+
+      const staleIds = (running || [])
+        .filter((r: { started_at: string; checkpoint: unknown }) => {
+          const cp = (typeof r.checkpoint === 'object' && r.checkpoint !== null)
+            ? (r.checkpoint as Record<string, unknown>)
+            : null;
+          const lastActivity = cp && typeof cp.lastActivity === 'string' ? (cp.lastActivity as string) : null;
+          const lastMs = lastActivity ? new Date(lastActivity).getTime() : new Date(r.started_at).getTime();
+          return (Date.now() - lastMs) > (STALE_TIMEOUT_MINUTES * 60 * 1000);
+        })
+        .map((r: { id: string }) => r.id);
+
+      const { data: staleSyncs } = staleIds.length > 0
+        ? await supabase
+            .from('sync_runs')
+            .update({
+              status: 'failed',
+              completed_at: nowIso,
+              error_message: `Timeout - sin actividad por ${STALE_TIMEOUT_MINUTES} minutos`
+            })
+            .in('id', staleIds)
+            .select('id')
+        : { data: [] as Array<{ id: string }> };
 
       return new Response(
-        JSON.stringify({ success: true, status: 'completed', cleaned: staleSyncs?.length || 0 }),
+        JSON.stringify({ success: true, status: 'completed', cleaned: staleSyncs?.length || 0, version: FUNCTION_VERSION }),
         { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
     // ============ CHECK FOR EXISTING SYNC ============
     if (!syncRunId && !isContinuation) {
-      const staleThreshold = new Date(Date.now() - STALE_TIMEOUT_MINUTES * 60 * 1000).toISOString();
+      const nowIso = new Date().toISOString();
 
-      await supabase
+      const { data: active } = await supabase
         .from('sync_runs')
-        .update({
-          status: 'failed',
-          completed_at: new Date().toISOString(),
-          error_message: `Timeout - sin actividad por ${STALE_TIMEOUT_MINUTES} minutos`
-        })
+        .select('id, started_at, checkpoint')
         .eq('source', 'paypal')
         .in('status', ['running', 'continuing'])
-        .lt('started_at', staleThreshold);
+        .order('started_at', { ascending: false });
 
-      const { data: existingRuns } = await supabase
-        .from('sync_runs')
-        .select('id')
-        .eq('source', 'paypal')
-        .in('status', ['running', 'continuing'])
-        .limit(1);
+      if (active && active.length > 0) {
+        const thresholdMs = Date.now() - STALE_TIMEOUT_MINUTES * 60 * 1000;
+        let hasNonStale = false;
+        const staleIds: string[] = [];
 
-      if (existingRuns && existingRuns.length > 0) {
-        return new Response(
-          JSON.stringify({
-            success: false,
-            status: 'failed',
-            error: 'sync_already_running',
-            message: 'Ya hay un sync de PayPal en progreso',
-            existingSyncId: existingRuns[0].id
-          }),
-          { status: 409, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
+        for (const r of active as Array<{ id: string; started_at: string; checkpoint: unknown }>) {
+          const cp = (typeof r.checkpoint === 'object' && r.checkpoint !== null)
+            ? (r.checkpoint as Record<string, unknown>)
+            : null;
+          const lastActivity = cp && typeof cp.lastActivity === 'string' ? (cp.lastActivity as string) : null;
+          const lastMs = lastActivity ? new Date(lastActivity).getTime() : new Date(r.started_at).getTime();
+          const isStale = lastMs < thresholdMs;
+          if (isStale) staleIds.push(r.id);
+          else hasNonStale = true;
+        }
+
+        if (staleIds.length > 0) {
+          await supabase
+            .from('sync_runs')
+            .update({
+              status: 'failed',
+              completed_at: nowIso,
+              error_message: `Timeout - sin actividad por ${STALE_TIMEOUT_MINUTES} minutos`
+            })
+            .in('id', staleIds);
+        }
+
+        if (hasNonStale) {
+          return new Response(
+            JSON.stringify({
+              success: false,
+              status: 'failed',
+              error: 'sync_already_running',
+              message: 'Ya hay un sync de PayPal en progreso',
+              existingSyncId: active[0].id,
+              version: FUNCTION_VERSION
+            }),
+            { status: 409, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          );
+        }
       }
     }
+
+    const maxPagesPerInvocation = Math.min(
+      Math.max(
+        1,
+        Math.floor(
+          (typeof maxPages === 'number' && Number.isFinite(maxPages))
+            ? maxPages
+            : DEFAULT_MAX_PAGES_PER_INVOCATION
+        )
+      ),
+      MAX_MAX_PAGES
+    );
 
     // Create sync run if needed
     if (!syncRunId) {
@@ -588,7 +896,20 @@ Deno.serve(async (req) => {
             originalStartDate, 
             originalEndDate,
             totalChunks,
-            currentChunk: chunkIndex + 1
+            currentChunk: chunkIndex + 1,
+            functionVersion: FUNCTION_VERSION,
+            maxPagesPerInvocation
+          },
+          checkpoint: {
+            page,
+            chunkIndex,
+            chunkStart,
+            chunkEnd,
+            totalChunks,
+            lastActivity: new Date().toISOString(),
+            canResume: true,
+            functionVersion: FUNCTION_VERSION,
+            maxPagesPerInvocation
           }
         })
         .select('id')
@@ -613,16 +934,47 @@ Deno.serve(async (req) => {
             originalStartDate, 
             originalEndDate,
             totalChunks,
-            currentChunk: chunkIndex + 1
+            currentChunk: chunkIndex + 1,
+            functionVersion: FUNCTION_VERSION,
+            maxPagesPerInvocation
           },
           checkpoint: { 
             page, 
             chunkIndex,
+            chunkStart,
+            chunkEnd,
             totalChunks,
-            lastActivity: new Date().toISOString() 
+            lastActivity: new Date().toISOString(),
+            canResume: true,
+            functionVersion: FUNCTION_VERSION,
+            maxPagesPerInvocation
           }
         })
-        .eq('id', syncRunId);
+        // IMPORTANT: don't resurrect cancelled/completed runs.
+        .eq('id', syncRunId)
+        .in('status', ['running', 'continuing', 'paused', 'failed']);
+    }
+
+    // Stop early if the run was cancelled/completed (prevents in-flight continuations from resurrecting runs)
+    const { data: runStatusCheck } = await supabase
+      .from('sync_runs')
+      .select('status')
+      .eq('id', syncRunId!)
+      .single() as { data: { status: string } | null };
+
+    if (runStatusCheck?.status === 'cancelled' || runStatusCheck?.status === 'canceled') {
+      logger.info('PayPal sync was cancelled, stopping', { syncRunId });
+      return new Response(
+        JSON.stringify({ success: false, status: 'cancelled', syncRunId, message: 'Sync cancelled by user', version: FUNCTION_VERSION }),
+        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+    if (runStatusCheck?.status === 'completed') {
+      logger.info('PayPal sync already completed, stopping', { syncRunId });
+      return new Response(
+        JSON.stringify({ success: true, status: 'completed', syncRunId, message: 'Sync already completed', version: FUNCTION_VERSION }),
+        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
     }
 
     // Get access token
@@ -853,7 +1205,8 @@ Deno.serve(async (req) => {
         totalChunks,
         originalStartDate,
         originalEndDate,
-        result.totalPages
+        result.totalPages,
+        maxPagesPerInvocation
       );
 
       return new Response(
