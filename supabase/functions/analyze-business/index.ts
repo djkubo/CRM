@@ -6,6 +6,33 @@ const corsHeaders = {
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
+// SECURITY: JWT + is_admin() verification (do not rely on client-side gating)
+async function verifyAdmin(req: Request): Promise<{ valid: boolean; error?: string; email?: string }> {
+  const authHeader = req.headers.get('Authorization');
+  if (!authHeader?.startsWith('Bearer ')) {
+    return { valid: false, error: 'Missing Authorization header' };
+  }
+
+  const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+  const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY')!;
+
+  const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+    global: { headers: { Authorization: authHeader } },
+  });
+
+  const { data: { user }, error: userError } = await supabase.auth.getUser();
+  if (userError || !user) {
+    return { valid: false, error: 'Invalid token' };
+  }
+
+  const { data: isAdmin, error: adminError } = await supabase.rpc('is_admin');
+  if (adminError || !isAdmin) {
+    return { valid: false, error: 'Not authorized as admin', email: user.email ?? undefined };
+  }
+
+  return { valid: true, email: user.email ?? undefined };
+}
+
 interface ActionableSegment {
   segment: string;
   description: string;
@@ -43,33 +70,18 @@ Deno.serve(async (req: Request) => {
   }
 
   try {
-    // SECURITY: Verify JWT authentication
-    const authHeader = req.headers.get("Authorization");
-    if (!authHeader?.startsWith("Bearer ")) {
+    const authCheck = await verifyAdmin(req);
+    if (!authCheck.valid) {
+      console.error('❌ Auth failed:', authCheck.error, authCheck.email ? { email: authCheck.email } : undefined);
       return new Response(
-        JSON.stringify({ error: "Unauthorized" }),
-        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        JSON.stringify({ error: 'Forbidden', message: authCheck.error }),
+        { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
+
+    console.log("✅ Admin authenticated:", authCheck.email);
 
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
-    const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
-    const supabaseAuth = createClient(supabaseUrl, supabaseAnonKey, {
-      global: { headers: { Authorization: authHeader } }
-    });
-
-    const token = authHeader.replace("Bearer ", "");
-    const { data: claimsData, error: claimsError } = await supabaseAuth.auth.getUser(token);
-    
-    if (claimsError || !claimsData?.user) {
-      console.error("Auth error:", claimsError);
-      return new Response(
-        JSON.stringify({ error: "Unauthorized" }),
-        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
-    console.log("✅ User authenticated:", claimsData.user.email);
 
     const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
     const lovableApiKey = Deno.env.get('LOVABLE_API_KEY');
