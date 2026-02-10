@@ -54,6 +54,21 @@ export function APISyncPanel() {
   const [ghlProgress, setGhlProgress] = useState<{ current: number; total: number } | null>(null);
   const [manychatProgress, setManychatProgress] = useState<{ current: number; total: number } | null>(null);
 
+  // GHL "rescue mode" state:
+  // If backend auto-chaining doesn't advance (EdgeRuntime.waitUntil/self-invoke issues),
+  // we can continue pagination from the client using the checkpoint cursor.
+  const ghlRescueStateRef = useRef<{
+    inFlight: boolean;
+    lastRescueAt: number;
+    lastTotalFetched: number | null;
+    lastProgressAt: number;
+  }>({
+    inFlight: false,
+    lastRescueAt: 0,
+    lastTotalFetched: null,
+    lastProgressAt: Date.now(),
+  });
+
   // Helper to sync in chunks to avoid timeouts - now with per-service progress
   const syncInChunks = async (
     service: 'stripe' | 'paypal',
@@ -353,7 +368,7 @@ export function APISyncPanel() {
       try {
         const { data, error } = await supabase
           .from('sync_runs')
-          .select('status, total_fetched, total_inserted, checkpoint')
+          .select('status, total_fetched, total_inserted, error_message, checkpoint, started_at')
           .eq('id', syncRunId)
           .single();
         
@@ -361,7 +376,140 @@ export function APISyncPanel() {
           console.error('GHL polling error:', error);
           return;
         }
-        
+
+        const checkpoint = (typeof data.checkpoint === 'object' && data.checkpoint !== null)
+          ? data.checkpoint as Record<string, unknown>
+          : null;
+        const lastActivity = checkpoint && typeof checkpoint.lastActivity === 'string'
+          ? checkpoint.lastActivity
+          : null;
+        const lastActivityMs = lastActivity ? new Date(lastActivity).getTime() : null;
+
+        // Track whether progress is actually moving; some older checkpoints may not include lastActivity.
+        const now = Date.now();
+        const rescue = ghlRescueStateRef.current;
+        const totalFetched = data.total_fetched || 0;
+        if (rescue.lastTotalFetched === null) {
+          rescue.lastTotalFetched = totalFetched;
+          rescue.lastProgressAt = now;
+        } else if (totalFetched !== rescue.lastTotalFetched) {
+          rescue.lastTotalFetched = totalFetched;
+          rescue.lastProgressAt = now;
+        }
+
+        // If auto-chain isn't working, the sync can sit on 100 forever. Rescue it by continuing
+        // pagination from the client using the stored cursor/startAfter.
+        const RESCUE_STALL_MS = 2 * 60 * 1000; // 2 minutes with no progress/activity
+        const RESCUE_MIN_INTERVAL_MS = 60 * 1000; // don't spam rescue attempts
+        const isRunning = data.status === 'running' || data.status === 'continuing';
+        const stalledByActivity = lastActivityMs !== null ? (now - lastActivityMs) > RESCUE_STALL_MS : false;
+        const stalledByProgress = (now - rescue.lastProgressAt) > RESCUE_STALL_MS;
+        const shouldRescue = isRunning
+          && (stalledByActivity || stalledByProgress)
+          && !rescue.inFlight
+          && (now - rescue.lastRescueAt) > RESCUE_MIN_INTERVAL_MS;
+
+        if (shouldRescue) {
+          rescue.inFlight = true;
+          rescue.lastRescueAt = now;
+
+          const stageOnly = typeof checkpoint?.stageOnly === 'boolean' ? (checkpoint.stageOnly as boolean) : true;
+          const startAfterId = typeof checkpoint?.startAfterId === 'string' ? (checkpoint.startAfterId as string) : null;
+          const startAfterRaw = checkpoint?.startAfter;
+          const startAfter =
+            typeof startAfterRaw === 'number'
+              ? startAfterRaw
+              : Number.isFinite(Number(startAfterRaw))
+                ? Number(startAfterRaw)
+                : null;
+          const cursor = checkpoint?.cursor as unknown;
+
+          toast.warning('GoHighLevel parece atascado. Intentando continuar...', {
+            id: 'ghl-rescue',
+            duration: 4000
+          });
+
+          // Drive a small burst of pagination from the client to "unstick" long-running syncs.
+          // We cap the number of pages/time so the UI stays responsive.
+          const RESCUE_MAX_PAGES = 20;
+          const RESCUE_MAX_RUNTIME_MS = 45 * 1000;
+          const rescueStart = Date.now();
+
+          let nextCursor: unknown = cursor;
+          let nextStartAfterId: string | null = startAfterId;
+          let nextStartAfter: number | null = startAfter;
+          let lastOk = true;
+
+          for (let i = 0; i < RESCUE_MAX_PAGES; i++) {
+            if (Date.now() - rescueStart > RESCUE_MAX_RUNTIME_MS) break;
+
+            // Use the most specific resume point we have.
+            const payload: Record<string, unknown> = {
+              syncRunId,
+              stageOnly,
+              accumulatedFetched: data.total_fetched || 0,
+              accumulatedInserted: data.total_inserted || 0,
+            };
+
+            if (nextCursor) {
+              payload.resumeFromCursor = nextCursor;
+            } else if (nextStartAfterId && nextStartAfter !== null) {
+              payload.startAfterId = nextStartAfterId;
+              payload.startAfter = nextStartAfter;
+            } else {
+              // Nothing to resume from: stop rescue and surface a useful message.
+              lastOk = false;
+              toast.error('No hay cursor para reanudar GHL', {
+                description: 'Este sync no guardó checkpoint.cursor/startAfter. Cancela y vuelve a iniciar.',
+                id: 'ghl-rescue'
+              });
+              break;
+            }
+
+            const result = await invokeWithAdminKey<GHLSyncResponse>('sync-ghl', payload);
+            if (!result?.ok) {
+              lastOk = false;
+              toast.error('Error continuando GoHighLevel', {
+                description: result?.error || 'Error desconocido',
+                id: 'ghl-rescue'
+              });
+              break;
+            }
+
+            // Update UI quickly; DB polling will keep it consistent.
+            const processedTotal = typeof result.processed === 'number' ? result.processed : (data.total_fetched || 0);
+            setGhlProgress({ current: processedTotal, total: 0 });
+
+            // Advance cursor for the next iteration.
+            const rNextId = result.nextStartAfterId;
+            const rNextTs = result.nextStartAfter;
+            if (rNextId && typeof rNextTs === 'number') {
+              nextStartAfterId = rNextId;
+              nextStartAfter = rNextTs;
+              nextCursor = [rNextTs, rNextId];
+            } else {
+              nextCursor = null;
+            }
+
+            const hasMore = result.hasMore === true;
+            if (!hasMore) break;
+
+            await new Promise(r => setTimeout(r, 150));
+          }
+
+          if (lastOk) {
+            toast.info('GoHighLevel: seguimiento activado (rescate)', {
+              description: 'Seguimos monitoreando el progreso en segundo plano.',
+              id: 'ghl-rescue'
+            });
+          }
+
+          rescue.inFlight = false;
+          // Keep polling after rescue attempt.
+          ghlPollingRef.current = window.setTimeout(poll, 3000);
+          return;
+        }
+
         if (data.status === 'running' || data.status === 'continuing') {
           setGhlProgress({ 
             current: data.total_fetched || 0, 
@@ -380,9 +528,14 @@ export function APISyncPanel() {
           });
           queryClient.invalidateQueries({ queryKey: ['clients'] });
           setGhlSyncing(false);
+        } else if (data.status === 'paused') {
+          setGhlProgress(null);
+          setGhlResult({ success: false, error: data.error_message || 'Sync pausado' });
+          toast.warning('GoHighLevel: Sincronización pausada', { id: 'ghl-sync' });
+          setGhlSyncing(false);
         } else if (data.status === 'failed' || data.status === 'cancelled') {
           setGhlProgress(null);
-          setGhlResult({ success: false, error: 'Sync failed or cancelled' });
+          setGhlResult({ success: false, error: data.error_message || 'Sync failed or cancelled' });
           toast.error('GoHighLevel: Sincronización falló', { id: 'ghl-sync' });
           setGhlSyncing(false);
         }
