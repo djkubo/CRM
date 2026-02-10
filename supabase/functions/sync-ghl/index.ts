@@ -15,13 +15,28 @@ const logger = createLogger('sync-ghl', LogLevel.INFO);
 const rateLimiter = RATE_LIMITERS.GHL;
 
 // ============ CONFIGURATION ============
-const FUNCTION_VERSION = '2026-02-10-1';
+const FUNCTION_VERSION = '2026-02-10-2';
 const CONTACTS_PER_PAGE = 100;
 const STALE_TIMEOUT_MINUTES = 5; // Reduced from 30 to 5 for faster recovery
 const CHAIN_RETRY_ATTEMPTS = 3;
+const CHAIN_FETCH_TIMEOUT_MS = 10_000;
+const INVOCATION_TIME_BUDGET_MS = 50_000; // keep under common 60s function limits
+const DEFAULT_MAX_PAGES_STAGE_ONLY = 10;
+const DEFAULT_MAX_PAGES_MERGE = 3;
+const MAX_MAX_PAGES = 50;
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 type GhlCursor = { startAfterId: string | null; startAfter: number | null; stageOnly?: boolean };
@@ -592,6 +607,8 @@ Deno.serve(async (req) => {
     let accumulatedSkipped: number | null = null;
     let accumulatedConflicts: number | null = null;
     let resumeFromCursor: unknown = null;
+    let maxPages: number | null = null;
+    let noChain = false;
 
     try {
       const body = await req.json();
@@ -620,6 +637,11 @@ Deno.serve(async (req) => {
       accumulatedSkipped = typeof body.accumulatedSkipped === 'number' ? body.accumulatedSkipped : null;
       accumulatedConflicts = typeof body.accumulatedConflicts === 'number' ? body.accumulatedConflicts : null;
       resumeFromCursor = body.resumeFromCursor ?? body.resume_cursor ?? null;
+
+      const bodyMaxPages = body.maxPages ?? body.max_pages ?? null;
+      maxPages = typeof bodyMaxPages === 'number' ? bodyMaxPages : Number.isFinite(Number(bodyMaxPages)) ? Number(bodyMaxPages) : null;
+      const chainMode = body.chainMode ?? body.chain_mode ?? null;
+      noChain = body.noChain === true || body.no_chain === true || chainMode === 'none' || chainMode === 'client';
     } catch {
       // Empty body is OK
     }
@@ -827,86 +849,206 @@ Deno.serve(async (req) => {
     logger.info(`Processing GHL page`, { startAfterId, syncRunId, stageOnly });
 
     if (stageOnly) {
-      // Determine starting totals (prefer request accumulators; fall back to DB totals for compatibility)
-      const baseFetched = accumulatedFetched ?? syncCheck?.total_fetched ?? 0;
-      const baseInserted = accumulatedInserted ?? syncCheck?.total_inserted ?? 0;
-
-      // NEW: Stage-only mode - just download, no merge
-      const pageResult = await processSinglePageStageOnly(
-        supabase as ReturnType<typeof createClient>,
-        ghlApiKey,
-        ghlLocationId,
-        syncRunId!,
-        startAfterId,
-        startAfter
+      const maxPagesToProcess = Math.min(
+        Math.max(
+          1,
+          Math.floor(
+            (typeof maxPages === 'number' && Number.isFinite(maxPages) ? maxPages : DEFAULT_MAX_PAGES_STAGE_ONLY)
+          )
+        ),
+        MAX_MAX_PAGES
       );
-      
-      const pageDuration = Date.now() - pageStartTime;
-      logger.info(`GHL page staged`, { 
-        duration_ms: pageDuration,
-        contactsFetched: pageResult.contactsFetched,
-        staged: pageResult.staged
-      });
+      const invocationDeadline = startTime + INVOCATION_TIME_BUDGET_MS;
 
-      if (pageResult.error) {
-        await supabase.from('sync_runs').update({ status: 'failed', completed_at: new Date().toISOString(), error_message: pageResult.error }).eq('id', syncRunId);
-        return new Response(JSON.stringify({ ok: false, error: pageResult.error }), { status: 500, headers: corsHeaders });
-      }
+      // Determine starting totals (prefer request accumulators; fall back to DB totals for compatibility)
+      let runningFetched = accumulatedFetched ?? syncCheck?.total_fetched ?? 0;
+      let runningInserted = accumulatedInserted ?? syncCheck?.total_inserted ?? 0;
 
-      const newAccumulatedFetched = baseFetched + pageResult.contactsFetched;
-      const newAccumulatedInserted = baseInserted + pageResult.staged;
+      let currentStartAfterId: string | null = startAfterId;
+      let currentStartAfter: number | null = startAfter;
+      let pagesProcessed = 0;
+      let hasMore = true;
 
-      if (pageResult.hasMore) {
-        // Guardrail: prevent an infinite background loop if pagination cursor is missing or not advancing.
-        if (!pageResult.nextStartAfterId || pageResult.nextStartAfter === null) {
-          const msg = 'GHL pagination cursor missing; aborting to avoid infinite loop.';
-          logger.error(msg, new Error(msg), { syncRunId, startAfterId, startAfter });
-          await supabase
-            .from('sync_runs')
-            .update({ status: 'failed', completed_at: new Date().toISOString(), error_message: msg })
-            .eq('id', syncRunId);
-          return new Response(JSON.stringify({ ok: false, error: msg }), { status: 500, headers: corsHeaders });
-        }
-        if (pageResult.nextStartAfterId === startAfterId && pageResult.nextStartAfter === startAfter) {
-          const msg = 'GHL pagination cursor did not advance; aborting to avoid infinite loop.';
-          logger.error(msg, new Error(msg), { syncRunId, startAfterId, startAfter });
-          await supabase
-            .from('sync_runs')
-            .update({ status: 'failed', completed_at: new Date().toISOString(), error_message: msg })
-            .eq('id', syncRunId);
-          return new Response(JSON.stringify({ ok: false, error: msg }), { status: 500, headers: corsHeaders });
+      while (hasMore && pagesProcessed < maxPagesToProcess) {
+        if (Date.now() > invocationDeadline) {
+          logger.warn('Invocation time budget reached; stopping early', { syncRunId, pagesProcessed });
+          break;
         }
 
+        // Check if sync was cancelled before fetching next page
+        const { data: cancelCheck } = await supabase
+          .from('sync_runs')
+          .select('status')
+          .eq('id', syncRunId!)
+          .single() as { data: { status: string } | null };
+
+        if (cancelCheck?.status === 'canceled' || cancelCheck?.status === 'cancelled') {
+          logger.info('Sync cancelled, stopping', { syncRunId });
+          return new Response(
+            JSON.stringify({ ok: false, status: 'canceled', error: 'Sync was cancelled by user' }),
+            { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          );
+        }
+
+        const pageLoopStart = Date.now();
+        const pageResult = await processSinglePageStageOnly(
+          supabase as ReturnType<typeof createClient>,
+          ghlApiKey,
+          ghlLocationId,
+          syncRunId!,
+          currentStartAfterId,
+          currentStartAfter
+        );
+
+        const pageDuration = Date.now() - pageLoopStart;
+        logger.info('GHL page staged', {
+          duration_ms: pageDuration,
+          contactsFetched: pageResult.contactsFetched,
+          staged: pageResult.staged,
+          pageIndex: pagesProcessed + 1,
+          maxPages: maxPagesToProcess
+        });
+
+        if (pageResult.error) {
+          await supabase
+            .from('sync_runs')
+            .update({ status: 'failed', completed_at: new Date().toISOString(), error_message: pageResult.error })
+            .eq('id', syncRunId);
+          return new Response(JSON.stringify({ ok: false, error: pageResult.error }), { status: 500, headers: corsHeaders });
+        }
+
+        runningFetched += pageResult.contactsFetched;
+        runningInserted += pageResult.staged;
+        hasMore = pageResult.hasMore;
+
+        if (hasMore) {
+          // Guardrail: prevent an infinite loop if pagination cursor is missing or not advancing.
+          if (!pageResult.nextStartAfterId || pageResult.nextStartAfter === null) {
+            const msg = 'GHL pagination cursor missing; aborting to avoid infinite loop.';
+            logger.error(msg, new Error(msg), { syncRunId, currentStartAfterId, currentStartAfter });
+            await supabase
+              .from('sync_runs')
+              .update({ status: 'failed', completed_at: new Date().toISOString(), error_message: msg })
+              .eq('id', syncRunId);
+            return new Response(JSON.stringify({ ok: false, error: msg }), { status: 500, headers: corsHeaders });
+          }
+          if (pageResult.nextStartAfterId === currentStartAfterId && pageResult.nextStartAfter === currentStartAfter) {
+            const msg = 'GHL pagination cursor did not advance; aborting to avoid infinite loop.';
+            logger.error(msg, new Error(msg), { syncRunId, currentStartAfterId, currentStartAfter });
+            await supabase
+              .from('sync_runs')
+              .update({ status: 'failed', completed_at: new Date().toISOString(), error_message: msg })
+              .eq('id', syncRunId);
+            return new Response(JSON.stringify({ ok: false, error: msg }), { status: 500, headers: corsHeaders });
+          }
+
+          currentStartAfterId = pageResult.nextStartAfterId;
+          currentStartAfter = pageResult.nextStartAfter;
+        }
+
+        // Save progress after each page so the UI never looks stuck on 100.
         await supabase
           .from('sync_runs')
           .update({
-            status: 'continuing',
-            total_fetched: newAccumulatedFetched,
-            total_inserted: newAccumulatedInserted,
+            status: hasMore ? 'continuing' : 'running',
+            total_fetched: runningFetched,
+            total_inserted: runningInserted,
             checkpoint: {
-              startAfterId: pageResult.nextStartAfterId,
-              startAfter: pageResult.nextStartAfter,
-              cursor: [pageResult.nextStartAfter, pageResult.nextStartAfterId],
+              startAfterId: currentStartAfterId,
+              startAfter: currentStartAfter,
+              cursor: (currentStartAfter !== null && currentStartAfterId) ? [currentStartAfter, currentStartAfterId] : null,
               lastActivity: new Date().toISOString(),
               canResume: true,
-              runningTotal: newAccumulatedFetched,
+              runningTotal: runningFetched,
               stageOnly: true,
-              functionVersion: FUNCTION_VERSION
+              functionVersion: FUNCTION_VERSION,
+              pagesProcessedThisInvocation: pagesProcessed + 1,
+              maxPagesPerInvocation: maxPagesToProcess,
+              noChainRequested: noChain
             }
           })
           .eq('id', syncRunId);
 
-        // CRITICAL: Use EdgeRuntime.waitUntil for background processing
-        // This allows the HTTP response to return immediately while processing continues
+        pagesProcessed++;
+        if (!hasMore) break;
+      }
+
+      // If this invocation finished the dataset, mark completed.
+      if (!hasMore) {
+        await supabase
+          .from('sync_runs')
+          .update({
+            status: 'completed',
+            completed_at: new Date().toISOString(),
+            total_fetched: runningFetched,
+            total_inserted: runningInserted,
+            checkpoint: null
+          })
+          .eq('id', syncRunId);
+
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            status: 'completed',
+            syncRunId,
+            processed: runningFetched,
+            staged: runningInserted,
+            hasMore: false,
+            stageOnly: true,
+            pagesProcessed,
+            message: 'Staging complete. Run unify-all-sources to merge into clients.',
+            version: FUNCTION_VERSION
+          }),
+          { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+
+      // Still has more pages. Either auto-chain (default) or return cursor for client-driven continuation.
+      const nextStartAfterId = currentStartAfterId;
+      const nextStartAfter = currentStartAfter;
+
+      if (!nextStartAfterId || nextStartAfter === null) {
+        const msg = 'GHL pagination cursor missing after processing; cannot continue.';
+        logger.error(msg, new Error(msg), { syncRunId, nextStartAfterId, nextStartAfter });
+        await supabase
+          .from('sync_runs')
+          .update({ status: 'failed', completed_at: new Date().toISOString(), error_message: msg })
+          .eq('id', syncRunId);
+        return new Response(JSON.stringify({ ok: false, error: msg }), { status: 500, headers: corsHeaders });
+      }
+
+      if (!noChain) {
         const nextChunkUrl = `${supabaseUrl}/functions/v1/sync-ghl`;
+
+        // Mark that we intend to chain (helps debugging "stuck at 100" cases).
+        await supabase
+          .from('sync_runs')
+          .update({
+            status: 'continuing',
+            checkpoint: {
+              startAfterId: nextStartAfterId,
+              startAfter: nextStartAfter,
+              cursor: [nextStartAfter, nextStartAfterId],
+              lastActivity: new Date().toISOString(),
+              canResume: true,
+              runningTotal: runningFetched,
+              stageOnly: true,
+              functionVersion: FUNCTION_VERSION,
+              chainScheduledAt: new Date().toISOString(),
+              maxPagesPerInvocation: maxPagesToProcess
+            }
+          })
+          .eq('id', syncRunId);
+
         const invokeNextChunk = async () => {
           const payload = JSON.stringify({
             syncRunId,
             stageOnly: true,
-            startAfterId: pageResult.nextStartAfterId,
-            startAfter: pageResult.nextStartAfter,
-            accumulatedFetched: newAccumulatedFetched,
-            accumulatedInserted: newAccumulatedInserted
+            startAfterId: nextStartAfterId,
+            startAfter: nextStartAfter,
+            accumulatedFetched: runningFetched,
+            accumulatedInserted: runningInserted,
+            maxPages: maxPagesToProcess
           });
 
           await delay(500); // Small delay to reduce chain burst / gateway throttling
@@ -916,16 +1058,14 @@ Deno.serve(async (req) => {
               const headers: Record<string, string> = {
                 'Content-Type': 'application/json',
                 'Authorization': `Bearer ${supabaseKey}`,
-                // Some gateways require explicit apikey even when Authorization is present.
-                // Use anon key here to match documented invocation format.
                 'apikey': Deno.env.get('SUPABASE_ANON_KEY') ?? supabaseKey
               };
 
-              const response = await fetch(nextChunkUrl, {
-                method: 'POST',
-                headers,
-                body: payload
-              });
+              const response = await fetchWithTimeout(
+                nextChunkUrl,
+                { method: 'POST', headers, body: payload },
+                CHAIN_FETCH_TIMEOUT_MS
+              );
 
               if (response.ok) {
                 logger.info(`Chain invocation succeeded (attempt ${attempt})`, { syncRunId });
@@ -957,15 +1097,16 @@ Deno.serve(async (req) => {
                 status: 'paused',
                 error_message: 'Auto-chain falló. Haz clic en Reanudar para continuar.',
                 checkpoint: {
-                  startAfterId: pageResult.nextStartAfterId,
-                  startAfter: pageResult.nextStartAfter,
-                  cursor: [pageResult.nextStartAfter, pageResult.nextStartAfterId],
+                  startAfterId: nextStartAfterId,
+                  startAfter: nextStartAfter,
+                  cursor: [nextStartAfter, nextStartAfterId],
                   lastActivity: new Date().toISOString(),
                   canResume: true,
-                  runningTotal: newAccumulatedFetched,
+                  runningTotal: runningFetched,
                   stageOnly: true,
                   chainFailed: true,
-                  functionVersion: FUNCTION_VERSION
+                  functionVersion: FUNCTION_VERSION,
+                  maxPagesPerInvocation: maxPagesToProcess
                 }
               })
               .eq('id', syncRunId);
@@ -974,54 +1115,66 @@ Deno.serve(async (req) => {
           }
         };
 
-        // Use EdgeRuntime.waitUntil if available, otherwise fire-and-forget
-        if (typeof EdgeRuntime !== 'undefined' && EdgeRuntime.waitUntil) {
+        if (typeof EdgeRuntime !== 'undefined' && EdgeRuntime?.waitUntil) {
           EdgeRuntime.waitUntil(invokeNextChunk());
         } else {
-          // Fallback: fire and forget (less reliable but works)
-          invokeNextChunk();
-        }
+          // If waitUntil isn't available, we can't reliably continue in background.
+          await supabase
+            .from('sync_runs')
+            .update({
+              status: 'paused',
+              error_message: 'Continuación automática no disponible en este runtime. Usa Reanudar para continuar.',
+              checkpoint: {
+                startAfterId: nextStartAfterId,
+                startAfter: nextStartAfter,
+                cursor: [nextStartAfter, nextStartAfterId],
+                lastActivity: new Date().toISOString(),
+                canResume: true,
+                runningTotal: runningFetched,
+                stageOnly: true,
+                chainFailed: true,
+                functionVersion: FUNCTION_VERSION,
+                maxPagesPerInvocation: maxPagesToProcess
+              }
+            })
+            .eq('id', syncRunId);
 
-        return new Response(
-          JSON.stringify({
-            ok: true,
-            status: 'continuing',
-            syncRunId,
-            processed: newAccumulatedFetched,
-            staged: newAccumulatedInserted,
-            hasMore: true,
-            nextStartAfterId: pageResult.nextStartAfterId,
-            nextStartAfter: pageResult.nextStartAfter,
-            stageOnly: true,
-            backgroundProcessing: true,
-            message: 'Sync continues in background. Check sync_runs for progress.',
-            version: FUNCTION_VERSION
-          }),
-          { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-        );
+          return new Response(
+            JSON.stringify({
+              ok: true,
+              status: 'paused',
+              syncRunId,
+              processed: runningFetched,
+              staged: runningInserted,
+              hasMore: true,
+              nextStartAfterId,
+              nextStartAfter,
+              stageOnly: true,
+              backgroundProcessing: false,
+              message: 'Sync pausado: no se pudo continuar automáticamente. Usa Reanudar.',
+              version: FUNCTION_VERSION
+            }),
+            { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          );
+        }
       }
 
-      // Staging complete
-      await supabase
-        .from('sync_runs')
-        .update({
-          status: 'completed',
-          completed_at: new Date().toISOString(),
-          total_fetched: newAccumulatedFetched,
-          total_inserted: newAccumulatedInserted,
-        })
-        .eq('id', syncRunId);
-
       return new Response(
-        JSON.stringify({ 
-          ok: true, 
-          status: 'completed', 
-          syncRunId, 
-          processed: newAccumulatedFetched, 
-          staged: newAccumulatedInserted,
-          hasMore: false,
+        JSON.stringify({
+          ok: true,
+          status: 'continuing',
+          syncRunId,
+          processed: runningFetched,
+          staged: runningInserted,
+          hasMore: true,
+          nextStartAfterId,
+          nextStartAfter,
           stageOnly: true,
-          message: 'Staging complete. Run unify-all-sources to merge into clients.',
+          pagesProcessed,
+          backgroundProcessing: !noChain,
+          message: noChain
+            ? 'Client-driven mode: call again with next cursor to continue.'
+            : 'Sync continues in background. Check sync_runs for progress.',
           version: FUNCTION_VERSION
         }),
         { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
@@ -1029,125 +1182,212 @@ Deno.serve(async (req) => {
     }
 
     // LEGACY: Full merge mode
-    // Determine starting totals (prefer request accumulators; fall back to DB totals for compatibility)
-    const baseFetched = accumulatedFetched ?? syncCheck?.total_fetched ?? 0;
-    const baseInserted = accumulatedInserted ?? syncCheck?.total_inserted ?? 0;
-    const baseUpdated = accumulatedUpdated ?? syncCheck?.total_updated ?? 0;
-    const baseSkipped = accumulatedSkipped ?? syncCheck?.total_skipped ?? 0;
-    const baseConflicts = accumulatedConflicts ?? syncCheck?.total_conflicts ?? 0;
-
-    const pageResult = await processSinglePage(
-      supabase as ReturnType<typeof createClient>,
-      ghlApiKey,
-      ghlLocationId,
-      syncRunId!,
-      dryRun,
-      startAfterId,
-      startAfter
+    const maxPagesToProcess = Math.min(
+      Math.max(
+        1,
+        Math.floor((typeof maxPages === 'number' && Number.isFinite(maxPages) ? maxPages : DEFAULT_MAX_PAGES_MERGE))
+      ),
+      MAX_MAX_PAGES
     );
-    
-    // Check if cancelled after processing
-    const { data: syncCheckAfter } = await supabase
-      .from('sync_runs')
-      .select('status')
-      .eq('id', syncRunId!)
-      .single();
-    
-    if (syncCheckAfter?.status === 'canceled' || syncCheckAfter?.status === 'cancelled') {
-      logger.info('Sync was cancelled after page processing', { syncRunId });
-      await supabase.from('sync_runs').update({ 
-        status: 'cancelled', 
-        completed_at: new Date().toISOString(),
-        error_message: 'Cancelled by user during processing'
-      }).eq('id', syncRunId);
-      return new Response(
-        JSON.stringify({ ok: false, status: 'canceled', error: 'Sync was cancelled by user' }),
-        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
-    }
-    
-    const pageDuration = Date.now() - pageStartTime;
-    logger.info(`GHL page processed`, { 
-      duration_ms: pageDuration,
-      contactsFetched: pageResult.contactsFetched,
-      inserted: pageResult.inserted,
-      updated: pageResult.updated,
-      skipped: pageResult.skipped,
-      conflicts: pageResult.conflicts,
-      contactsPerSecond: pageResult.contactsFetched > 0 ? (pageResult.contactsFetched / (pageDuration / 1000)).toFixed(2) : 0
-    });
+    const invocationDeadline = startTime + INVOCATION_TIME_BUDGET_MS;
 
-    if (pageResult.error) {
-      await supabase.from('sync_runs').update({ status: 'failed', completed_at: new Date().toISOString(), error_message: pageResult.error }).eq('id', syncRunId);
-      return new Response(JSON.stringify({ ok: false, error: pageResult.error }), { status: 500, headers: corsHeaders });
-    }
+    // Determine starting totals (prefer request accumulators; fall back to DB totals for compatibility)
+    let runningFetched = accumulatedFetched ?? syncCheck?.total_fetched ?? 0;
+    let runningInserted = accumulatedInserted ?? syncCheck?.total_inserted ?? 0;
+    let runningUpdated = accumulatedUpdated ?? syncCheck?.total_updated ?? 0;
+    let runningSkipped = accumulatedSkipped ?? syncCheck?.total_skipped ?? 0;
+    let runningConflicts = accumulatedConflicts ?? syncCheck?.total_conflicts ?? 0;
 
-    const newAccumulatedFetched = baseFetched + pageResult.contactsFetched;
-    const newAccumulatedInserted = baseInserted + pageResult.inserted;
-    const newAccumulatedUpdated = baseUpdated + pageResult.updated;
-    const newAccumulatedSkipped = baseSkipped + pageResult.skipped;
-    const newAccumulatedConflicts = baseConflicts + pageResult.conflicts;
+    let currentStartAfterId: string | null = startAfterId;
+    let currentStartAfter: number | null = startAfter;
+    let pagesProcessed = 0;
+    let hasMore = true;
 
-    if (pageResult.hasMore) {
-      // Guardrail: prevent an infinite background loop if pagination cursor is missing or not advancing.
-      if (!pageResult.nextStartAfterId || pageResult.nextStartAfter === null) {
-        const msg = 'GHL pagination cursor missing; aborting to avoid infinite loop.';
-        logger.error(msg, new Error(msg), { syncRunId, startAfterId, startAfter });
-        await supabase
-          .from('sync_runs')
-          .update({ status: 'failed', completed_at: new Date().toISOString(), error_message: msg })
-          .eq('id', syncRunId);
-        return new Response(JSON.stringify({ ok: false, error: msg }), { status: 500, headers: corsHeaders });
+    while (hasMore && pagesProcessed < maxPagesToProcess) {
+      if (Date.now() > invocationDeadline) {
+        logger.warn('Invocation time budget reached; stopping early', { syncRunId, pagesProcessed });
+        break;
       }
-      if (pageResult.nextStartAfterId === startAfterId && pageResult.nextStartAfter === startAfter) {
-        const msg = 'GHL pagination cursor did not advance; aborting to avoid infinite loop.';
-        logger.error(msg, new Error(msg), { syncRunId, startAfterId, startAfter });
+
+      // Check if sync was cancelled before fetching next page
+      const { data: cancelCheck } = await supabase
+        .from('sync_runs')
+        .select('status')
+        .eq('id', syncRunId!)
+        .single() as { data: { status: string } | null };
+
+      if (cancelCheck?.status === 'canceled' || cancelCheck?.status === 'cancelled') {
+        logger.info('Sync cancelled, stopping', { syncRunId });
+        return new Response(
+          JSON.stringify({ ok: false, status: 'canceled', error: 'Sync was cancelled by user' }),
+          { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+
+      const pageLoopStart = Date.now();
+      const pageResult = await processSinglePage(
+        supabase as ReturnType<typeof createClient>,
+        ghlApiKey,
+        ghlLocationId,
+        syncRunId!,
+        dryRun,
+        currentStartAfterId,
+        currentStartAfter
+      );
+
+      const pageDuration = Date.now() - pageLoopStart;
+      logger.info('GHL page processed', {
+        duration_ms: pageDuration,
+        contactsFetched: pageResult.contactsFetched,
+        inserted: pageResult.inserted,
+        updated: pageResult.updated,
+        skipped: pageResult.skipped,
+        conflicts: pageResult.conflicts,
+        pageIndex: pagesProcessed + 1,
+        maxPages: maxPagesToProcess
+      });
+
+      if (pageResult.error) {
         await supabase
           .from('sync_runs')
-          .update({ status: 'failed', completed_at: new Date().toISOString(), error_message: msg })
+          .update({ status: 'failed', completed_at: new Date().toISOString(), error_message: pageResult.error })
           .eq('id', syncRunId);
-        return new Response(JSON.stringify({ ok: false, error: msg }), { status: 500, headers: corsHeaders });
+        return new Response(JSON.stringify({ ok: false, error: pageResult.error }), { status: 500, headers: corsHeaders });
+      }
+
+      runningFetched += pageResult.contactsFetched;
+      runningInserted += pageResult.inserted;
+      runningUpdated += pageResult.updated;
+      runningSkipped += pageResult.skipped;
+      runningConflicts += pageResult.conflicts;
+      hasMore = pageResult.hasMore;
+
+      if (hasMore) {
+        // Guardrail: prevent an infinite loop if pagination cursor is missing or not advancing.
+        if (!pageResult.nextStartAfterId || pageResult.nextStartAfter === null) {
+          const msg = 'GHL pagination cursor missing; aborting to avoid infinite loop.';
+          logger.error(msg, new Error(msg), { syncRunId, currentStartAfterId, currentStartAfter });
+          await supabase
+            .from('sync_runs')
+            .update({ status: 'failed', completed_at: new Date().toISOString(), error_message: msg })
+            .eq('id', syncRunId);
+          return new Response(JSON.stringify({ ok: false, error: msg }), { status: 500, headers: corsHeaders });
+        }
+        if (pageResult.nextStartAfterId === currentStartAfterId && pageResult.nextStartAfter === currentStartAfter) {
+          const msg = 'GHL pagination cursor did not advance; aborting to avoid infinite loop.';
+          logger.error(msg, new Error(msg), { syncRunId, currentStartAfterId, currentStartAfter });
+          await supabase
+            .from('sync_runs')
+            .update({ status: 'failed', completed_at: new Date().toISOString(), error_message: msg })
+            .eq('id', syncRunId);
+          return new Response(JSON.stringify({ ok: false, error: msg }), { status: 500, headers: corsHeaders });
+        }
+
+        currentStartAfterId = pageResult.nextStartAfterId;
+        currentStartAfter = pageResult.nextStartAfter;
       }
 
       await supabase
         .from('sync_runs')
         .update({
-          status: 'continuing',
-          total_fetched: newAccumulatedFetched,
-          total_inserted: newAccumulatedInserted,
-          total_updated: newAccumulatedUpdated,
-          total_skipped: newAccumulatedSkipped,
-          total_conflicts: newAccumulatedConflicts,
+          status: hasMore ? 'continuing' : 'running',
+          total_fetched: runningFetched,
+          total_inserted: runningInserted,
+          total_updated: runningUpdated,
+          total_skipped: runningSkipped,
+          total_conflicts: runningConflicts,
           checkpoint: {
-            startAfterId: pageResult.nextStartAfterId,
-            startAfter: pageResult.nextStartAfter,
-            cursor: [pageResult.nextStartAfter, pageResult.nextStartAfterId],
+            startAfterId: currentStartAfterId,
+            startAfter: currentStartAfter,
+            cursor: (currentStartAfter !== null && currentStartAfterId) ? [currentStartAfter, currentStartAfterId] : null,
             lastActivity: new Date().toISOString(),
             canResume: true,
-            runningTotal: newAccumulatedFetched,
+            runningTotal: runningFetched,
             stageOnly: false,
-            functionVersion: FUNCTION_VERSION
+            functionVersion: FUNCTION_VERSION,
+            pagesProcessedThisInvocation: pagesProcessed + 1,
+            maxPagesPerInvocation: maxPagesToProcess,
+            noChainRequested: noChain
           }
         })
         .eq('id', syncRunId);
 
-      // CRITICAL: Use EdgeRuntime.waitUntil for background processing
+      pagesProcessed++;
+      if (!hasMore) break;
+    }
+
+    if (!hasMore) {
+      await supabase
+        .from('sync_runs')
+        .update({
+          status: 'completed',
+          completed_at: new Date().toISOString(),
+          total_fetched: runningFetched,
+          total_inserted: runningInserted,
+          total_updated: runningUpdated,
+          total_skipped: runningSkipped,
+          total_conflicts: runningConflicts,
+          checkpoint: null
+        })
+        .eq('id', syncRunId);
+
+      return new Response(
+        JSON.stringify({ ok: true, status: 'completed', syncRunId, processed: runningFetched, hasMore: false, version: FUNCTION_VERSION }),
+        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    const nextStartAfterId = currentStartAfterId;
+    const nextStartAfter = currentStartAfter;
+
+    if (!nextStartAfterId || nextStartAfter === null) {
+      const msg = 'GHL pagination cursor missing after processing; cannot continue.';
+      logger.error(msg, new Error(msg), { syncRunId, nextStartAfterId, nextStartAfter });
+      await supabase
+        .from('sync_runs')
+        .update({ status: 'failed', completed_at: new Date().toISOString(), error_message: msg })
+        .eq('id', syncRunId);
+      return new Response(JSON.stringify({ ok: false, error: msg }), { status: 500, headers: corsHeaders });
+    }
+
+    if (!noChain) {
       const nextChunkUrl = `${supabaseUrl}/functions/v1/sync-ghl`;
+
+      await supabase
+        .from('sync_runs')
+        .update({
+          status: 'continuing',
+          checkpoint: {
+            startAfterId: nextStartAfterId,
+            startAfter: nextStartAfter,
+            cursor: [nextStartAfter, nextStartAfterId],
+            lastActivity: new Date().toISOString(),
+            canResume: true,
+            runningTotal: runningFetched,
+            stageOnly: false,
+            functionVersion: FUNCTION_VERSION,
+            chainScheduledAt: new Date().toISOString(),
+            maxPagesPerInvocation: maxPagesToProcess
+          }
+        })
+        .eq('id', syncRunId);
+
       const invokeNextChunk = async () => {
         const payload = JSON.stringify({
           syncRunId,
           stageOnly: false,
-          startAfterId: pageResult.nextStartAfterId,
-          startAfter: pageResult.nextStartAfter,
+          startAfterId: nextStartAfterId,
+          startAfter: nextStartAfter,
           dry_run: dryRun,
-          accumulatedFetched: newAccumulatedFetched,
-          accumulatedInserted: newAccumulatedInserted,
-          accumulatedUpdated: newAccumulatedUpdated,
-          accumulatedSkipped: newAccumulatedSkipped,
-          accumulatedConflicts: newAccumulatedConflicts
+          accumulatedFetched: runningFetched,
+          accumulatedInserted: runningInserted,
+          accumulatedUpdated: runningUpdated,
+          accumulatedSkipped: runningSkipped,
+          accumulatedConflicts: runningConflicts,
+          maxPages: maxPagesToProcess
         });
 
-        await delay(500); // Small delay to reduce chain burst / gateway throttling
+        await delay(500);
 
         for (let attempt = 1; attempt <= CHAIN_RETRY_ATTEMPTS; attempt++) {
           try {
@@ -1157,11 +1397,11 @@ Deno.serve(async (req) => {
               'apikey': Deno.env.get('SUPABASE_ANON_KEY') ?? supabaseKey
             };
 
-            const response = await fetch(nextChunkUrl, {
-              method: 'POST',
-              headers,
-              body: payload
-            });
+            const response = await fetchWithTimeout(
+              nextChunkUrl,
+              { method: 'POST', headers, body: payload },
+              CHAIN_FETCH_TIMEOUT_MS
+            );
 
             if (response.ok) {
               logger.info(`Chain invocation succeeded (attempt ${attempt})`, { syncRunId });
@@ -1179,7 +1419,7 @@ Deno.serve(async (req) => {
           }
 
           if (attempt < CHAIN_RETRY_ATTEMPTS) {
-            await delay(2000 * attempt); // Exponential backoff
+            await delay(2000 * attempt);
           }
         }
 
@@ -1192,15 +1432,16 @@ Deno.serve(async (req) => {
               status: 'paused',
               error_message: 'Auto-chain falló. Haz clic en Reanudar para continuar.',
               checkpoint: {
-                startAfterId: pageResult.nextStartAfterId,
-                startAfter: pageResult.nextStartAfter,
-                cursor: [pageResult.nextStartAfter, pageResult.nextStartAfterId],
+                startAfterId: nextStartAfterId,
+                startAfter: nextStartAfter,
+                cursor: [nextStartAfter, nextStartAfterId],
                 lastActivity: new Date().toISOString(),
                 canResume: true,
-                runningTotal: newAccumulatedFetched,
+                runningTotal: runningFetched,
                 stageOnly: false,
                 chainFailed: true,
-                functionVersion: FUNCTION_VERSION
+                functionVersion: FUNCTION_VERSION,
+                maxPagesPerInvocation: maxPagesToProcess
               }
             })
             .eq('id', syncRunId);
@@ -1212,42 +1453,60 @@ Deno.serve(async (req) => {
       if (typeof EdgeRuntime !== 'undefined' && EdgeRuntime?.waitUntil) {
         EdgeRuntime.waitUntil(invokeNextChunk());
       } else {
-        invokeNextChunk();
-      }
+        await supabase
+          .from('sync_runs')
+          .update({
+            status: 'paused',
+            error_message: 'Continuación automática no disponible en este runtime. Usa Reanudar para continuar.',
+            checkpoint: {
+              startAfterId: nextStartAfterId,
+              startAfter: nextStartAfter,
+              cursor: [nextStartAfter, nextStartAfterId],
+              lastActivity: new Date().toISOString(),
+              canResume: true,
+              runningTotal: runningFetched,
+              stageOnly: false,
+              chainFailed: true,
+              functionVersion: FUNCTION_VERSION,
+              maxPagesPerInvocation: maxPagesToProcess
+            }
+          })
+          .eq('id', syncRunId);
 
-      return new Response(
-        JSON.stringify({
-          ok: true,
-          status: 'continuing',
-          syncRunId,
-          processed: newAccumulatedFetched,
-          hasMore: true,
-          nextStartAfterId: pageResult.nextStartAfterId,
-          nextStartAfter: pageResult.nextStartAfter,
-          backgroundProcessing: true,
-          message: 'Sync continues in background.',
-          version: FUNCTION_VERSION
-        }),
-        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            status: 'paused',
+            syncRunId,
+            processed: runningFetched,
+            hasMore: true,
+            nextStartAfterId,
+            nextStartAfter,
+            backgroundProcessing: false,
+            message: 'Sync pausado: no se pudo continuar automáticamente. Usa Reanudar.',
+            version: FUNCTION_VERSION
+          }),
+          { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
     }
 
-    // Sync complete
-    await supabase
-      .from('sync_runs')
-      .update({
-        status: 'completed',
-        completed_at: new Date().toISOString(),
-        total_fetched: newAccumulatedFetched,
-        total_inserted: newAccumulatedInserted,
-        total_updated: newAccumulatedUpdated,
-        total_skipped: newAccumulatedSkipped,
-        total_conflicts: newAccumulatedConflicts,
-      })
-      .eq('id', syncRunId);
-
     return new Response(
-      JSON.stringify({ ok: true, status: 'completed', syncRunId, processed: newAccumulatedFetched, hasMore: false, version: FUNCTION_VERSION }),
+      JSON.stringify({
+        ok: true,
+        status: 'continuing',
+        syncRunId,
+        processed: runningFetched,
+        hasMore: true,
+        nextStartAfterId,
+        nextStartAfter,
+        pagesProcessed,
+        backgroundProcessing: !noChain,
+        message: noChain
+          ? 'Client-driven mode: call again with next cursor to continue.'
+          : 'Sync continues in background.',
+        version: FUNCTION_VERSION
+      }),
       { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
 

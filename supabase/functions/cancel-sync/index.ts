@@ -64,13 +64,13 @@ Deno.serve(async (req) => {
         const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
         const supabase = createClient(supabaseUrl, supabaseKey);
 
-        // Update sync run to canceled status
+        // Update sync run to cancelled status (canonical spelling used across the UI)
         const { data, error } = await supabase
             .from('sync_runs')
             .update({
-                status: 'canceled',
+                status: 'cancelled',
                 completed_at: new Date().toISOString(),
-                error_message: 'Canceled by user'
+                error_message: 'Cancelado por el usuario'
             })
             .eq('id', syncRunId)
             .in('status', ['running', 'continuing'])
