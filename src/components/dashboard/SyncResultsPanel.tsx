@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { 
   CheckCircle, 
@@ -76,13 +76,35 @@ export function SyncResultsPanel() {
   const [isForceKilling, setIsForceKilling] = useState(false);
   const [isResuming, setIsResuming] = useState<string | null>(null);
 
+  // Avoid hammering the DB when sync_runs is updating frequently (realtime can emit many events).
+  const refetchDebounceRef = useRef<number | null>(null);
+
+  const SYNC_RUN_SELECT = useMemo(
+    () =>
+      [
+        "id",
+        "source",
+        "status",
+        "started_at",
+        "completed_at",
+        "total_fetched",
+        "total_inserted",
+        "total_updated",
+        "error_message",
+        "checkpoint",
+        "dry_run",
+      ].join(","),
+    [],
+  );
+
   const fetchRuns = async () => {
     // Active/running syncs
-    const { data: active } = await supabase
-      .from("sync_runs")
-      .select("*")
-      .in("status", ["running", "continuing"])
-      .order("started_at", { ascending: false });
+	    const { data: active } = await supabase
+	      .from("sync_runs")
+	      .select(SYNC_RUN_SELECT)
+	      .in("status", ["running", "continuing"])
+	      .order("started_at", { ascending: false })
+	      .limit(25);
     
     setActiveSyncs((active || []) as SyncRun[]);
 
@@ -90,7 +112,7 @@ export function SyncResultsPanel() {
     const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
     const { data: recent } = await supabase
       .from("sync_runs")
-      .select("*")
+      .select(SYNC_RUN_SELECT)
       .in("status", ["completed", "completed_with_errors", "completed_with_timeout", "cancelled"])
       .gte("completed_at", oneHourAgo)
       .order("completed_at", { ascending: false })
@@ -102,7 +124,7 @@ export function SyncResultsPanel() {
     const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
     const { data: failed } = await supabase
       .from("sync_runs")
-      .select("*")
+      .select(SYNC_RUN_SELECT)
       .in("status", ["failed", "paused"]) // Include paused syncs too!
       .not("checkpoint", "is", null)
       .gte("started_at", oneDayAgo)
@@ -120,11 +142,23 @@ export function SyncResultsPanel() {
 
   useEffect(() => {
     fetchRuns();
-    // If realtime isn't enabled in this environment, polling is the only feedback.
-    // Poll faster while something is running so progress feels "live".
-    const interval = setInterval(fetchRuns, 8000);
+    const interval = setInterval(() => {
+      // When tab isn't visible, don't waste connections/queries.
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
+      fetchRuns();
+    }, 30_000);
     return () => clearInterval(interval);
-  }, []);
+  }, [SYNC_RUN_SELECT]);
+
+  // Adaptive polling: faster only while something is actually running.
+  useEffect(() => {
+    if (activeSyncs.length === 0) return;
+    const interval = setInterval(() => {
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
+      fetchRuns();
+    }, 10_000);
+    return () => clearInterval(interval);
+  }, [activeSyncs.length, SYNC_RUN_SELECT]);
 
   // Subscribe to realtime changes
   useEffect(() => {
@@ -134,15 +168,21 @@ export function SyncResultsPanel() {
         'postgres_changes',
         { event: '*', schema: 'public', table: 'sync_runs' },
         () => {
-          fetchRuns();
+          // Debounce: realtime can fire on every progress update.
+          if (refetchDebounceRef.current) window.clearTimeout(refetchDebounceRef.current);
+          refetchDebounceRef.current = window.setTimeout(() => {
+            fetchRuns();
+            refetchDebounceRef.current = null;
+          }, 750);
         }
       )
       .subscribe();
 
     return () => {
+      if (refetchDebounceRef.current) window.clearTimeout(refetchDebounceRef.current);
       supabase.removeChannel(channel);
     };
-  }, []);
+  }, [SYNC_RUN_SELECT]);
 
   const getSourceConfig = (source: string) => {
     return SOURCE_CONFIG[source] || { 
