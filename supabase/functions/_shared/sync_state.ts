@@ -57,7 +57,12 @@ function isMissingRelationError(error: unknown): boolean {
     error && typeof error === "object" && "message" in error ? String((error as { message?: unknown }).message) : "";
   const code =
     error && typeof error === "object" && "code" in error ? String((error as { code?: unknown }).code) : "";
-  return code === "42P01" || msg.toLowerCase().includes('relation "sync_state" does not exist');
+  const lower = msg.toLowerCase();
+  if (code === "42P01" || lower.includes('relation "sync_state" does not exist')) return true;
+  // PostgREST schema cache miss.
+  if (code.toUpperCase().startsWith("PGRST") && lower.includes("schema cache") && lower.includes("sync_state")) return true;
+  if (lower.includes("could not find the table") && lower.includes("sync_state")) return true;
+  return false;
 }
 
 export async function readSyncState(supabase: SupabaseLike, source: string): Promise<SyncStateRow | null> {
@@ -179,4 +184,3 @@ export async function writeSyncStateError(args: {
     return null;
   }
 }
-
