@@ -22,6 +22,9 @@ const STALE_TIMEOUT_MINUTES = 5; // Reduced from 30 to 5 for faster recovery
 const CHAIN_RETRY_ATTEMPTS = 3;
 const CHAIN_FETCH_TIMEOUT_MS = 10_000;
 const GHL_API_FETCH_TIMEOUT_MS = 25_000;
+const GHL_429_MAX_ATTEMPTS = 6;
+const GHL_429_BASE_DELAY_MS = 2_000;
+const GHL_429_MAX_DELAY_MS = 60_000;
 const INVOCATION_TIME_BUDGET_MS = 50_000; // keep under common 60s function limits
 const DEFAULT_MAX_PAGES_STAGE_ONLY = 10;
 const DEFAULT_MAX_PAGES_MERGE = 3;
@@ -39,6 +42,86 @@ async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: numbe
   } finally {
     clearTimeout(timeoutId);
   }
+}
+
+function parseRetryAfterMs(retryAfter: string | null): number | null {
+  if (!retryAfter) return null;
+  const value = retryAfter.trim();
+  if (!value) return null;
+
+  const seconds = Number(value);
+  if (Number.isFinite(seconds)) {
+    return Math.max(0, Math.floor(seconds * 1000));
+  }
+
+  const dateMs = Date.parse(value);
+  if (Number.isFinite(dateMs)) {
+    return Math.max(0, dateMs - Date.now());
+  }
+
+  return null;
+}
+
+function isRateLimitErrorMessage(message: string | null | undefined): boolean {
+  const msg = (message ?? '').toLowerCase();
+  return msg.includes('429') || msg.includes('too many requests') || msg.includes('rate limit');
+}
+
+async function fetchGhlContactsSearch(
+  ghlUrl: string,
+  ghlApiKey: string,
+  finalBody: string
+): Promise<Response> {
+  return await retryWithBackoff(
+    () => rateLimiter.execute(async () => {
+      try {
+        const response = await fetchWithTimeout(
+          ghlUrl,
+          {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${ghlApiKey}`,
+              'Version': '2021-07-28',
+              'Accept': 'application/json',
+              'Content-Type': 'application/json'
+            },
+            body: finalBody
+          },
+          GHL_API_FETCH_TIMEOUT_MS
+        );
+
+        if (response.status === 429) {
+          const retryAfterMs = parseRetryAfterMs(response.headers.get('retry-after'));
+          const waitMs = Math.min(
+            Math.max(retryAfterMs ?? GHL_429_BASE_DELAY_MS, GHL_429_BASE_DELAY_MS),
+            GHL_429_MAX_DELAY_MS
+          );
+          logger.warn('GHL returned 429, backing off before retry', { waitMs });
+          await delay(waitMs);
+          throw new Error(`429 Too Many Requests (waited ${waitMs}ms)`);
+        }
+
+        return response;
+      } catch (err) {
+        // Ensure timeouts are treated as retryable (retry.ts checks ETIMEDOUT string/code).
+        const name =
+          (err && typeof err === 'object' && 'name' in err) ? String((err as { name?: unknown }).name) : '';
+        if (name === 'AbortError') {
+          const e = new Error('ETIMEDOUT: GHL request timed out');
+          (e as { code?: string }).code = 'ETIMEDOUT';
+          throw e;
+        }
+        throw err;
+      }
+    }),
+    {
+      ...RETRY_CONFIGS.AGGRESSIVE,
+      maxAttempts: GHL_429_MAX_ATTEMPTS,
+      initialDelayMs: GHL_429_BASE_DELAY_MS,
+      maxDelayMs: GHL_429_MAX_DELAY_MS,
+      retryableErrors: [...RETRYABLE_ERRORS.NETWORK, ...RETRYABLE_ERRORS.GHL, ...RETRYABLE_ERRORS.HTTP]
+    }
+  );
 }
 
 type GhlCursor = { startAfterId: string | null; startAfter: number | null; stageOnly?: boolean };
@@ -171,40 +254,7 @@ async function processSinglePageStageOnly(
       limit: CONTACTS_PER_PAGE 
     });
 
-    const ghlResponse = await retryWithBackoff(
-      () => rateLimiter.execute(async () => {
-        try {
-          return await fetchWithTimeout(
-            ghlUrl,
-            {
-              method: 'POST',
-              headers: {
-                'Authorization': `Bearer ${ghlApiKey}`,
-                'Version': '2021-07-28',
-                'Accept': 'application/json',
-                'Content-Type': 'application/json'
-              },
-              body: finalBody
-            },
-            GHL_API_FETCH_TIMEOUT_MS
-          );
-        } catch (err) {
-          // Ensure timeouts are treated as retryable (retry.ts checks ETIMEDOUT string/code).
-          const name =
-            (err && typeof err === 'object' && 'name' in err) ? String((err as { name?: unknown }).name) : '';
-          if (name === 'AbortError') {
-            const e = new Error('ETIMEDOUT: GHL request timed out');
-            (e as { code?: string }).code = 'ETIMEDOUT';
-            throw e;
-          }
-          throw err;
-        }
-      }),
-      {
-        ...RETRY_CONFIGS.STANDARD,
-        retryableErrors: [...RETRYABLE_ERRORS.NETWORK, ...RETRYABLE_ERRORS.GHL, ...RETRYABLE_ERRORS.HTTP]
-      }
-    );
+    const ghlResponse = await fetchGhlContactsSearch(ghlUrl, ghlApiKey, finalBody);
 
     if (!ghlResponse.ok) {
       const errorText = await ghlResponse.text();
@@ -364,40 +414,7 @@ async function processSinglePage(
       bodyPreview: finalBody.substring(0, 200)
     });
 
-    const ghlResponse = await retryWithBackoff(
-      () => rateLimiter.execute(async () => {
-        try {
-          return await fetchWithTimeout(
-            ghlUrl,
-            {
-              method: 'POST',
-              headers: {
-                'Authorization': `Bearer ${ghlApiKey}`,
-                'Version': '2021-07-28',
-                'Accept': 'application/json',
-                'Content-Type': 'application/json'
-              },
-              body: finalBody
-            },
-            GHL_API_FETCH_TIMEOUT_MS
-          );
-        } catch (err) {
-          // Ensure timeouts are treated as retryable (retry.ts checks ETIMEDOUT string/code).
-          const name =
-            (err && typeof err === 'object' && 'name' in err) ? String((err as { name?: unknown }).name) : '';
-          if (name === 'AbortError') {
-            const e = new Error('ETIMEDOUT: GHL request timed out');
-            (e as { code?: string }).code = 'ETIMEDOUT';
-            throw e;
-          }
-          throw err;
-        }
-      }),
-      {
-        ...RETRY_CONFIGS.STANDARD,
-        retryableErrors: [...RETRYABLE_ERRORS.NETWORK, ...RETRYABLE_ERRORS.GHL, ...RETRYABLE_ERRORS.HTTP]
-      }
-    );
+    const ghlResponse = await fetchGhlContactsSearch(ghlUrl, ghlApiKey, finalBody);
 
     if (!ghlResponse.ok) {
       const errorText = await ghlResponse.text();
@@ -1023,6 +1040,36 @@ Deno.serve(async (req) => {
         });
 
 	      if (pageResult.error) {
+          const isRateLimit = isRateLimitErrorMessage(pageResult.error);
+          if (isRateLimit) {
+            const msg = 'GHL rate limit (429): sync pausado para reintentar luego con Reanudar.';
+            await supabase
+              .from('sync_runs')
+              .update({
+                status: 'paused',
+                error_message: msg,
+                checkpoint: {
+                  startAfterId: currentStartAfterId,
+                  startAfter: currentStartAfter,
+                  cursor: (currentStartAfter !== null && currentStartAfterId) ? [currentStartAfter, currentStartAfterId] : null,
+                  lastActivity: new Date().toISOString(),
+                  canResume: true,
+                  runningTotal: runningFetched,
+                  stageOnly: true,
+                  functionVersion: FUNCTION_VERSION,
+                  maxPagesPerInvocation: maxPagesToProcess
+                }
+              })
+              .eq('id', syncRunId)
+              // Don't override user cancellation
+              .in('status', ['running', 'continuing']);
+            await writeSyncStateError({ supabase, source: 'ghl', errorMessage: msg });
+            return new Response(
+              JSON.stringify({ ok: false, status: 'paused', syncRunId, error: msg }),
+              { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+            );
+          }
+
 	        await supabase
 	          .from('sync_runs')
 	          .update({ status: 'failed', completed_at: new Date().toISOString(), error_message: pageResult.error })
@@ -1423,6 +1470,36 @@ Deno.serve(async (req) => {
       });
 
       if (pageResult.error) {
+        const isRateLimit = isRateLimitErrorMessage(pageResult.error);
+        if (isRateLimit) {
+          const msg = 'GHL rate limit (429): sync pausado para reintentar luego con Reanudar.';
+          await supabase
+            .from('sync_runs')
+            .update({
+              status: 'paused',
+              error_message: msg,
+              checkpoint: {
+                startAfterId: currentStartAfterId,
+                startAfter: currentStartAfter,
+                cursor: (currentStartAfter !== null && currentStartAfterId) ? [currentStartAfter, currentStartAfterId] : null,
+                lastActivity: new Date().toISOString(),
+                canResume: true,
+                runningTotal: runningFetched,
+                stageOnly: false,
+                functionVersion: FUNCTION_VERSION,
+                maxPagesPerInvocation: maxPagesToProcess
+              }
+            })
+            .eq('id', syncRunId)
+            // Don't override user cancellation
+            .in('status', ['running', 'continuing']);
+          await writeSyncStateError({ supabase, source: 'ghl', errorMessage: msg });
+          return new Response(
+            JSON.stringify({ ok: false, status: 'paused', syncRunId, error: msg }),
+            { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          );
+        }
+
         await supabase
           .from('sync_runs')
           .update({ status: 'failed', completed_at: new Date().toISOString(), error_message: pageResult.error })
