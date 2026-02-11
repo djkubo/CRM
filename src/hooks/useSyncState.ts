@@ -1,23 +1,29 @@
 import { useQuery } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
-import type { Database } from "@/integrations/supabase/types";
+import type { Json } from "@/integrations/supabase/types";
 
 export type SyncSource = "stripe" | "paypal" | "stripe_invoices" | "ghl" | "manychat";
-
-export interface SyncStateRow {
+export type SyncStateRow = {
   source: string;
   backfill_start: string | null;
   fresh_until: string | null;
   last_success_at: string | null;
   last_success_run_id: string | null;
   last_success_status: string | null;
-  last_success_meta: Record<string, unknown> | null;
+  last_success_meta: Json;
   last_error_at: string | null;
   last_error_message: string | null;
-  updated_at: string | null;
-}
+  updated_at: string;
+};
 
-type SyncRunRow = Database["public"]["Tables"]["sync_runs"]["Row"];
+type SyncRunRow = {
+  id: string;
+  source: string;
+  status: string;
+  started_at: string;
+  completed_at: string | null;
+  metadata: Json | null;
+};
 
 const KNOWN_SOURCES: SyncSource[] = ["stripe", "paypal", "stripe_invoices", "ghl", "manychat"];
 
@@ -81,7 +87,7 @@ const buildSyncStateFromRuns = (runs: SyncRunRow[]): SyncStateRow[] => {
       last_success_at: completedAt,
       last_success_run_id: run.id,
       last_success_status: run.status,
-      last_success_meta: (isRecord(run.metadata) ? run.metadata : {}) as Record<string, unknown>,
+      last_success_meta: (run.metadata ?? {}) as Json,
       last_error_at: null,
       last_error_message: null,
       updated_at: completedAt,
@@ -121,25 +127,19 @@ export function useSyncState() {
   return useQuery({
     queryKey: ["sync_state"],
     queryFn: async () => {
-      // sync_state may not exist in generated types yet; use a raw REST call.
-      const url = `${(supabase as any).supabaseUrl}/rest/v1/sync_state?select=source,backfill_start,fresh_until,last_success_at,last_success_run_id,last_success_status,last_success_meta,last_error_at,last_error_message,updated_at`;
-      const key = (supabase as any).supabaseKey;
-      const response = await fetch(url, {
-        headers: {
-          apikey: key,
-          Authorization: `Bearer ${key}`,
-        },
-      });
+      const { data, error } = await supabase
+        .from("sync_state")
+        .select(
+          "source, backfill_start, fresh_until, last_success_at, last_success_run_id, last_success_status, last_success_meta, last_error_at, last_error_message, updated_at",
+        );
 
-      if (!response.ok) {
-        const text = await response.text();
-        if (text.includes("sync_state") && (text.includes("does not exist") || text.includes("schema cache"))) {
-          return await loadSyncStateFallbackFromRuns();
-        }
-        throw new Error(text);
+      if (error) {
+        // Allow gradual rollout where frontend might ship before the migration is applied.
+        if (isMissingSyncStateTable(error)) return await loadSyncStateFallbackFromRuns();
+        throw error;
       }
 
-      const rows = (await response.json()) as SyncStateRow[];
+      const rows = (data ?? []) as SyncStateRow[];
       if (rows.length === 0) {
         return await loadSyncStateFallbackFromRuns();
       }
