@@ -4,6 +4,92 @@ import type { Database } from "@/integrations/supabase/types";
 
 export type SyncSource = "stripe" | "paypal" | "stripe_invoices" | "ghl" | "manychat";
 export type SyncStateRow = Database["public"]["Tables"]["sync_state"]["Row"];
+type SyncRunRow = Database["public"]["Tables"]["sync_runs"]["Row"];
+
+const KNOWN_SOURCES: SyncSource[] = ["stripe", "paypal", "stripe_invoices", "ghl", "manychat"];
+
+const isRecord = (v: unknown): v is Record<string, unknown> =>
+  !!v && typeof v === "object" && !Array.isArray(v);
+
+const toIso = (v: unknown): string | null => {
+  if (v == null) return null;
+  if (typeof v === "string") {
+    const ms = Date.parse(v);
+    return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
+  }
+  if (typeof v === "number" && Number.isFinite(v)) {
+    // Stripe may store unix seconds in metadata; normalize to ms.
+    const ms = v > 1e12 ? v : v * 1000;
+    const d = new Date(ms);
+    return Number.isFinite(d.getTime()) ? d.toISOString() : null;
+  }
+  return null;
+};
+
+const pickMetaDate = (meta: Record<string, unknown> | null, keys: string[]): string | null => {
+  if (!meta) return null;
+  for (const key of keys) {
+    const iso = toIso(meta[key]);
+    if (iso) return iso;
+  }
+  return null;
+};
+
+const buildSyncStateFromRuns = (runs: SyncRunRow[]): SyncStateRow[] => {
+  const latestBySource = new Map<SyncSource, SyncRunRow>();
+
+  for (const run of runs) {
+    const source = run.source as SyncSource;
+    if (!KNOWN_SOURCES.includes(source)) continue;
+    if (!["completed", "completed_with_errors", "skipped"].includes(run.status)) continue;
+
+    const current = latestBySource.get(source);
+    const runTs = Date.parse(run.completed_at ?? run.started_at);
+    const currentTs = current ? Date.parse(current.completed_at ?? current.started_at) : -Infinity;
+    if (!current || runTs > currentTs) {
+      latestBySource.set(source, run);
+    }
+  }
+
+  const fallbackRows: SyncStateRow[] = [];
+  for (const source of KNOWN_SOURCES) {
+    const run = latestBySource.get(source);
+    if (!run) continue;
+
+    const meta = isRecord(run.metadata) ? run.metadata : null;
+    const completedAt = run.completed_at ?? run.started_at;
+    const rangeStart = pickMetaDate(meta, ["rangeStart", "startDate", "originalStartDate", "backfillStart"]);
+    const rangeEnd = pickMetaDate(meta, ["rangeEnd", "endDate", "originalEndDate", "freshUntil"]);
+
+    fallbackRows.push({
+      source,
+      backfill_start: rangeStart ?? completedAt,
+      fresh_until: rangeEnd ?? completedAt,
+      last_success_at: completedAt,
+      last_success_run_id: run.id,
+      last_success_status: run.status,
+      last_success_meta: run.metadata ?? {},
+      last_error_at: null,
+      last_error_message: null,
+      updated_at: completedAt,
+    });
+  }
+
+  return fallbackRows;
+};
+
+async function loadSyncStateFallbackFromRuns(): Promise<SyncStateRow[]> {
+  const { data, error } = await supabase
+    .from("sync_runs")
+    .select("id, source, status, started_at, completed_at, metadata")
+    .in("source", KNOWN_SOURCES)
+    .in("status", ["completed", "completed_with_errors", "skipped"])
+    .order("completed_at", { ascending: false, nullsFirst: false })
+    .limit(400);
+
+  if (error) return [];
+  return buildSyncStateFromRuns((data ?? []) as SyncRunRow[]);
+}
 
 const isMissingSyncStateTable = (err: unknown): boolean => {
   if (!err || typeof err !== "object") return false;
@@ -25,16 +111,32 @@ export function useSyncState() {
       const { data, error } = await supabase
         .from("sync_state")
         .select(
-          "source, backfill_start, fresh_until, last_success_at, last_success_status, last_success_meta, last_error_at, last_error_message, updated_at",
+          "source, backfill_start, fresh_until, last_success_at, last_success_run_id, last_success_status, last_success_meta, last_error_at, last_error_message, updated_at",
         );
 
       if (error) {
         // Allow gradual rollout where frontend might ship before the migration is applied.
-        if (isMissingSyncStateTable(error)) return [] as SyncStateRow[];
+        if (isMissingSyncStateTable(error)) return await loadSyncStateFallbackFromRuns();
         throw error;
       }
 
-      return (data ?? []) as SyncStateRow[];
+      const rows = (data ?? []) as SyncStateRow[];
+      if (rows.length === 0) {
+        return await loadSyncStateFallbackFromRuns();
+      }
+
+      // Fill missing sources from sync_runs when partial sync_state exists.
+      const present = new Set(rows.map((r) => r.source));
+      if (KNOWN_SOURCES.every((s) => present.has(s))) return rows;
+
+      const fallback = await loadSyncStateFallbackFromRuns();
+      if (fallback.length === 0) return rows;
+
+      const merged: SyncStateRow[] = [...rows];
+      for (const f of fallback) {
+        if (!present.has(f.source)) merged.push(f);
+      }
+      return merged;
     },
     staleTime: 60_000,
     refetchInterval: 60_000,
