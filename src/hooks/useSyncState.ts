@@ -9,7 +9,13 @@ const isMissingSyncStateTable = (err: unknown): boolean => {
   if (!err || typeof err !== "object") return false;
   const code = "code" in err ? String((err as { code?: unknown }).code) : "";
   const message = "message" in err ? String((err as { message?: unknown }).message) : "";
-  return code === "42P01" || message.toLowerCase().includes('relation "sync_state" does not exist');
+  const msg = message.toLowerCase();
+  // Postgres undefined_table
+  if (code === "42P01" || msg.includes('relation "sync_state" does not exist')) return true;
+  // PostgREST schema cache miss (happens when migration not applied yet / cache not refreshed).
+  if (code.toUpperCase().startsWith("PGRST") && msg.includes("schema cache") && msg.includes("sync_state")) return true;
+  if (msg.includes("could not find the table") && msg.includes("sync_state")) return true;
+  return false;
 };
 
 export function useSyncState() {
@@ -52,4 +58,3 @@ export function indexSyncState(rows: SyncStateRow[] | undefined | null): Partial
   }
   return map;
 }
-
