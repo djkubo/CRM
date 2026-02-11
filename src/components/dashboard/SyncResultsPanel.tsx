@@ -460,14 +460,39 @@ export function SyncResultsPanel() {
           // plus startAfter/startAfterId for compatibility. Always pass syncRunId to resume same run.
           {
             const stageOnlyForGhl = typeof checkpoint?.stageOnly === 'boolean' ? checkpoint.stageOnly : true;
-            const startAfterId = typeof checkpoint?.startAfterId === 'string' ? checkpoint.startAfterId : null;
-            const startAfter = typeof checkpoint?.startAfter === 'number' ? checkpoint.startAfter : null;
+            const startAfterIdRaw = checkpoint?.startAfterId;
+            const startAfterId =
+              typeof startAfterIdRaw === 'string'
+                ? startAfterIdRaw
+                : startAfterIdRaw != null
+                  ? String(startAfterIdRaw)
+                  : null;
+            const startAfterRaw = checkpoint?.startAfter;
+            const startAfter =
+              typeof startAfterRaw === 'number'
+                ? startAfterRaw
+                : Number.isFinite(Number(startAfterRaw))
+                  ? Number(startAfterRaw)
+                  : null;
 
-            if (cursor) {
+            // Normalize cursor shape for legacy checkpoints.
+            let ghlCursor: unknown = cursor;
+            if (!ghlCursor && startAfterId && startAfter !== null) {
+              ghlCursor = [startAfter, startAfterId];
+            }
+            if (typeof ghlCursor === 'string') {
+              try {
+                ghlCursor = JSON.parse(ghlCursor);
+              } catch {
+                // Keep raw string, sync-ghl can parse multiple cursor formats.
+              }
+            }
+
+            if (ghlCursor) {
               payload = { 
                 syncRunId: sync.id,
                 stageOnly: stageOnlyForGhl,
-                resumeFromCursor: cursor
+                resumeFromCursor: ghlCursor
               };
             } else if (startAfterId && startAfter !== null) {
               payload = {
