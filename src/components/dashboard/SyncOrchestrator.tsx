@@ -128,13 +128,14 @@ export function SyncOrchestrator() {
   }, []);
 
   // Fetch current counts using accurate RPC first, fallback to fast on timeout and persist mode.
-  const fetchCounts = useCallback(async () => {
+  const fetchCounts = useCallback(async (preferredMode?: "accurate" | "fast") => {
+    const mode = preferredMode ?? countsMode;
     try {
-      const rpcName = countsMode === "accurate" ? "get_staging_counts_accurate" : "get_staging_counts_fast";
+      const rpcName = mode === "accurate" ? "get_staging_counts_accurate" : "get_staging_counts_fast";
       const { data, error } = await supabase.rpc(rpcName);
 
       if (error) {
-        if (countsMode === "accurate") {
+        if (mode === "accurate") {
           console.error("RPC error, switching to fast fallback:", error);
           setCountsMode("fast");
         } else {
@@ -153,6 +154,7 @@ export function SyncOrchestrator() {
       }
 
       if (!data) return;
+      if (mode !== countsMode) setCountsMode(mode);
       applyCountsPayload(data as Record<string, number>);
 
       setLoading(false);
@@ -377,7 +379,8 @@ export function SyncOrchestrator() {
           setIsUnifying(false);
           setUnifyProgress(100);
           toast.success(`✅ Unificación completada: ${(syncRun.total_inserted || 0).toLocaleString()} registros fusionados`);
-          fetchCounts();
+          // After bulk updates, prefer an exact recount (fast mode can be stale).
+          fetchCounts("accurate");
           return;
         } else if (syncRun.status === 'failed') {
           setIsUnifying(false);
@@ -420,6 +423,8 @@ export function SyncOrchestrator() {
     fetchCounts();
     checkActiveSync('stripe');
     checkActiveSync('paypal');
+    checkActiveSync('ghl');
+    checkActiveSync('manychat');
     checkActiveUnification();
   }, [fetchCounts, checkActiveSync, checkActiveUnification]);
 
@@ -989,6 +994,9 @@ export function SyncOrchestrator() {
           </CardDescription>
         </CardHeader>
         <CardContent>
+          <div className="mb-2 text-xs text-muted-foreground">
+            Conteo: {countsMode === "accurate" ? "exacto" : "estimado (puede estar desfasado)"}
+          </div>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
             <Card className="bg-muted/50">
               <CardContent className="p-4 text-center">
@@ -1089,7 +1097,7 @@ export function SyncOrchestrator() {
                 Cancelar
               </Button>
             ) : (
-              <Button variant="outline" onClick={fetchCounts}>
+              <Button variant="outline" onClick={() => fetchCounts("accurate")}>
                 <RefreshCw className="h-4 w-4" />
               </Button>
             )}
