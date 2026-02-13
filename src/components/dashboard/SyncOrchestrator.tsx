@@ -14,6 +14,9 @@ import { formatUnknownError } from "@/lib/errorUtils";
 // Time range options for Stripe sync
 type TimeRange = '24h' | '7d' | '31d' | '6m' | 'all';
 
+const SYNC_DEBUG = import.meta.env.VITE_DEBUG_SYNC === "true";
+const COUNTS_MODE_STORAGE_KEY = "adminhub:stagingCountsMode";
+
 const TIME_RANGE_OPTIONS: { value: TimeRange; label: string; description: string }[] = [
   { value: '24h', label: 'Últimas 24 horas', description: '~100-500 transacciones' },
   { value: '7d', label: 'Últimos 7 días', description: '~500-2,000 transacciones' },
@@ -93,7 +96,16 @@ export function SyncOrchestrator() {
   const [pendingCounts, setPendingCounts] = useState<PendingCounts>({ ghl: 0, manychat: 0, csv: 0, total: 0 });
   const [isUnifying, setIsUnifying] = useState(false);
   const [unifyProgress, setUnifyProgress] = useState(0);
-  const [countsMode, setCountsMode] = useState<"accurate" | "fast">("accurate");
+  const [countsMode, setCountsMode] = useState<"accurate" | "fast">(() => {
+    // Default to fast in production to avoid statement_timeout 500s on huge raw tables.
+    try {
+      const stored = window.localStorage.getItem(COUNTS_MODE_STORAGE_KEY);
+      if (stored === "accurate" || stored === "fast") return stored;
+    } catch {
+      // ignore
+    }
+    return "fast";
+  });
   const [unifyStats, setUnifyStats] = useState<{
     processed: number;
     merged: number;
@@ -102,9 +114,19 @@ export function SyncOrchestrator() {
     syncRunId: string | null;
     chunk: number;
     canResume: boolean;
-  }>({ processed: 0, merged: 0, rate: '0/s', eta: 0, syncRunId: null, chunk: 0, canResume: false });
+    error: string | null;
+  }>({ processed: 0, merged: 0, rate: '0/s', eta: 0, syncRunId: null, chunk: 0, canResume: false, error: null });
   const [loading, setLoading] = useState(true);
   const pollingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  const updateCountsMode = useCallback((mode: "accurate" | "fast") => {
+    setCountsMode(mode);
+    try {
+      window.localStorage.setItem(COUNTS_MODE_STORAGE_KEY, mode);
+    } catch {
+      // ignore
+    }
+  }, []);
 
   const applyCountsPayload = useCallback((counts: Record<string, number>) => {
     const ghlUnprocessed = counts.ghl_unprocessed || 0;
@@ -136,8 +158,8 @@ export function SyncOrchestrator() {
 
       if (error) {
         if (mode === "accurate") {
-          console.error("RPC error, switching to fast fallback:", error);
-          setCountsMode("fast");
+          console.warn("[SyncOrchestrator] get_staging_counts_accurate failed, falling back to fast:", error);
+          updateCountsMode("fast");
         } else {
           console.error("Error fetching fast staging counts:", error);
         }
@@ -154,7 +176,7 @@ export function SyncOrchestrator() {
       }
 
       if (!data) return;
-      if (mode !== countsMode) setCountsMode(mode);
+      if (mode !== countsMode) updateCountsMode(mode);
       applyCountsPayload(data as Record<string, number>);
 
       setLoading(false);
@@ -163,7 +185,7 @@ export function SyncOrchestrator() {
       console.error('Error fetching counts:', errorMessage);
       setLoading(false);
     }
-  }, [countsMode, applyCountsPayload]);
+  }, [countsMode, applyCountsPayload, updateCountsMode]);
 
   // Check for active syncs on mount and start polling
   const checkActiveSync = useCallback(async (source: string) => {
@@ -242,7 +264,8 @@ export function SyncOrchestrator() {
           eta: checkpoint?.estimatedRemainingSeconds || 0,
           syncRunId: activeRun.id,
           chunk: checkpoint?.chunk || 0,
-          canResume: activeRun.status === 'paused' || checkpoint?.canResume || false
+          canResume: activeRun.status === 'paused' || checkpoint?.canResume || false,
+          error: activeRun.error_message || null,
         });
 
         if (activeRun.status === 'running' || activeRun.status === 'continuing') {
@@ -336,7 +359,7 @@ export function SyncOrchestrator() {
       try {
         const { data: syncRun } = await supabase
           .from('sync_runs')
-          .select('status, total_fetched, total_inserted, checkpoint, metadata')
+          .select('status, total_fetched, total_inserted, checkpoint, metadata, error_message')
           .eq('id', syncRunId)
           .single();
 
@@ -352,6 +375,7 @@ export function SyncOrchestrator() {
         };
 
         const currentProcessed = syncRun.total_fetched || 0;
+        const syncError = syncRun.error_message ? String(syncRun.error_message) : null;
         
         // Detect stalled progress
         if (currentProcessed === lastProcessed) {
@@ -372,19 +396,20 @@ export function SyncOrchestrator() {
           rate: checkpoint.rate || '0/s',
           eta: checkpoint.estimatedRemainingSeconds || 0,
           chunk: checkpoint.chunk || 0,
-          canResume: syncRun.status === 'paused' || checkpoint.canResume || false
+          canResume: syncRun.status === 'paused' || checkpoint.canResume || false,
+          error: syncError,
         }));
 
         if (syncRun.status === 'completed') {
           setIsUnifying(false);
           setUnifyProgress(100);
           toast.success(`✅ Unificación completada: ${(syncRun.total_inserted || 0).toLocaleString()} registros fusionados`);
-          // After bulk updates, prefer an exact recount (fast mode can be stale).
-          fetchCounts("accurate");
+          // Refresh counts after bulk updates.
+          fetchCounts();
           return;
         } else if (syncRun.status === 'failed') {
           setIsUnifying(false);
-          toast.error('Error en la unificación');
+          toast.error(syncError ? `Error en la unificación: ${syncError}` : 'Error en la unificación');
           return;
         } else if (syncRun.status === 'cancelled') {
           setIsUnifying(false);
@@ -393,7 +418,7 @@ export function SyncOrchestrator() {
         } else if (syncRun.status === 'paused') {
           setIsUnifying(false);
           setUnifyStats(prev => ({ ...prev, canResume: true }));
-          toast.warning('Unificación pausada - puede reanudarse');
+          toast.warning(syncError ? `Unificación pausada: ${syncError}` : 'Unificación pausada - puede reanudarse');
           return;
         }
 
@@ -635,29 +660,29 @@ export function SyncOrchestrator() {
 
   // Unify All Sources (using bulk-unify-contacts v3)
   const unifyAll = async () => {
-    console.log('[SyncOrchestrator] Starting unifyAll...');
+    if (SYNC_DEBUG) console.log('[SyncOrchestrator] Starting unifyAll...');
     setIsUnifying(true);
     setUnifyProgress(0);
-    setUnifyStats({ processed: 0, merged: 0, rate: '0/s', eta: 0, syncRunId: null, chunk: 0, canResume: false });
+    setUnifyStats({ processed: 0, merged: 0, rate: '0/s', eta: 0, syncRunId: null, chunk: 0, canResume: false, error: null });
     
     // Show immediate feedback
     toast.info('Iniciando unificación masiva...');
 
     try {
-      console.log('[SyncOrchestrator] Invoking bulk-unify-contacts...');
+      if (SYNC_DEBUG) console.log('[SyncOrchestrator] Invoking bulk-unify-contacts...');
       const { data, error } = await supabase.functions.invoke('bulk-unify-contacts', {
         body: { sources: ['ghl', 'manychat', 'csv'], batchSize: 50 }
       });
 
-      console.log('[SyncOrchestrator] Response:', { data, error });
+      if (SYNC_DEBUG) console.log('[SyncOrchestrator] Response:', { data, error });
 
       if (error) {
-        console.error('[SyncOrchestrator] Function invoke error:', error);
+        if (SYNC_DEBUG) console.error('[SyncOrchestrator] Function invoke error:', error);
         throw error;
       }
       
       if (!data?.ok) {
-        console.error('[SyncOrchestrator] Response not ok:', data);
+        if (SYNC_DEBUG) console.error('[SyncOrchestrator] Response not ok:', data);
         throw new Error(data?.error || data?.message || 'La función retornó un error desconocido');
       }
 
@@ -667,15 +692,15 @@ export function SyncOrchestrator() {
       });
       
       if (data?.syncRunId) {
-        console.log('[SyncOrchestrator] Starting polling for syncRunId:', data.syncRunId);
+        if (SYNC_DEBUG) console.log('[SyncOrchestrator] Starting polling for syncRunId:', data.syncRunId);
         setUnifyStats(prev => ({ ...prev, syncRunId: data.syncRunId }));
         startUnifyPolling(data.syncRunId, data.pending?.total || pendingCounts.total);
       } else {
-        console.warn('[SyncOrchestrator] No syncRunId returned');
+        if (SYNC_DEBUG) console.warn('[SyncOrchestrator] No syncRunId returned');
         setIsUnifying(false);
       }
     } catch (error) {
-      console.error('[SyncOrchestrator] unifyAll failed:', error);
+      if (SYNC_DEBUG) console.error('[SyncOrchestrator] unifyAll failed:', error);
       setIsUnifying(false);
       
       const errorMessage = formatUnknownError(error, { maxLen: 600, includeDetails: true });
@@ -1055,6 +1080,12 @@ export function SyncOrchestrator() {
                 </div>
               </div>
 
+              {unifyStats.error && (
+                <div className="mt-4 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                  {unifyStats.error}
+                </div>
+              )}
+
               {unifyStats.canResume && !isUnifying && (
                 <div className="mt-4 p-3 bg-orange-500/10 rounded-lg border border-orange-500/30">
                   <p className="text-sm text-orange-600 mb-2">
@@ -1097,7 +1128,7 @@ export function SyncOrchestrator() {
                 Cancelar
               </Button>
             ) : (
-              <Button variant="outline" onClick={() => fetchCounts("accurate")}>
+              <Button variant="outline" onClick={(e) => fetchCounts(e.shiftKey ? "accurate" : undefined)}>
                 <RefreshCw className="h-4 w-4" />
               </Button>
             )}

@@ -6,7 +6,8 @@ import { getValidSession } from "@/lib/authSession";
  * Edge functions verify JWT + is_admin() server-side.
  */
 
-const ADMIN_API_DEBUG = import.meta.env.DEV;
+// Opt-in debug to avoid production console noise (and avoid relying on build mode).
+const ADMIN_API_DEBUG = import.meta.env.VITE_DEBUG_ADMIN_API === "true";
 
 /**
  * Generic wrapper for invoking Edge Functions with type safety.

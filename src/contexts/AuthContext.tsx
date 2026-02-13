@@ -16,7 +16,8 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
-const AUTH_DEBUG = import.meta.env.DEV;
+// Opt-in debug to avoid production console noise (and avoid relying on build mode).
+const AUTH_DEBUG = import.meta.env.VITE_DEBUG_AUTH === "true";
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
