@@ -30,9 +30,10 @@ export function useAnalyticsActiveSubscriptions(options: Options = {}) {
       const from = pageIndex * pageSize;
       const to = from + pageSize - 1;
 
-      const { data, error, count } = await supabase
+      const { data, error } = await supabase
         .from("subscriptions")
-        .select("id, customer_email, amount, status", { count: "exact" })
+        // Avoid `count=exact` on large production datasets (can trigger timeouts and 500s).
+        .select("id, customer_email, amount, status")
         .eq("status", "active")
         .not("customer_email", "is", null)
         .order("amount", { ascending: false })
@@ -42,7 +43,7 @@ export function useAnalyticsActiveSubscriptions(options: Options = {}) {
 
       return {
         rows: (data || []) as AnalyticsActiveSubscription[],
-        totalCount: typeof count === "number" ? count : null,
+        totalCount: null,
         pageIndex,
       };
     },
@@ -60,13 +61,15 @@ export function useAnalyticsActiveSubscriptions(options: Options = {}) {
       return lastPage.pageIndex + 1;
     },
     staleTime: 60_000,
+    retry: false,
   });
 
   useEffect(() => {
+    if (query.status === "error") return;
     if (!query.hasNextPage) return;
     if (query.isFetchingNextPage) return;
     query.fetchNextPage();
-  }, [query.hasNextPage, query.isFetchingNextPage, query.fetchNextPage]);
+  }, [query.status, query.hasNextPage, query.isFetchingNextPage, query.fetchNextPage]);
 
   const pages = query.data?.pages ?? [];
   const subscriptions = pages.flatMap((p) => p.rows);

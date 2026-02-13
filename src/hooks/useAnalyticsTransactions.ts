@@ -44,7 +44,8 @@ export function useAnalyticsTransactions(options: Options = {}) {
 
       let q = supabase
         .from("transactions")
-        .select("id, amount, currency, status, stripe_created_at, customer_email, source", { count: "exact" })
+        // Avoid `count=exact` on large production datasets (can trigger timeouts and 500s).
+        .select("id, amount, currency, status, stripe_created_at, customer_email, source")
         .order("stripe_created_at", { ascending: false, nullsFirst: false })
         .range(from, to);
 
@@ -52,12 +53,12 @@ export function useAnalyticsTransactions(options: Options = {}) {
       if (endDate) q = q.lte("stripe_created_at", endDate);
       if (statuses.length > 0) q = q.in("status", statuses);
 
-      const { data, error, count } = await q;
+      const { data, error } = await q;
       if (error) throw error;
 
       return {
         rows: (data || []) as AnalyticsTransaction[],
-        totalCount: typeof count === "number" ? count : null,
+        totalCount: null,
         pageIndex,
       };
     },
@@ -76,14 +77,16 @@ export function useAnalyticsTransactions(options: Options = {}) {
       return lastPage.pageIndex + 1;
     },
     staleTime: 60_000,
+    retry: false,
   });
 
   // Auto-drain pages so charts are correct without making users click "Load more".
   useEffect(() => {
+    if (query.status === "error") return;
     if (!query.hasNextPage) return;
     if (query.isFetchingNextPage) return;
     query.fetchNextPage();
-  }, [query.hasNextPage, query.isFetchingNextPage, query.fetchNextPage]);
+  }, [query.status, query.hasNextPage, query.isFetchingNextPage, query.fetchNextPage]);
 
   const pages = query.data?.pages ?? [];
   const transactions = pages.flatMap((p) => p.rows);

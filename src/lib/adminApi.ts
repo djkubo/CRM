@@ -6,6 +6,8 @@ import { getValidSession } from "@/lib/authSession";
  * Edge functions verify JWT + is_admin() server-side.
  */
 
+const ADMIN_API_DEBUG = import.meta.env.DEV;
+
 /**
  * Generic wrapper for invoking Edge Functions with type safety.
  * Uses the active Supabase session JWT for authentication.
@@ -21,7 +23,9 @@ export async function invokeWithAdminKey<
   body?: B
 ): Promise<T | null> {
   try {
-    console.log(`[AdminAPI] Invoking ${functionName}`, body ? 'with body' : 'without body');
+    if (ADMIN_API_DEBUG) {
+      console.log(`[AdminAPI] Invoking ${functionName}`, body ? "with body" : "without body");
+    }
 
     // Important: avoid aggressive refreshSession() calls to prevent refresh-token rotation races.
     // Only refresh if the session is missing or expiring soon.
@@ -31,8 +35,10 @@ export async function invokeWithAdminKey<
       console.error('[AdminAPI] No active session');
       return { success: false, error: 'No active session. Please log in again.' } as T;
     }
-    const expiresAt = session.expires_at ? session.expires_at * 1000 : 0;
-    console.log(`[AdminAPI] Session valid, token length: ${session.access_token.length}, expires: ${new Date(expiresAt).toISOString()}`);
+    if (ADMIN_API_DEBUG) {
+      const expiresAt = session.expires_at ? session.expires_at * 1000 : 0;
+      console.log(`[AdminAPI] Session valid, expires: ${new Date(expiresAt).toISOString()}`);
+    }
     
     const { data, error } = await supabase.functions.invoke(functionName, {
       body,
@@ -41,15 +47,17 @@ export async function invokeWithAdminKey<
       }
     });
 
-    console.log(`[AdminAPI] ${functionName} response:`, {
-      hasData: !!data,
-      hasError: !!error,
-      errorMessage: error?.message,
-      dataKeys: data ? Object.keys(data) : [],
-      dataType: data ? typeof data : 'null',
-      dataOk: (data as any)?.ok,
-      dataSuccess: (data as any)?.success
-    });
+    if (ADMIN_API_DEBUG) {
+      console.log(`[AdminAPI] ${functionName} response:`, {
+        hasData: !!data,
+        hasError: !!error,
+        errorMessage: error?.message,
+        dataKeys: data ? Object.keys(data) : [],
+        dataType: data ? typeof data : "null",
+        dataOk: (data as any)?.ok,
+        dataSuccess: (data as any)?.success,
+      });
+    }
 
     if (error) {
       console.error(`[AdminAPI] ${functionName} error:`, error);

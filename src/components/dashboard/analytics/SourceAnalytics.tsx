@@ -149,15 +149,16 @@ export function SourceAnalytics({ period = "30d" }: SourceAnalyticsProps) {
       const from = pageIndex * pageSize;
       const to = from + pageSize - 1;
 
-      const { data, error, count } = await supabase
+      const { data, error } = await supabase
         .from("clients")
-        .select("acquisition_source, created_at", { count: "exact" })
+        // Avoid `count=exact` on large production datasets (can trigger timeouts and 500s).
+        .select("acquisition_source, created_at")
         .gte("created_at", periodStartIso)
         .order("created_at", { ascending: false })
         .range(from, to);
 
       if (error) throw error;
-      return { rows: data || [], totalCount: typeof count === "number" ? count : null, pageIndex };
+      return { rows: data || [], totalCount: null, pageIndex };
     },
     initialPageParam: 0,
     getNextPageParam: (lastPage, allPages) => {
@@ -170,6 +171,7 @@ export function SourceAnalytics({ period = "30d" }: SourceAnalyticsProps) {
       return lastPage.pageIndex + 1;
     },
     staleTime: 60_000,
+    retry: false,
   });
 
   // Trials started in period
@@ -181,15 +183,16 @@ export function SourceAnalytics({ period = "30d" }: SourceAnalyticsProps) {
       const from = pageIndex * pageSize;
       const to = from + pageSize - 1;
 
-      const { data, error, count } = await supabase
+      const { data, error } = await supabase
         .from("clients")
-        .select("acquisition_source, trial_started_at", { count: "exact" })
+        // Avoid `count=exact` on large production datasets (can trigger timeouts and 500s).
+        .select("acquisition_source, trial_started_at")
         .gte("trial_started_at", periodStartIso)
         .order("trial_started_at", { ascending: false })
         .range(from, to);
 
       if (error) throw error;
-      return { rows: data || [], totalCount: typeof count === "number" ? count : null, pageIndex };
+      return { rows: data || [], totalCount: null, pageIndex };
     },
     initialPageParam: 0,
     getNextPageParam: (lastPage, allPages) => {
@@ -202,20 +205,23 @@ export function SourceAnalytics({ period = "30d" }: SourceAnalyticsProps) {
       return lastPage.pageIndex + 1;
     },
     staleTime: 60_000,
+    retry: false,
   });
 
   // Auto-drain pages (best-effort).
   useEffect(() => {
+    if (registrationsQuery.status === "error") return;
     if (registrationsQuery.hasNextPage && !registrationsQuery.isFetchingNextPage) {
       registrationsQuery.fetchNextPage();
     }
-  }, [registrationsQuery.hasNextPage, registrationsQuery.isFetchingNextPage, registrationsQuery.fetchNextPage]);
+  }, [registrationsQuery.status, registrationsQuery.hasNextPage, registrationsQuery.isFetchingNextPage, registrationsQuery.fetchNextPage]);
 
   useEffect(() => {
+    if (trialsQuery.status === "error") return;
     if (trialsQuery.hasNextPage && !trialsQuery.isFetchingNextPage) {
       trialsQuery.fetchNextPage();
     }
-  }, [trialsQuery.hasNextPage, trialsQuery.isFetchingNextPage, trialsQuery.fetchNextPage]);
+  }, [trialsQuery.status, trialsQuery.hasNextPage, trialsQuery.isFetchingNextPage, trialsQuery.fetchNextPage]);
 
   const primaryCurrency = useMemo(() => {
     const totals = new Map<string, number>();

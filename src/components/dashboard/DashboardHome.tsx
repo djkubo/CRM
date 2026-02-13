@@ -33,7 +33,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import { formatDistanceToNow, addHours, subDays, subMonths, subYears } from 'date-fns';
+import { formatDistanceToNow, addHours, subDays, subMonths, subYears, format } from 'date-fns';
 import { es } from 'date-fns/locale';
 import { openWhatsApp, getRecoveryMessage } from './RecoveryTable';
 import { invokeWithAdminKey } from '@/lib/adminApi';
@@ -148,7 +148,9 @@ export function DashboardHome() {
   const invoicesDueNext72h = useQuery({
     queryKey: ["command-center", "invoices-next72h", 10],
     queryFn: async (): Promise<DueInvoice[]> => {
-      const limitDate = addHours(new Date(), 72).toISOString();
+      const limitDateObj = addHours(new Date(), 72);
+      const limitTimestamp = limitDateObj.toISOString();
+      const limitDateOnly = format(limitDateObj, "yyyy-MM-dd");
 
       const runSimple = async (): Promise<DueInvoice[]> => {
         const { data, error } = await supabase
@@ -158,7 +160,7 @@ export function DashboardHome() {
           )
           .in("status", ["open", "pending", "draft"])
           .not("next_payment_attempt", "is", null)
-          .lte("next_payment_attempt", limitDate)
+          .lte("next_payment_attempt", limitTimestamp)
           .order("stripe_created_at", { ascending: false, nullsFirst: false })
           .limit(200);
 
@@ -186,7 +188,7 @@ export function DashboardHome() {
           )
           .in("status", ["open", "pending", "draft"])
           .or(
-            `next_payment_attempt.lte.${limitDate},automatically_finalizes_at.lte.${limitDate},due_date.lte.${limitDate}`
+            `next_payment_attempt.lte.${limitTimestamp},automatically_finalizes_at.lte.${limitTimestamp},due_date.lte.${limitDateOnly}`
           )
           .order("stripe_created_at", { ascending: false, nullsFirst: false })
           .limit(200);

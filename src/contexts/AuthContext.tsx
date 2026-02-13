@@ -16,6 +16,8 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
+const AUTH_DEBUG = import.meta.env.DEV;
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [session, setSession] = useState<Session | null>(null);
@@ -63,7 +65,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const existingSession = await getValidSession({ refreshIfExpiringWithinMs: 10 * 60 * 1000 });
 
         if (mounted) {
-          console.log('[Auth] Initial session check:', existingSession ? 'Found session' : 'No session');
+          if (AUTH_DEBUG) console.log('[Auth] Initial session check:', existingSession ? 'Found session' : 'No session');
           sessionRef.current = existingSession;
           setSession(existingSession);
           setUser(existingSession?.user ?? null);
@@ -89,7 +91,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       (event, newSession) => {
         if (!mounted) return;
         
-        console.log('[Auth] State change event:', event);
+        if (AUTH_DEBUG) console.log('[Auth] State change event:', event);
 
         if (newSession) {
           // Keep a backup copy of tokens so we can restore if Supabase storage gets cleared.
@@ -112,7 +114,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           supabase.auth.getSession().then(async ({ data: { session: storedSession } }) => {
             if (storedSession) {
               // We still have a session! Don't log out - this was likely a spurious event
-              console.log('[Auth] SIGNED_OUT event ignored - session still valid in storage');
+              if (AUTH_DEBUG) console.log('[Auth] SIGNED_OUT event ignored - session still valid in storage');
               saveSessionBackup(storedSession);
               sessionRef.current = storedSession;
               setSession(storedSession);
@@ -123,7 +125,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             // If Supabase storage is empty but we have a backup, restore it.
             const restored = await restoreSessionFromBackupLocked({ minIntervalMs: 15_000 });
             if (restored) {
-              console.log('[Auth] Session restored from backup after SIGNED_OUT event');
+              if (AUTH_DEBUG) console.log('[Auth] Session restored from backup after SIGNED_OUT event');
               sessionRef.current = restored;
               setSession(restored);
               setUser(restored.user);
@@ -133,7 +135,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             const current = sessionRef.current;
             if (!current) {
               // Only log out if we truly have no session anywhere.
-              console.log('[Auth] SIGNED_OUT confirmed - no session found');
+              if (AUTH_DEBUG) console.log('[Auth] SIGNED_OUT confirmed - no session found');
               sessionRef.current = null;
               setSession(null);
               setUser(null);
@@ -144,17 +146,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             // (This avoids “random” logouts due to refresh races / flaky network.)
             const expiresAtMs = current.expires_at ? current.expires_at * 1000 : 0;
             if (expiresAtMs && expiresAtMs - Date.now() > 60_000) {
-              console.log('[Auth] SIGNED_OUT ignored - access token still valid');
+              if (AUTH_DEBUG) console.log('[Auth] SIGNED_OUT ignored - access token still valid');
               setSession(current);
               setUser(current.user);
               return;
             }
 
             // We had a session ref but storage is empty - try to recover before giving up.
-            console.log('[Auth] SIGNED_OUT with stale ref - attempting recovery');
+            if (AUTH_DEBUG) console.log('[Auth] SIGNED_OUT with stale ref - attempting recovery');
             const recovered = await refreshSessionLocked();
             if (recovered) {
-              console.log('[Auth] Session recovered after SIGNED_OUT event');
+              if (AUTH_DEBUG) console.log('[Auth] Session recovered after SIGNED_OUT event');
               sessionRef.current = recovered;
               setSession(recovered);
               setUser(recovered.user);
@@ -163,7 +165,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
             // If we can't refresh right now (offline/timeouts), DON'T force logout.
             // Keep the last-known session in memory and try again on focus/interval.
-            console.log('[Auth] Could not recover session right now; keeping last-known session');
+            if (AUTH_DEBUG) console.log('[Auth] Could not recover session right now; keeping last-known session');
             setSession(current);
             setUser(current.user);
           });
