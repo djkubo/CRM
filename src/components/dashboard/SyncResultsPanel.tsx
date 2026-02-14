@@ -47,6 +47,7 @@ interface SyncRun {
   total_updated: number | null;
   error_message: string | null;
   checkpoint: Json | null;
+  metadata: Json | null;
   dry_run: boolean | null;
 }
 
@@ -92,6 +93,7 @@ export function SyncResultsPanel() {
         "total_updated",
         "error_message",
         "checkpoint",
+        "metadata",
         "dry_run",
       ].join(","),
     [],
@@ -532,6 +534,31 @@ export function SyncResultsPanel() {
             resumeFromCursor: cursor as string
           };
           break;
+        case 'bulk_unify':
+          endpoint = 'bulk-unify-contacts';
+          {
+            // Preserve original run settings when possible (edge function defaults otherwise).
+            const meta = (typeof sync.metadata === 'object' && sync.metadata !== null)
+              ? (sync.metadata as Record<string, unknown>)
+              : null;
+            const allowedSources = new Set(['ghl', 'manychat', 'csv']);
+            const metaSourcesRaw = meta?.sources;
+            const metaSources = Array.isArray(metaSourcesRaw)
+              ? metaSourcesRaw.filter((s): s is string => typeof s === 'string' && allowedSources.has(s))
+              : [];
+            const metaBatchSize = meta?.batchSize;
+            const metaImportId = meta?.importId;
+
+            payload = {
+              syncRunId: sync.id,
+              ...(metaSources.length > 0 ? { sources: metaSources } : {}),
+              ...(typeof metaBatchSize === 'number' || (typeof metaBatchSize === 'string' && metaBatchSize.trim() !== '')
+                ? { batchSize: metaBatchSize }
+                : {}),
+              ...(typeof metaImportId === 'string' && metaImportId.trim() !== '' ? { importId: metaImportId } : {}),
+            };
+          }
+          break;
         default:
           toast.error('Fuente no soportada', {
             description: `No se puede reanudar syncs de ${sync.source}`,
@@ -541,14 +568,24 @@ export function SyncResultsPanel() {
 
       // Start resume (don't modify the sync record - the edge function handles it)
       const result = await invokeWithAdminKey<{ 
-        success: boolean; 
+        ok?: boolean;
+        success?: boolean; 
         run_id?: string;
         syncRunId?: string;
         resumedFrom?: number;
         status?: string;
+        message?: string;
+        error?: string;
       }>(endpoint, payload);
+
+      // invokeWithAdminKey is intentionally non-throwing; surface returned errors explicitly.
+      if (result && (result.ok === false || result.success === false)) {
+        const msg = result.error || result.message || 'Error desconocido';
+        toast.error('Error al reanudar', { description: msg });
+        return;
+      }
       
-      if (result?.success || result?.status === 'resumed') {
+      if (result?.success || result?.ok || result?.status === 'resumed') {
         toast.success('✅ Sync reanudado', {
           description: `Continuando desde ${runningTotal.toLocaleString()} registros procesados`,
         });
