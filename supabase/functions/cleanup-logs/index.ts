@@ -140,21 +140,64 @@ Deno.serve(async (req) => {
       }
     }
 
-    // Delete old sync_runs except preserved ones
-    const { data: deletedSyncRuns, error: syncRunsError } = await supabase
-      .from("sync_runs")
-      .delete()
-      .lt("started_at", cutoffDate)
-      .not("id", "in", `(${Array.from(preserveIds).join(",")})`)
-      .select("id");
+    // Delete old sync_runs except preserved ones.
+    // NOTE: merge_conflicts has an FK to sync_runs (merge_conflicts.sync_run_id). If we try to delete a run
+    // that still has conflicts referencing it, Postgres will reject the delete. So we detach conflicts first.
+    const preserveIdList = Array.from(preserveIds);
+    const preserveFilter = preserveIdList.length > 0 ? `(${preserveIdList.join(",")})` : null;
 
-    if (syncRunsError) {
-      console.error("[cleanup-logs] Error deleting sync_runs:", syncRunsError);
-      result.errors.push(`sync_runs delete error: ${syncRunsError.message}`);
-    } else {
-      result.sync_runs_deleted = deletedSyncRuns?.length || 0;
-      console.log(`[cleanup-logs] Deleted ${result.sync_runs_deleted} sync_runs`);
+    let deletedSyncRunsTotal = 0;
+    const batchSize = 200;
+    for (;;) {
+      let q = supabase
+        .from("sync_runs")
+        .select("id")
+        .lt("started_at", cutoffDate)
+        .limit(batchSize);
+
+      if (preserveFilter) {
+        q = q.not("id", "in", preserveFilter);
+      }
+
+      const { data: batch, error: fetchBatchError } = await q;
+      if (fetchBatchError) {
+        console.error("[cleanup-logs] Error listing sync_runs for deletion:", fetchBatchError);
+        result.errors.push(`sync_runs list error: ${fetchBatchError.message}`);
+        break;
+      }
+
+      const ids = (batch || []).map((r: any) => r.id).filter(Boolean) as string[];
+      if (ids.length === 0) break;
+
+      // Detach conflicts referencing these runs so the delete won't violate FK constraints.
+      const { error: detachError } = await supabase
+        .from("merge_conflicts")
+        .update({ sync_run_id: null })
+        .in("sync_run_id", ids);
+      if (detachError) {
+        console.error("[cleanup-logs] Error detaching merge_conflicts from sync_runs:", detachError);
+        result.errors.push(`merge_conflicts detach error: ${detachError.message}`);
+        break;
+      }
+
+      const { data: deletedSyncRuns, error: syncRunsError } = await supabase
+        .from("sync_runs")
+        .delete()
+        .in("id", ids)
+        .select("id");
+
+      if (syncRunsError) {
+        console.error("[cleanup-logs] Error deleting sync_runs:", syncRunsError);
+        result.errors.push(`sync_runs delete error: ${syncRunsError.message}`);
+        break;
+      }
+
+      deletedSyncRunsTotal += deletedSyncRuns?.length || 0;
+      console.log(`[cleanup-logs] Deleted ${deletedSyncRuns?.length || 0} sync_runs (running total: ${deletedSyncRunsTotal})`);
     }
+
+    result.sync_runs_deleted = deletedSyncRunsTotal;
+    console.log(`[cleanup-logs] Deleted ${result.sync_runs_deleted} sync_runs`);
 
     // ============================================
     // 2. CLEANUP csv_import_runs (completed ones older than 30 days)

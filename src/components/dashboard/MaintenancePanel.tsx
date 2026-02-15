@@ -46,20 +46,60 @@ export default function MaintenancePanel() {
   const handleClearFailedSyncs = async () => {
     setIsClearingFailed(true);
     try {
-      // Delete all failed, canceled, and stuck syncs
-      const { data, error } = await supabase
-        .from("sync_runs")
-        .delete()
-        // Support both spellings used across functions.
-        .in("status", ["failed", "canceled", "cancelled", "paused"])
-        .select("id");
+      // Delete all failed/cancelled/paused sync_runs. Note: merge_conflicts has an FK to sync_runs,
+      // so we must detach conflicts first (set sync_run_id = null) or deletes will fail.
+      const statuses = ["failed", "canceled", "cancelled", "paused"] as const;
 
-      if (error) throw error;
+      const ids: string[] = [];
+      const pageSize = 1000;
+      for (let from = 0; ; from += pageSize) {
+        const { data: page, error: pageError } = await supabase
+          .from("sync_runs")
+          .select("id")
+          .in("status", [...statuses])
+          .range(from, from + pageSize - 1);
 
-      const count = data?.length || 0;
+        if (pageError) throw pageError;
+        const rows = (page || []) as Array<{ id: string }>;
+        ids.push(...rows.map((r) => r.id));
+        if (rows.length < pageSize) break;
+      }
+
+      if (ids.length === 0) {
+        toast({
+          title: "Nada que limpiar",
+          description: "No hay syncs fallidos/cancelados/pausados para borrar.",
+        });
+        return;
+      }
+
+      // Chunk to avoid URL limits in PostgREST filters.
+      const chunkSize = 200;
+      for (let i = 0; i < ids.length; i += chunkSize) {
+        const chunk = ids.slice(i, i + chunkSize);
+        const { error: detachError } = await supabase
+          .from("merge_conflicts")
+          .update({ sync_run_id: null })
+          .in("sync_run_id", chunk);
+        if (detachError) throw detachError;
+      }
+
+      let deletedCount = 0;
+      for (let i = 0; i < ids.length; i += chunkSize) {
+        const chunk = ids.slice(i, i + chunkSize);
+        const { data: deleted, error: deleteError } = await supabase
+          .from("sync_runs")
+          .delete()
+          .in("id", chunk)
+          .in("status", [...statuses])
+          .select("id");
+        if (deleteError) throw deleteError;
+        deletedCount += (deleted || []).length;
+      }
+
       toast({
         title: "Syncs limpiados",
-        description: `Se eliminaron ${count} registros de sincronizaciones fallidas/canceladas`,
+        description: `Se eliminaron ${deletedCount} registros de sincronizaciones fallidas/canceladas/pausadas`,
       });
     } catch (error: any) {
       console.error("Clear failed syncs error:", error);
