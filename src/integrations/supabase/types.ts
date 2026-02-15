@@ -2769,6 +2769,10 @@ export type Database = {
             }
             Returns: Json
           }
+      get_client_360: {
+        Args: { p_client_id: string; p_limits?: Json }
+        Returns: Json
+      }
       get_staging_counts_accurate: { Args: never; Returns: Json }
       get_staging_counts_fast: { Args: never; Returns: Json }
       get_subscription_metrics: {

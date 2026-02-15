@@ -36,6 +36,9 @@ dist-ssr
 .playwright-cli/
 output/playwright/
 
+# Local reports/exports (may contain PII)
+output/
+
 # Supabase CLI temp files
 supabase/.temp/
 
