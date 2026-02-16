@@ -127,17 +127,22 @@ function SegmentCard({ segment }: { segment: ActionableSegment }) {
       {segment.clients.length > 0 && (
         <>
           <div className="space-y-1 mb-2 sm:mb-3 max-h-24 sm:max-h-32 overflow-y-auto">
-            {segment.clients.slice(0, 5).map((client, idx) => (
+            {segment.clients.slice(0, 5).map((client, idx) => {
+              const isFinancialSegment = ['pagos_fallidos', 'clientes_vip', 'cancelaciones', 'conversiones_nuevas', 'riesgo_churn'].includes(segment.segment);
+              const displayAmount = client.amount !== undefined ? (isFinancialSegment ? client.amount / 100 : client.amount) : undefined;
+              const displayName = client.name && client.name !== 'Desconocido' ? client.name : client.email;
+              return (
               <div key={idx} className="flex items-center justify-between text-[10px] sm:text-xs py-0.5 sm:py-1 px-1.5 sm:px-2 rounded bg-background/30">
                 <div className="flex items-center gap-1.5 sm:gap-2 truncate min-w-0">
                   <span className="text-muted-foreground">{idx + 1}.</span>
-                  <span className="text-foreground truncate">{client.email}</span>
+                  <span className="text-foreground truncate">{displayName}</span>
                 </div>
-                {client.amount !== undefined && (
-                  <span className="text-emerald-400 font-medium shrink-0 ml-1">${client.amount.toFixed(0)}</span>
+                {displayAmount !== undefined && (
+                  <span className="text-emerald-400 font-medium shrink-0 ml-1">${displayAmount.toFixed(0)}</span>
                 )}
               </div>
-            ))}
+              );
+            })}
             {segment.clients.length > 5 && (
               <p className="text-[10px] sm:text-xs text-muted-foreground text-center py-0.5 sm:py-1">
                 +{segment.clients.length - 5} más...

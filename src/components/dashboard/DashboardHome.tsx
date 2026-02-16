@@ -799,6 +799,9 @@ export function DashboardHome() {
             <div className="flex items-center gap-2">
               <AlertTriangle className="h-4 w-4 text-primary" />
               <h3 className="text-sm font-medium text-foreground">Pagos Fallidos</h3>
+              {top10Failures.length > 0 && (
+                <Badge variant="error" className="text-[10px]">{top10Failures.length}</Badge>
+              )}
             </div>
             <Button variant="ghost" size="sm" onClick={() => handleNavigate('recovery')} className="text-xs gap-1 touch-feedback">
               Ver <ChevronRight className="h-3 w-3" />
@@ -855,6 +858,9 @@ export function DashboardHome() {
             <div className="flex items-center gap-2">
               <FileText className="h-4 w-4 text-primary" />
               <h3 className="text-sm font-medium text-foreground">Facturas Próximas (72h)</h3>
+              {top10Invoices.length > 0 && (
+                <Badge variant="warning" className="text-[10px]">{top10Invoices.length}</Badge>
+              )}
             </div>
             <Button variant="ghost" size="sm" onClick={() => handleNavigate('invoices')} className="text-xs gap-1 touch-feedback">
               Ver <ChevronRight className="h-3 w-3" />
@@ -924,6 +930,9 @@ export function DashboardHome() {
             <div className="flex items-center gap-2">
               <CreditCard className="h-4 w-4 text-primary" />
               <h3 className="text-sm font-medium text-foreground">Pruebas por vencer</h3>
+              {top10ExpiringTrials.length > 0 && (
+                <Badge variant="info" className="text-[10px]">{top10ExpiringTrials.length}</Badge>
+              )}
             </div>
             <Button variant="ghost" size="sm" onClick={() => handleNavigate('subscriptions')} className="text-xs gap-1 touch-feedback">
               Ver <ChevronRight className="h-3 w-3" />

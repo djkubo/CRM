@@ -39,9 +39,7 @@ const MovementsPage = lazy(() =>
 const CampaignControlCenter = lazy(() => 
   import("@/components/dashboard/CampaignControlCenter").then(m => ({ default: m.CampaignControlCenter }))
 );
-const FlowsPage = lazy(() => 
-  import("@/components/dashboard/FlowsPage").then(m => ({ default: m.FlowsPage }))
-);
+const FlowsPage = lazy(() => import("@/components/dashboard/FlowsPage"));
 const BroadcastListsPage = lazy(() => 
   import("@/components/broadcast/BroadcastListsPage").then(m => ({ default: m.BroadcastListsPage }))
 );
