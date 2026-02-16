@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react';
-import { 
-  Send, Users, Play, AlertTriangle, CheckCircle2, 
+import { useState, useEffect, useCallback } from 'react';
+import {
+  Send, Users, Play, AlertTriangle, CheckCircle2,
   RefreshCw, MessageCircle, Smartphone, Mail
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -55,32 +55,22 @@ export function ManualSendPanel() {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [dryRunResult, setDryRunResult] = useState<{ total: number; excluded: number; toSend: number } | null>(null);
 
-  useEffect(() => {
-    loadData();
-  }, []);
-
-  useEffect(() => {
-    if (selectedSegment) {
-      countRecipients();
-    }
-  }, [selectedSegment]);
-
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     const [segRes, tempRes] = await Promise.all([
       supabase.from('segments').select('*').eq('is_active', true),
       supabase.from('message_templates').select('*').eq('is_active', true),
     ]);
-    
+
     if (segRes.data) setSegments(segRes.data);
     if (tempRes.data) setTemplates(tempRes.data);
-  };
+  }, []);
 
-  const countRecipients = async () => {
+  const countRecipients = useCallback(async () => {
     const segment = segments.find(s => s.id === selectedSegment);
     if (!segment) return;
 
     let query = supabase.from('clients').select('id', { count: 'exact', head: true });
-    
+
     switch (segment.filter_type) {
       case 'payment_failed': {
         const { data: failedEmails } = await supabase
@@ -88,7 +78,7 @@ export function ManualSendPanel() {
           .select('customer_email')
           .eq('status', 'failed')
           .gte('created_at', new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString());
-        
+
         if (failedEmails && failedEmails.length > 0) {
           const emails = [...new Set(failedEmails.map(t => t.customer_email).filter(Boolean))];
           query = query.in('email', emails);
@@ -104,7 +94,7 @@ export function ManualSendPanel() {
           .select('customer_email')
           .eq('status', 'trialing')
           .lte('trial_end', new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString());
-        
+
         if (trialSubs && trialSubs.length > 0) {
           const emails = [...new Set(trialSubs.map(s => s.customer_email).filter(Boolean))];
           query = query.in('email', emails);
@@ -127,7 +117,17 @@ export function ManualSendPanel() {
 
     const { count } = await query;
     setRecipientCount(count || 0);
-  };
+  }, [selectedSegment, segments]);
+
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
+
+  useEffect(() => {
+    if (selectedSegment) {
+      countRecipients();
+    }
+  }, [selectedSegment, countRecipients]);
 
   const handleDryRun = async () => {
     if (!selectedSegment || !selectedTemplate) {
@@ -165,7 +165,7 @@ export function ManualSendPanel() {
 
       // Delete the temporary campaign
       await supabase.from('campaigns').delete().eq('id', campaign.id);
-      
+
       setConfirmOpen(true);
     } catch (error) {
       console.error('Dry run error:', error);
@@ -302,8 +302,8 @@ export function ManualSendPanel() {
         )}
 
         <div className="flex gap-3 pt-2">
-          <Button 
-            variant="outline" 
+          <Button
+            variant="outline"
             onClick={handleDryRun}
             disabled={!selectedSegment || !selectedTemplate || sending}
             className="flex-1"
@@ -311,7 +311,7 @@ export function ManualSendPanel() {
             <RefreshCw className={`h-4 w-4 mr-2 ${sending ? 'animate-spin' : ''}`} />
             Simular (Dry Run)
           </Button>
-          <Button 
+          <Button
             onClick={() => setConfirmOpen(true)}
             disabled={!selectedSegment || !selectedTemplate || sending}
             className="flex-1"
@@ -334,7 +334,7 @@ export function ManualSendPanel() {
               Revisa el resumen antes de iniciar el envío masivo.
             </DialogDescription>
           </DialogHeader>
-          
+
           <div className="space-y-4 py-4">
             {dryRunResult ? (
               <div className="space-y-2">
@@ -357,7 +357,7 @@ export function ManualSendPanel() {
                 <strong>{segments.find(s => s.id === selectedSegment)?.name}</strong>.
               </p>
             )}
-            
+
             <p className="text-sm text-amber-400 flex items-center gap-2">
               <AlertTriangle className="h-4 w-4" />
               Esta acción no se puede deshacer.

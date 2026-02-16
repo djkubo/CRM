@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
@@ -96,15 +96,15 @@ interface UseInvoicesOptions {
  * - Single Edge Function call triggers background processing
  */
 export function useInvoices(options: UseInvoicesOptions = {}) {
-  const { 
-    statusFilter = 'all', 
-    searchQuery = '', 
-    startDate, 
+  const {
+    statusFilter = 'all',
+    searchQuery = '',
+    startDate,
     endDate,
     page = 1,
     pageSize = 50,
   } = options;
-  
+
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [syncProgress, setSyncProgress] = useState<SyncProgress | null>(null);
@@ -148,7 +148,7 @@ export function useInvoices(options: UseInvoicesOptions = {}) {
       const { data: invoices, error, count } = await query;
 
       if (error) throw error;
-      
+
       return {
         invoices: (invoices || []).map(row => ({
           ...row,
@@ -161,8 +161,8 @@ export function useInvoices(options: UseInvoicesOptions = {}) {
     },
   });
 
-  const invoices = data?.invoices || [];
-  const totalCount = data?.totalCount || 0;
+  const invoices = useMemo(() => data?.invoices ?? [], [data?.invoices]);
+  const totalCount = data?.totalCount ?? 0;
   const totalPages = Math.ceil(totalCount / pageSize);
 
   // Poll sync_runs for progress when syncing
@@ -280,7 +280,7 @@ export function useInvoices(options: UseInvoicesOptions = {}) {
       setIsSyncing(false);
       queryClient.invalidateQueries({ queryKey: ["invoices"] });
       queryClient.invalidateQueries({ queryKey: ["unified-invoices"] });
-      
+
       return { success: true };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Error desconocido';
@@ -316,8 +316,8 @@ export function useInvoices(options: UseInvoicesOptions = {}) {
 
   const invoicesNext72h = invoices.filter((inv) => {
     if (!['open', 'draft'].includes(inv.status)) return false;
-    const targetDate = inv.status === 'open' 
-      ? inv.next_payment_attempt 
+    const targetDate = inv.status === 'open'
+      ? inv.next_payment_attempt
       : (inv.automatically_finalizes_at || inv.next_payment_attempt);
     if (!targetDate) return false;
     return new Date(targetDate) <= next72Hours;

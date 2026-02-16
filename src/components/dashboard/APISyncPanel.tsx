@@ -14,7 +14,7 @@ import { getFreshnessBucket } from '@/lib/syncStateUtils';
 import { consumePendingOpsSyncCommand, onOpsSyncCommand, type OpsSyncCommand } from '@/lib/opsSyncCommand';
 import { formatDistanceToNow, format } from 'date-fns';
 import { es } from 'date-fns/locale';
-import type { 
+import type {
   SyncResult,
   FetchStripeBody,
   FetchStripeResponse,
@@ -85,21 +85,21 @@ export function APISyncPanel() {
   ): Promise<{ synced_transactions: number; synced_clients: number; paid_count: number; failed_count: number }> => {
     const now = new Date();
     const allResults = { synced_transactions: 0, synced_clients: 0, paid_count: 0, failed_count: 0 };
-    
+
     // Sync in 30-day chunks to avoid API limits and timeouts
     const totalChunks = Math.ceil(years * 12); // Monthly chunks
-    
+
     for (let i = 0; i < totalChunks; i++) {
       setProgress({ current: i + 1, total: totalChunks });
-      
+
       const endDate = new Date(now.getTime() - (i * 31 * 24 * 60 * 60 * 1000));
       const startDate = new Date(endDate.getTime() - (31 * 24 * 60 * 60 * 1000));
-      
+
       try {
         if (service === 'stripe') {
           const data = await invokeWithAdminKey<FetchStripeResponse, FetchStripeBody>(
             'fetch-stripe',
-            { 
+            {
               fetchAll: true,
               startDate: startDate.toISOString(),
               endDate: endDate.toISOString()
@@ -115,11 +115,11 @@ export function APISyncPanel() {
           let paypalSyncRunId: string | null = null;
           let paypalHasMore = true;
           let paypalPage = 1;
-          
+
           while (paypalHasMore && paypalPage <= 500) {
             const data = await invokeWithAdminKey<FetchPayPalResponse, FetchPayPalBody>(
               'fetch-paypal',
-              { 
+              {
                 fetchAll: true,
                 startDate: startDate.toISOString(),
                 endDate: endDate.toISOString(),
@@ -127,24 +127,24 @@ export function APISyncPanel() {
                 page: paypalPage
               }
             );
-            
+
             if (!data?.success) {
               console.error(`PayPal page ${paypalPage} failed:`, data?.error);
               break;
             }
-            
+
             // Track sync run ID across pages
             paypalSyncRunId = data.syncRunId || paypalSyncRunId;
-            
+
             // Accumulate results
             allResults.synced_transactions += data.synced_transactions ?? 0;
             allResults.paid_count += data.paid_count ?? 0;
             allResults.failed_count += data.failed_count ?? 0;
-            
+
             // Check pagination
             paypalHasMore = data.hasMore === true;
             paypalPage = data.nextPage || (paypalPage + 1);
-            
+
             // Rate limit delay
             if (paypalHasMore) {
               await new Promise(r => setTimeout(r, 200));
@@ -156,14 +156,14 @@ export function APISyncPanel() {
         // Continue with next chunk
       }
     }
-    
+
     setProgress(null);
-    setResult({ 
-      success: true, 
+    setResult({
+      success: true,
       ...allResults,
-      message: `Sincronizado historial completo (${years} años)` 
+      message: `Sincronizado historial completo (${years} años)`
     });
-    
+
     return allResults;
   };
 
@@ -188,32 +188,32 @@ export function APISyncPanel() {
           .select('status, total_fetched, total_inserted, checkpoint')
           .eq('id', syncRunId)
           .single();
-        
+
         if (error || !data) {
           console.error('Polling error:', error);
           return;
         }
-        
+
         const checkpoint = data.checkpoint as { page?: number; cursor?: string; lastActivity?: string } | null;
-        
+
         if (data.status === 'running' || data.status === 'continuing') {
-          setStripeProgress({ 
-            current: data.total_fetched || 0, 
+          setStripeProgress({
+            current: data.total_fetched || 0,
             total: 0,
             page: checkpoint?.page,
             cursor: checkpoint?.cursor
           });
-          
+
           // Toast mejorado con página
           const pageInfo = checkpoint?.page ? ` (Página ${checkpoint.page})` : '';
-          toast.info(`Stripe: ${(data.total_fetched || 0).toLocaleString()} transacciones${pageInfo}...`, { 
-            id: 'stripe-sync' 
+          toast.info(`Stripe: ${(data.total_fetched || 0).toLocaleString()} transacciones${pageInfo}...`, {
+            id: 'stripe-sync'
           });
           stripePollingRef.current = window.setTimeout(poll, 3000);
         } else if (data.status === 'completed') {
           setStripeProgress(null);
-          setStripeResult({ 
-            success: true, 
+          setStripeResult({
+            success: true,
             synced_transactions: data.total_inserted ?? 0,
             message: 'Sincronización completada'
           });
@@ -239,7 +239,7 @@ export function APISyncPanel() {
         console.error('Poll error:', err);
       }
     };
-    
+
     poll();
   }, [queryClient]);
 
@@ -257,25 +257,25 @@ export function APISyncPanel() {
           .select('status, total_fetched, total_inserted, metadata')
           .eq('id', syncRunId)
           .single();
-        
+
         if (error || !data) {
           console.error('Invoice polling error:', error);
           return;
         }
-        
+
         if (data.status === 'running' || data.status === 'continuing') {
           setInvoicesProgress({ current: data.total_fetched || 0, total: 0 });
-          toast.info(`Facturas: ${(data.total_fetched || 0).toLocaleString()} sincronizadas...`, { 
-            id: 'invoices-sync' 
+          toast.info(`Facturas: ${(data.total_fetched || 0).toLocaleString()} sincronizadas...`, {
+            id: 'invoices-sync'
           });
           invoicesPollingRef.current = window.setTimeout(poll, 3000);
         } else if (data.status === 'completed') {
           setInvoicesProgress(null);
           const metadata = data.metadata as { stats?: { paid?: number; open?: number; draft?: number } } | null;
           const stats = metadata?.stats || { paid: 0, open: 0, draft: 0 };
-          
-          setInvoicesResult({ 
-            success: true, 
+
+          setInvoicesResult({
+            success: true,
             synced_transactions: data.total_inserted ?? 0,
             total_inserted: data.total_inserted ?? 0,
             message: `${data.total_inserted} facturas sincronizadas (${stats.paid || 0} pagadas, ${stats.open || 0} abiertas)`
@@ -302,7 +302,7 @@ export function APISyncPanel() {
         console.error('Invoice poll error:', err);
       }
     };
-    
+
     poll();
   }, [queryClient]);
 
@@ -319,17 +319,17 @@ export function APISyncPanel() {
           .select('status, total_fetched, total_inserted, checkpoint')
           .eq('id', syncRunId)
           .single();
-        
+
         if (error || !data) {
           console.error('PayPal polling error:', error);
           return;
         }
-        
+
         const checkpoint = data.checkpoint as { page?: number; totalPages?: number; chunkIndex?: number; totalChunks?: number } | null;
-        
+
         if (data.status === 'running' || data.status === 'continuing') {
-          const progressInfo = { 
-            current: data.total_fetched || 0, 
+          const progressInfo = {
+            current: data.total_fetched || 0,
             total: 0,
             page: checkpoint?.page,
             totalPages: checkpoint?.totalPages,
@@ -337,23 +337,23 @@ export function APISyncPanel() {
             totalChunks: checkpoint?.totalChunks
           };
           setPaypalProgress(progressInfo);
-          
+
           // Show detailed progress in toast
-          const chunkInfo = checkpoint?.totalChunks 
-            ? `Chunk ${(checkpoint?.chunkIndex || 0) + 1}/${checkpoint.totalChunks}` 
+          const chunkInfo = checkpoint?.totalChunks
+            ? `Chunk ${(checkpoint?.chunkIndex || 0) + 1}/${checkpoint.totalChunks}`
             : '';
           const pageInfo = checkpoint?.page ? `Pág ${checkpoint.page}` : '';
           const detailInfo = [chunkInfo, pageInfo].filter(Boolean).join(', ');
-          
-          toast.info(`PayPal: ${(data.total_fetched || 0).toLocaleString()} transacciones${detailInfo ? ` (${detailInfo})` : ''}...`, { 
-            id: 'paypal-sync' 
+
+          toast.info(`PayPal: ${(data.total_fetched || 0).toLocaleString()} transacciones${detailInfo ? ` (${detailInfo})` : ''}...`, {
+            id: 'paypal-sync'
           });
-          
+
           paypalPollingRef.current = window.setTimeout(poll, 3000);
         } else if (data.status === 'completed') {
           setPaypalProgress(null);
-          setPaypalResult({ 
-            success: true, 
+          setPaypalResult({
+            success: true,
             synced_transactions: data.total_inserted ?? 0,
             message: 'Sincronización completada'
           });
@@ -374,7 +374,7 @@ export function APISyncPanel() {
         console.error('PayPal poll error:', err);
       }
     };
-    
+
     poll();
   }, [queryClient]);
 
@@ -391,7 +391,7 @@ export function APISyncPanel() {
           .select('status, total_fetched, total_inserted, error_message, checkpoint, started_at')
           .eq('id', syncRunId)
           .single();
-        
+
         if (error || !data) {
           console.error('GHL polling error:', error);
           return;
@@ -531,15 +531,15 @@ export function APISyncPanel() {
         }
 
         if (data.status === 'running' || data.status === 'continuing') {
-          setGhlProgress({ 
-            current: data.total_fetched || 0, 
+          setGhlProgress({
+            current: data.total_fetched || 0,
             total: 0
           });
           ghlPollingRef.current = window.setTimeout(poll, 3000);
         } else if (data.status === 'completed') {
           setGhlProgress(null);
-          setGhlResult({ 
-            success: true, 
+          setGhlResult({
+            success: true,
             total_fetched: data.total_inserted ?? 0,
             message: `${data.total_inserted} contactos descargados`
           });
@@ -564,7 +564,7 @@ export function APISyncPanel() {
         console.error('GHL poll error:', err);
       }
     };
-    
+
     poll();
   }, [queryClient]);
 
@@ -581,16 +581,16 @@ export function APISyncPanel() {
           .select('status, total_fetched, total_inserted')
           .eq('id', syncRunId)
           .single();
-        
+
         if (error || !data) return;
-        
+
         if (data.status === 'running' || data.status === 'continuing') {
           setManychatProgress({ current: data.total_fetched || 0, total: 0 });
           manychatPollingRef.current = window.setTimeout(poll, 3000);
         } else if (data.status === 'completed') {
           setManychatProgress(null);
-          setManychatResult({ 
-            success: true, 
+          setManychatResult({
+            success: true,
             total_fetched: data.total_fetched ?? 0,
             total_inserted: data.total_inserted ?? 0
           });
@@ -609,7 +609,7 @@ export function APISyncPanel() {
         console.error('ManyChat poll error:', err);
       }
     };
-    
+
     poll();
   }, [queryClient]);
 
@@ -619,11 +619,11 @@ export function APISyncPanel() {
   ) => {
     setStripeSyncing(true);
     setStripeResult(null);
-    
+
     try {
       let startDate: Date;
       const endDate = new Date();
-      
+
       // Calculate date range based on mode
       switch (mode) {
         case 'last24h':
@@ -643,11 +643,11 @@ export function APISyncPanel() {
           startDate = new Date(endDate.getTime() - 3 * 365 * 24 * 60 * 60 * 1000);
           break;
       }
-      
+
       // ONE single call - backend handles all pagination in background
       const data = await invokeWithAdminKey<FetchStripeResponse, FetchStripeBody>(
-        'fetch-stripe', 
-        { 
+        'fetch-stripe',
+        {
           fetchAll: true,
           startDate: startDate.toISOString(),
           endDate: endDate.toISOString(),
@@ -687,7 +687,7 @@ export function APISyncPanel() {
                   : 'historial completo';
         toast.success(`Stripe (${modeLabel}): ${(data.synced_transactions ?? 0).toLocaleString()} transacciones sincronizadas`);
       }
-      
+
       // Refresh all data
       queryClient.invalidateQueries({ queryKey: ['transactions'] });
       queryClient.invalidateQueries({ queryKey: ['clients'] });
@@ -713,11 +713,11 @@ export function APISyncPanel() {
     setPaypalSyncing(true);
     setPaypalResult(null);
     setPaypalProgress(null);
-    
+
     try {
       let startDate: Date;
       const endDate = new Date();
-      
+
       // Calculate date range based on mode
       switch (mode) {
         case 'last24h':
@@ -738,11 +738,11 @@ export function APISyncPanel() {
           startDate = new Date(endDate.getTime() - 2.5 * 365 * 24 * 60 * 60 * 1000);
           break;
       }
-      
+
       // ONE single call - backend handles all pagination with auto-continuation
       const data = await invokeWithAdminKey<FetchPayPalResponse, FetchPayPalBody>(
-        'fetch-paypal', 
-        { 
+        'fetch-paypal',
+        {
           fetchAll: true,
           startDate: startDate.toISOString(),
           endDate: endDate.toISOString(),
@@ -781,7 +781,7 @@ export function APISyncPanel() {
                   : 'historial completo';
         toast.success(`PayPal (${modeLabel}): ${(data.synced_transactions ?? 0).toLocaleString()} transacciones sincronizadas`);
       }
-      
+
       // Refresh all data
       queryClient.invalidateQueries({ queryKey: ['transactions'] });
       queryClient.invalidateQueries({ queryKey: ['clients'] });
@@ -824,11 +824,11 @@ export function APISyncPanel() {
     setManychatSyncing(true);
     setManychatResult(null);
     setManychatProgress({ current: 0, total: 0 });
-    
+
     try {
       // Single "Fire and Forget" call - backend handles all pagination in background
       const data = await invokeWithAdminKey<StandardSyncResponse>(
-        'sync-manychat', 
+        'sync-manychat',
         { dry_run: false, ...(opts?.force ? { force: true } : {}) }
       );
 
@@ -874,7 +874,7 @@ export function APISyncPanel() {
         total_inserted: data.stats?.total_inserted ?? 0,
         total_updated: data.stats?.total_updated ?? 0,
       });
-      
+
       toast.success(`ManyChat: ${data.processed ?? 0} contactos sincronizados`);
       queryClient.invalidateQueries({ queryKey: ['clients'] });
       queryClient.invalidateQueries({ queryKey: ['clients-count'] });
@@ -901,13 +901,13 @@ export function APISyncPanel() {
     setGhlSyncing(true);
     setGhlResult(null);
     setGhlProgress({ current: 0, total: 0 });
-    
+
     try {
       // Single "Fire and Forget" call - backend handles all pagination via EdgeRuntime.waitUntil
       const data = await invokeWithAdminKey<GHLSyncResponse>(
-        'sync-ghl', 
-        { 
-          dry_run: false, 
+        'sync-ghl',
+        {
+          dry_run: false,
           stageOnly: true, // Stage only - no immediate merge
           ...(opts?.force ? { force: true } : {})
         }
@@ -956,7 +956,7 @@ export function APISyncPanel() {
         total_fetched: data.staged ?? data.processed ?? 0,
         message: `${data.staged ?? data.processed ?? 0} contactos descargados a staging`
       });
-      
+
       toast.success(`GoHighLevel: ${data.staged ?? data.processed ?? 0} contactos sincronizados`, { id: 'ghl-sync' });
       queryClient.invalidateQueries({ queryKey: ['clients'] });
       queryClient.invalidateQueries({ queryKey: ['clients-count'] });
@@ -977,7 +977,7 @@ export function APISyncPanel() {
     setInvoicesSyncing(true);
     setInvoicesResult(null);
     setInvoicesProgress(null);
-    
+
     try {
       const endDate = new Date();
       const startDate =
@@ -1047,7 +1047,7 @@ export function APISyncPanel() {
         });
         toast.success(`Facturas: ${data.upserted} sincronizadas`, { id: 'invoices-sync' });
       }
-      
+
       queryClient.invalidateQueries({ queryKey: ['invoices'] });
       queryClient.invalidateQueries({ queryKey: ['pending-invoices'] });
     } catch (error) {
@@ -1067,7 +1067,7 @@ export function APISyncPanel() {
   };
 
   // Allow other tabs (Overview) to trigger a sync without prop drilling.
-  const dispatchSyncCommandRef = useRef<(cmd: OpsSyncCommand) => void>(() => {});
+  const dispatchSyncCommandRef = useRef<(cmd: OpsSyncCommand) => void>(() => { });
   dispatchSyncCommandRef.current = (cmd: OpsSyncCommand) => {
     const force = cmd.force === true;
     switch (cmd.source) {
@@ -1108,7 +1108,6 @@ export function APISyncPanel() {
     const pending = consumePendingOpsSyncCommand();
     if (pending) handle(pending);
     return onOpsSyncCommand(handle);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const getResultBadge = (r: SyncResult | null) => {

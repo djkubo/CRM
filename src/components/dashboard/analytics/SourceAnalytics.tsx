@@ -137,8 +137,8 @@ export function SourceAnalytics({ period = "30d" }: SourceAnalyticsProps) {
     return () => {
       cancelled = true;
     };
-    // Intentionally depend on the completion state + count only (avoid re-fetching mapping on every page).
-  }, [periodStartIso, txQuery.isLoading, txQuery.isFetchingNextPage, txQuery.hasNextPage, txQuery.reachedMaxPages, payingEmails.length]);
+    // Depend on full payingEmails ref (already memoized via useMemo) to avoid stale closure.
+  }, [periodStartIso, txQuery.isLoading, txQuery.isFetchingNextPage, txQuery.hasNextPage, txQuery.reachedMaxPages, payingEmails]);
 
   // Registrations in period (clients created within range)
   const registrationsQuery = useInfiniteQuery({
@@ -214,6 +214,7 @@ export function SourceAnalytics({ period = "30d" }: SourceAnalyticsProps) {
     if (registrationsQuery.hasNextPage && !registrationsQuery.isFetchingNextPage) {
       registrationsQuery.fetchNextPage();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- using specific query fields avoids infinite loop from fetchNextPage
   }, [registrationsQuery.status, registrationsQuery.hasNextPage, registrationsQuery.isFetchingNextPage, registrationsQuery.fetchNextPage]);
 
   useEffect(() => {
@@ -221,6 +222,7 @@ export function SourceAnalytics({ period = "30d" }: SourceAnalyticsProps) {
     if (trialsQuery.hasNextPage && !trialsQuery.isFetchingNextPage) {
       trialsQuery.fetchNextPage();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- using specific query fields avoids infinite loop from fetchNextPage
   }, [trialsQuery.status, trialsQuery.hasNextPage, trialsQuery.isFetchingNextPage, trialsQuery.fetchNextPage]);
 
   const primaryCurrency = useMemo(() => {
@@ -415,7 +417,7 @@ export function SourceAnalytics({ period = "30d" }: SourceAnalyticsProps) {
             </div>
           </CardContent>
         </Card>
-        
+
         <Card className="bg-card border-border">
           <CardContent className="p-3 sm:p-4">
             <div className="flex items-center gap-2 sm:gap-3">
@@ -429,7 +431,7 @@ export function SourceAnalytics({ period = "30d" }: SourceAnalyticsProps) {
             </div>
           </CardContent>
         </Card>
-        
+
         <Card className="bg-card border-border">
           <CardContent className="p-3 sm:p-4">
             <div className="flex items-center gap-2 sm:gap-3">
@@ -443,7 +445,7 @@ export function SourceAnalytics({ period = "30d" }: SourceAnalyticsProps) {
             </div>
           </CardContent>
         </Card>
-        
+
         <Card className="bg-card border-border">
           <CardContent className="p-3 sm:p-4">
             <div className="flex items-center gap-2 sm:gap-3">
@@ -489,10 +491,10 @@ export function SourceAnalytics({ period = "30d" }: SourceAnalyticsProps) {
                     <ResponsiveContainer width="100%" height="100%">
                       <BarChart data={metrics.slice(0, 8)} layout="vertical" margin={{ left: 0, right: 10 }}>
                         <XAxis type="number" stroke="#6b7280" fontSize={10} />
-                        <YAxis 
-                          dataKey="source" 
-                          type="category" 
-                          stroke="#6b7280" 
+                        <YAxis
+                          dataKey="source"
+                          type="category"
+                          stroke="#6b7280"
                           fontSize={10}
                           width={60}
                           tickFormatter={(value) => value.length > 8 ? value.slice(0, 8) + '...' : value}
@@ -518,7 +520,7 @@ export function SourceAnalytics({ period = "30d" }: SourceAnalyticsProps) {
                           cx="50%"
                           cy="50%"
                           outerRadius={60}
-                          label={({ name, percent }) => `${name.slice(0,6)}: ${(percent * 100).toFixed(0)}%`}
+                          label={({ name, percent }) => `${name.slice(0, 6)}: ${(percent * 100).toFixed(0)}%`}
                           labelLine={false}
                         >
                           {pieData.map((_, index) => (
@@ -538,17 +540,17 @@ export function SourceAnalytics({ period = "30d" }: SourceAnalyticsProps) {
                 <ChartContainer config={{}}>
                   <ResponsiveContainer width="100%" height="100%">
                     <BarChart data={metrics.slice(0, 10)} margin={{ left: 0, right: 10, bottom: 40 }}>
-                      <XAxis 
-                        dataKey="source" 
-                        stroke="#6b7280" 
-                        fontSize={10} 
+                      <XAxis
+                        dataKey="source"
+                        stroke="#6b7280"
+                        fontSize={10}
                         angle={-45}
                         textAnchor="end"
                         height={60}
                         tickFormatter={(value) => value.length > 8 ? value.slice(0, 8) + '...' : value}
                       />
                       <YAxis stroke="#6b7280" fontSize={10} width={40} />
-                      <ChartTooltip 
+                      <ChartTooltip
                         content={<ChartTooltipContent />}
                         formatter={(value) => [formatMoney(Number(value)), `Ingresos (${periodLabel})`]}
                       />
@@ -564,9 +566,9 @@ export function SourceAnalytics({ period = "30d" }: SourceAnalyticsProps) {
                 <ChartContainer config={{}}>
                   <ResponsiveContainer width="100%" height="100%">
                     <BarChart data={metrics.slice(0, 10)} margin={{ left: 0, right: 10, bottom: 40 }}>
-                      <XAxis 
-                        dataKey="source" 
-                        stroke="#6b7280" 
+                      <XAxis
+                        dataKey="source"
+                        stroke="#6b7280"
                         fontSize={10}
                         angle={-45}
                         textAnchor="end"
@@ -588,9 +590,9 @@ export function SourceAnalytics({ period = "30d" }: SourceAnalyticsProps) {
                 <ChartContainer config={{}}>
                   <ResponsiveContainer width="100%" height="100%">
                     <BarChart data={metrics.filter(m => m.ltv > 0).slice(0, 10)} margin={{ left: 0, right: 10, bottom: 40 }}>
-                      <XAxis 
-                        dataKey="source" 
-                        stroke="#6b7280" 
+                      <XAxis
+                        dataKey="source"
+                        stroke="#6b7280"
                         fontSize={10}
                         angle={-45}
                         textAnchor="end"
@@ -598,7 +600,7 @@ export function SourceAnalytics({ period = "30d" }: SourceAnalyticsProps) {
                         tickFormatter={(value) => value.length > 8 ? value.slice(0, 8) + '...' : value}
                       />
                       <YAxis stroke="#6b7280" fontSize={10} width={40} />
-                      <ChartTooltip 
+                      <ChartTooltip
                         content={<ChartTooltipContent />}
                         formatter={(value) => [formatMoney(Number(value)), "LTV (promedio)"]}
                       />
@@ -628,8 +630,8 @@ export function SourceAnalytics({ period = "30d" }: SourceAnalyticsProps) {
                 {metrics.map((row, idx) => (
                   <tr key={row.source} className="border-b border-border/50 hover:bg-muted/30">
                     <td className="py-2 sm:py-3 px-1 sm:px-2 sticky left-0 bg-card">
-                      <Badge 
-                        variant="outline" 
+                      <Badge
+                        variant="outline"
                         className="text-[10px] sm:text-xs"
                         style={{ borderColor: COLORS[idx % COLORS.length], color: COLORS[idx % COLORS.length] }}
                       >

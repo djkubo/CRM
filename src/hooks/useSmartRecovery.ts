@@ -53,36 +53,6 @@ export function useSmartRecovery() {
     };
   }, []);
 
-  // Check for active recovery on mount
-  useEffect(() => {
-    checkForActiveRecovery();
-  }, []);
-
-  const checkForActiveRecovery = useCallback(async () => {
-    try {
-      const { data } = await supabase
-        .from("sync_runs")
-        .select("*")
-        .eq("source", "smart_recovery")
-        .eq("status", "running")
-        .order("started_at", { ascending: false })
-        .limit(1);
-      
-      if (data?.[0]) {
-        const run = data[0];
-        const checkpoint = run.checkpoint as unknown as RecoveryCheckpoint | null;
-        const metadata = run.metadata as unknown as Record<string, unknown> | null;
-        
-        if (checkpoint) {
-          setIsRunning(true);
-          setSelectedRange((metadata?.hours_lookback as HoursLookback) || 24);
-          startPolling(run.id);
-        }
-      }
-    } catch (err) {
-      console.error("Failed to check for active recovery:", err);
-    }
-  }, []);
 
   const pollSyncRun = useCallback(async (syncRunId: string): Promise<boolean> => {
     try {
@@ -91,7 +61,7 @@ export function useSmartRecovery() {
         .select("*")
         .eq("id", syncRunId)
         .single();
-      
+
       if (fetchError || !data) {
         console.error("Failed to poll sync run:", fetchError);
         return false;
@@ -100,7 +70,7 @@ export function useSmartRecovery() {
       const checkpoint = data.checkpoint as unknown as RecoveryCheckpoint | null;
       const startedAt = new Date(data.started_at).getTime();
       const lastActivity = checkpoint?.lastActivity
-        ? new Date(checkpoint.lastActivity).getTime() 
+        ? new Date(checkpoint.lastActivity).getTime()
         : startedAt;
       const isStale = Date.now() - lastActivity > STALE_THRESHOLD_MS;
       const elapsedSeconds = Math.floor((Date.now() - startedAt) / 1000);
@@ -154,14 +124,14 @@ export function useSmartRecovery() {
           pollIntervalRef.current = null;
         }
         setIsRunning(false);
-        
+
         // Show completion toast
         const currentProgress = await supabase
           .from("sync_runs")
           .select("status, checkpoint")
           .eq("id", syncRunId)
           .single();
-        
+
         if (currentProgress.data) {
           const cp = currentProgress.data.checkpoint as unknown as RecoveryCheckpoint;
           if (currentProgress.data.status === "completed") {
@@ -180,6 +150,37 @@ export function useSmartRecovery() {
       }
     }, POLL_INTERVAL_MS);
   }, [pollSyncRun, toast]);
+
+  const checkForActiveRecovery = useCallback(async () => {
+    try {
+      const { data } = await supabase
+        .from("sync_runs")
+        .select("*")
+        .eq("source", "smart_recovery")
+        .eq("status", "running")
+        .order("started_at", { ascending: false })
+        .limit(1);
+
+      if (data?.[0]) {
+        const run = data[0];
+        const checkpoint = run.checkpoint as unknown as RecoveryCheckpoint | null;
+        const metadata = run.metadata as unknown as Record<string, unknown> | null;
+
+        if (checkpoint) {
+          setIsRunning(true);
+          setSelectedRange((metadata?.hours_lookback as HoursLookback) || 24);
+          startPolling(run.id);
+        }
+      }
+    } catch (err) {
+      console.error("Failed to check for active recovery:", err);
+    }
+  }, [startPolling]);
+
+  // Check for active recovery on mount
+  useEffect(() => {
+    checkForActiveRecovery();
+  }, [checkForActiveRecovery]);
 
   const runRecovery = useCallback(async (hours_lookback: HoursLookback) => {
     setIsRunning(true);
@@ -202,7 +203,7 @@ export function useSmartRecovery() {
       }
 
       const syncRunId = data.syncRunId;
-      
+
       if (!syncRunId) {
         throw new Error("No syncRunId returned");
       }
@@ -220,7 +221,7 @@ export function useSmartRecovery() {
       const errMsg = err instanceof Error ? err.message : "Error desconocido";
       setError(errMsg);
       setIsRunning(false);
-      
+
       toast({
         title: "Error en Smart Recovery",
         description: errMsg,
@@ -235,8 +236,8 @@ export function useSmartRecovery() {
     try {
       await supabase
         .from("sync_runs")
-        .update({ 
-          status: "failed", 
+        .update({
+          status: "failed",
           completed_at: new Date().toISOString(),
           error_message: "Cancelado por el usuario",
         })
@@ -248,7 +249,7 @@ export function useSmartRecovery() {
       }
 
       setIsRunning(false);
-      
+
       toast({
         title: "Smart Recovery cancelado",
         description: `Proceso detenido. Recuperados: $${progress.checkpoint.recovered_amount.toFixed(2)}`,
@@ -264,8 +265,8 @@ export function useSmartRecovery() {
     try {
       await supabase
         .from("sync_runs")
-        .update({ 
-          status: "failed", 
+        .update({
+          status: "failed",
           completed_at: new Date().toISOString(),
           error_message: "Force cancelled - stale process",
         })
@@ -278,7 +279,7 @@ export function useSmartRecovery() {
 
       setIsRunning(false);
       setProgress(null);
-      
+
       toast({
         title: "Proceso Liberado",
         description: "El proceso atascado ha sido cancelado. Puedes iniciar uno nuevo.",
@@ -308,7 +309,7 @@ export function useSmartRecovery() {
       if (!data) return;
 
       const cp = data.checkpoint as unknown as RecoveryCheckpoint;
-      
+
       const rows: string[] = [
         "Métrica,Valor",
         `Recuperado,$${cp.recovered_amount.toFixed(2)}`,

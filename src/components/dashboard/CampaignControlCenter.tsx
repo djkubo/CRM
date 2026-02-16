@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { invokeWithAdminKey } from '@/lib/adminApi';
-import { 
+import {
   FileText, Users, Send, Plus, Edit2, Trash2, Eye, Play, Pause,
   MessageCircle, Smartphone, Mail, Facebook, Copy, Check, X,
   RefreshCw, Settings, Filter, Clock, Shield, AlertTriangle
@@ -156,7 +156,7 @@ export function CampaignControlCenter() {
     dry_run: false,
   });
 
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     setLoading(true);
     try {
       const [templatesRes, segmentsRes, campaignsRes] = await Promise.all([
@@ -202,7 +202,7 @@ export function CampaignControlCenter() {
       console.error('Error loading data:', error);
     }
     setLoading(false);
-  };
+  }, []);
 
   const getSegmentClientCount = async (segment: Segment): Promise<number> => {
     // Use estimated counts to avoid full-table scans and statement timeouts on large datasets.
@@ -216,7 +216,7 @@ export function CampaignControlCenter() {
           .select('customer_email')
           .eq('status', 'failed')
           .gte('created_at', new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString());
-        
+
         if (failedEmails && failedEmails.length > 0) {
           const emails = [...new Set(failedEmails.map(t => t.customer_email).filter(Boolean))];
           query = query.in('email', emails);
@@ -232,7 +232,7 @@ export function CampaignControlCenter() {
           .select('customer_email')
           .eq('status', 'trialing')
           .lte('trial_end', new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString());
-        
+
         if (trialingSubs && trialingSubs.length > 0) {
           const emails = [...new Set(trialingSubs.map(s => s.customer_email).filter(Boolean))];
           query = query.in('email', emails);
@@ -268,13 +268,13 @@ export function CampaignControlCenter() {
 
   useEffect(() => {
     loadData();
-  }, []);
+  }, [loadData]);
 
   // Template handlers
   const handleSaveTemplate = async () => {
     try {
       const variables = templateForm.content.match(/\{\{(\w+)\}\}/g)?.map(v => v.replace(/[{}]/g, '')) || [];
-      
+
       if (editingTemplate) {
         // Save version history
         await supabase.from('template_versions').insert({
@@ -371,7 +371,7 @@ export function CampaignControlCenter() {
           .select('customer_email')
           .eq('status', 'failed')
           .gte('created_at', new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString());
-        
+
         if (failedEmails && failedEmails.length > 0) {
           const emails = [...new Set(failedEmails.map(t => t.customer_email).filter(Boolean))];
           clientQuery = clientQuery.in('email', emails);
@@ -384,7 +384,7 @@ export function CampaignControlCenter() {
           .select('customer_email')
           .eq('status', 'trialing')
           .lte('trial_end', new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString());
-        
+
         if (trialingSubs && trialingSubs.length > 0) {
           const emails = [...new Set(trialingSubs.map(s => s.customer_email).filter(Boolean))];
           clientQuery = clientQuery.in('email', emails);
@@ -419,7 +419,7 @@ export function CampaignControlCenter() {
       if (insertError) {
         console.error('Error inserting campaign recipients:', insertError);
       }
-      
+
       const { error: updateError } = await supabase.from('campaigns').update({ total_recipients: clients.length }).eq('id', campaignId);
       if (updateError) {
         console.error('Error updating campaign recipient count:', updateError);
@@ -429,7 +429,7 @@ export function CampaignControlCenter() {
 
   const handlePreviewCampaign = async (campaign: Campaign) => {
     setPreviewCampaign(campaign);
-    
+
     const { data: recipients } = await supabase
       .from('campaign_recipients')
       .select('client:clients(email, full_name, phone)')
@@ -447,7 +447,7 @@ export function CampaignControlCenter() {
 
   const handleDryRun = async (campaign: Campaign) => {
     toast.loading('Ejecutando dry run...', { id: 'dry-run' });
-    
+
     try {
       const data = await invokeWithAdminKey<{ stats?: { total?: number; excluded?: number } }>('send-campaign', { campaign_id: campaign.id, dry_run: true });
       toast.success(`Dry run completado: ${data.stats?.total ?? 0} destinatarios, ${data.stats?.excluded ?? 0} excluidos`, { id: 'dry-run' });
@@ -464,7 +464,7 @@ export function CampaignControlCenter() {
     }
 
     toast.loading('Enviando campaña...', { id: 'send-campaign' });
-    
+
     try {
       const data = await invokeWithAdminKey<{ stats?: { sent?: number; failed?: number } }>('send-campaign', { campaign_id: campaign.id });
       toast.success(`Campaña enviada: ${data.stats?.sent ?? 0} enviados, ${data.stats?.failed ?? 0} fallidos`, { id: 'send-campaign' });
@@ -694,13 +694,13 @@ export function CampaignControlCenter() {
                         </Badge>
                       </TableCell>
                       <TableCell>
-                        <Badge 
+                        <Badge
                           variant="outline"
                           className={
                             campaign.status === 'draft' ? 'text-muted-foreground' :
-                            campaign.status === 'sent' ? 'text-emerald-400 border-emerald-500/30' :
-                            campaign.status === 'sending' ? 'text-blue-400 border-blue-500/30' :
-                            'text-amber-400'
+                              campaign.status === 'sent' ? 'text-emerald-400 border-emerald-500/30' :
+                                campaign.status === 'sending' ? 'text-blue-400 border-blue-500/30' :
+                                  'text-amber-400'
                           }
                         >
                           {campaign.status}

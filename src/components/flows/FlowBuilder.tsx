@@ -55,11 +55,11 @@ export function FlowBuilder({ flow, onBack }: FlowBuilderProps) {
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const [name, setName] = useState(flow.name);
   const [selectedNode, setSelectedNode] = useState<Node | null>(null);
-  
+
   // Parse nodes and edges from JSON
   const initialNodes = (flow.nodes_json as unknown as Node[]) || [defaultTriggerNode];
   const initialEdges = (flow.edges_json as unknown as Edge[]) || [];
-  
+
   const [nodes, setNodes, onNodesChange] = useNodesState(
     initialNodes.length > 0 ? initialNodes : [defaultTriggerNode]
   );
@@ -70,7 +70,7 @@ export function FlowBuilder({ flow, onBack }: FlowBuilderProps) {
 
   // Auto-save debounce
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  
+
   const saveFlow = useCallback(() => {
     updateFlow.mutate({
       id: flow.id,
@@ -94,7 +94,7 @@ export function FlowBuilder({ flow, onBack }: FlowBuilderProps) {
         clearTimeout(saveTimeoutRef.current);
       }
     };
-  }, [nodes, edges, name]);
+  }, [saveFlow]);
 
   const onConnect = useCallback(
     (params: Connection) => setEdges((eds) => addEdge({
@@ -163,7 +163,7 @@ export function FlowBuilder({ flow, onBack }: FlowBuilderProps) {
   return (
     <div className="flex h-full">
       <NodesSidebar onDragStart={onDragStart} />
-      
+
       <div className="flex-1 flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-border px-4 py-3 bg-sidebar">
@@ -180,7 +180,7 @@ export function FlowBuilder({ flow, onBack }: FlowBuilderProps) {
               <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
             )}
           </div>
-          
+
           <div className="flex items-center gap-2">
             <Button
               variant="outline"
@@ -233,14 +233,14 @@ export function FlowBuilder({ flow, onBack }: FlowBuilderProps) {
               animated: true,
             }}
           >
-            <Background 
-              variant={BackgroundVariant.Dots} 
-              gap={20} 
+            <Background
+              variant={BackgroundVariant.Dots}
+              gap={20}
               size={1}
               color="hsl(var(--muted-foreground) / 0.2)"
             />
             <Controls className="!bg-card !border-border !rounded-md" />
-            <MiniMap 
+            <MiniMap
               className="!bg-card !border-border !rounded-md"
               nodeColor={(node) => {
                 switch (node.type) {

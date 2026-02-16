@@ -18,14 +18,14 @@ import { useDebouncedValue } from '@/hooks/useDebouncedValue';
 // PayPal icon
 const PayPalIcon = () => (
   <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="currentColor">
-    <path d="M7.076 21.337H2.47a.641.641 0 0 1-.633-.74L4.944 3.72a.771.771 0 0 1 .762-.655h6.99c2.321 0 4.072.589 5.204 1.75.537.55.913 1.2 1.122 1.938.216.764.256 1.649.119 2.634-.288 2.018-1.227 3.523-2.795 4.476-1.474.894-3.348 1.348-5.572 1.348H8.97a.762.762 0 0 0-.752.64l-.774 4.875-.367 2.321a.405.405 0 0 1-.001.29z"/>
+    <path d="M7.076 21.337H2.47a.641.641 0 0 1-.633-.74L4.944 3.72a.771.771 0 0 1 .762-.655h6.99c2.321 0 4.072.589 5.204 1.75.537.55.913 1.2 1.122 1.938.216.764.256 1.649.119 2.634-.288 2.018-1.227 3.523-2.795 4.476-1.474.894-3.348 1.348-5.572 1.348H8.97a.762.762 0 0 0-.752.64l-.774 4.875-.367 2.321a.405.405 0 0 1-.001.29z" />
   </svg>
 );
 
 // Stripe icon
 const StripeIcon = () => (
   <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="currentColor">
-    <path d="M13.976 9.15c-2.172-.806-3.356-1.426-3.356-2.409 0-.831.683-1.305 1.901-1.305 2.227 0 4.515.858 6.09 1.631l.89-5.494C18.252.975 15.697 0 12.165 0 9.667 0 7.589.654 6.104 1.872 4.56 3.147 3.757 4.992 3.757 7.218c0 4.039 2.467 5.76 6.476 7.219 2.585.92 3.445 1.574 3.445 2.583 0 .98-.84 1.545-2.354 1.545-1.875 0-4.965-.921-6.99-2.109l-.9 5.555C5.175 22.99 8.385 24 11.714 24c2.641 0 4.843-.624 6.328-1.813 1.664-1.305 2.525-3.236 2.525-5.732 0-4.128-2.524-5.851-6.591-7.305z"/>
+    <path d="M13.976 9.15c-2.172-.806-3.356-1.426-3.356-2.409 0-.831.683-1.305 1.901-1.305 2.227 0 4.515.858 6.09 1.631l.89-5.494C18.252.975 15.697 0 12.165 0 9.667 0 7.589.654 6.104 1.872 4.56 3.147 3.757 4.992 3.757 7.218c0 4.039 2.467 5.76 6.476 7.219 2.585.92 3.445 1.574 3.445 2.583 0 .98-.84 1.545-2.354 1.545-1.875 0-4.965-.921-6.99-2.109l-.9 5.555C5.175 22.99 8.385 24 11.714 24c2.641 0 4.843-.624 6.328-1.813 1.664-1.305 2.525-3.236 2.525-5.732 0-4.128-2.524-5.851-6.591-7.305z" />
   </svg>
 );
 
@@ -35,26 +35,26 @@ export function SubscriptionsPage() {
   const [statusFilter, setStatusFilter] = useState('all');
   const [providerFilter, setProviderFilter] = useState<'all' | 'stripe' | 'paypal'>('all');
   const [searchInput, setSearchInput] = useState('');
-  
+
   const searchQuery = useDebouncedValue(searchInput, 400);
 
-  const { 
-    subscriptions, 
+  const {
+    subscriptions,
     isLoading,
     totalCount,
     totalPages,
     syncSubscriptions,
     syncPayPalSubscriptions,
-    revenueByPlan, 
-    totalActiveRevenue, 
-    totalActiveCount, 
+    revenueByPlan,
+    totalActiveRevenue,
+    totalActiveCount,
     statusBreakdown,
     revenueAtRisk,
     atRiskCount,
     stripeCount,
     paypalCount,
-    isSyncing, 
-    syncProgress 
+    isSyncing,
+    syncProgress
   } = useSubscriptions({
     page,
     pageSize,
@@ -63,21 +63,21 @@ export function SubscriptionsPage() {
     providerFilter,
   });
 
-  const now = new Date();
-  const in3Days = addDays(now, 3);
-  const thirtyDaysAgo = addDays(now, -30);
-
   const funnel = useMemo(() => {
+    const now = new Date();
+    const in3Days = addDays(now, 3);
+    const thirtyDaysAgo = addDays(now, -30);
+
     const trials = subscriptions.filter((s: Subscription) => s.status === 'trialing');
-    const trialsExpiringSoon = trials.filter((s: Subscription) => 
+    const trialsExpiringSoon = trials.filter((s: Subscription) =>
       s.trial_end && isBefore(new Date(s.trial_end), in3Days)
     );
     const active = subscriptions.filter((s: Subscription) => s.status === 'active');
-    const canceled = subscriptions.filter((s: Subscription) => 
+    const canceled = subscriptions.filter((s: Subscription) =>
       s.canceled_at && isAfter(new Date(s.canceled_at), thirtyDaysAgo)
     );
     // FIXED: Include both past_due AND unpaid in at-risk list
-    const atRisk = subscriptions.filter((s: Subscription) => 
+    const atRisk = subscriptions.filter((s: Subscription) =>
       s.status === 'past_due' || s.status === 'unpaid'
     );
 
@@ -87,10 +87,10 @@ export function SubscriptionsPage() {
       active: active.length,
       canceled: canceled.length,
       atRisk: atRisk.length,
-      trialsExpiringSoonList: trialsExpiringSoon.sort((a, b) => 
+      trialsExpiringSoonList: trialsExpiringSoon.sort((a, b) =>
         new Date(a.trial_end!).getTime() - new Date(b.trial_end!).getTime()
       ),
-      canceledList: canceled.sort((a, b) => 
+      canceledList: canceled.sort((a, b) =>
         new Date(b.canceled_at!).getTime() - new Date(a.canceled_at!).getTime()
       ),
       atRiskList: atRisk.sort((a, b) => b.amount - a.amount),
@@ -295,13 +295,12 @@ export function SubscriptionsPage() {
                     <div className="flex-1 min-w-0">
                       <p className="text-xs md:text-sm font-medium truncate">{sub.customer_email || 'Sin email'}</p>
                       <div className="flex items-center gap-1 mt-1">
-                        <Badge 
-                          variant="outline" 
-                          className={`text-[10px] ${
-                            sub.status === 'unpaid' 
-                              ? 'bg-red-500/20 text-red-300 border-red-500/30' 
+                        <Badge
+                          variant="outline"
+                          className={`text-[10px] ${sub.status === 'unpaid'
+                              ? 'bg-red-500/20 text-red-300 border-red-500/30'
                               : 'bg-amber-500/10 text-amber-400 border-amber-500/30'
-                          }`}
+                            }`}
                         >
                           {sub.status === 'unpaid' ? 'Impago' : 'Vencido'}
                         </Badge>

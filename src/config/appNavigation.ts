@@ -83,7 +83,7 @@ export const NAVIGATION_GROUPS: NavGroup[] = [
     label: "CRM",
     icon: MessageCircle,
     items: [
-      { id: "inbox", label: "Bandeja", icon: MessageSquare, path: ROUTE_MAP.inbox },
+      { id: "inbox", label: "Mensajes", icon: MessageSquare, path: ROUTE_MAP.inbox },
       { id: "clients", label: "Clientes", icon: Users, path: ROUTE_MAP.clients },
     ],
   },
@@ -93,7 +93,7 @@ export const NAVIGATION_GROUPS: NavGroup[] = [
     icon: TrendingUp,
     items: [
       { id: "campaigns", label: "Campañas", icon: Megaphone, path: ROUTE_MAP.campaigns },
-      { id: "broadcast", label: "Difusión", icon: Radio, path: ROUTE_MAP.broadcast },
+      { id: "broadcast", label: "Listas Difusión", icon: Radio, path: ROUTE_MAP.broadcast },
       { id: "flows", label: "Automatizaciones", icon: Workflow, path: ROUTE_MAP.flows },
     ],
   },
@@ -108,7 +108,7 @@ export const NAVIGATION_GROUPS: NavGroup[] = [
     label: "Ingresos",
     icon: DollarSign,
     items: [
-      { id: "movements", label: "Movimientos", icon: Activity, path: ROUTE_MAP.movements },
+      { id: "movements", label: "Transacciones", icon: Activity, path: ROUTE_MAP.movements },
       { id: "invoices", label: "Facturas", icon: FileText, path: ROUTE_MAP.invoices },
       { id: "subscriptions", label: "Suscripciones", icon: CreditCard, path: ROUTE_MAP.subscriptions },
       { id: "recovery", label: "Recuperación", icon: AlertTriangle, path: ROUTE_MAP.recovery },
@@ -119,7 +119,7 @@ export const NAVIGATION_GROUPS: NavGroup[] = [
     label: "Sistema",
     icon: Cog,
     items: [
-      { id: "sync", label: "Importar / Sincronizar", icon: Upload, path: ROUTE_MAP.sync },
+      { id: "sync", label: "Sincronización", icon: Upload, path: ROUTE_MAP.sync },
       { id: "diagnostics", label: "Diagnóstico", icon: Shield, path: ROUTE_MAP.diagnostics },
       { id: "settings", label: "Ajustes", icon: Settings, path: ROUTE_MAP.settings },
     ],

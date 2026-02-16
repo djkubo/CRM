@@ -1,11 +1,11 @@
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { supabase } from "@/integrations/supabase/client";
-import { 
-  CheckCircle, 
-  XCircle, 
-  Clock, 
-  Loader2, 
-  ChevronDown, 
+import {
+  CheckCircle,
+  XCircle,
+  Clock,
+  Loader2,
+  ChevronDown,
   ChevronUp,
   RefreshCw,
   CreditCard,
@@ -70,7 +70,7 @@ const SOURCE_CONFIG: Record<string, { label: string; icon: React.ElementType; co
 export function SyncResultsPanel() {
   const [recentRuns, setRecentRuns] = useState<SyncRun[]>([]);
   const [failedResumable, setFailedResumable] = useState<SyncRun[]>([]);
-  const [isExpanded, setIsExpanded] = useState(true);
+  const [isExpanded, setIsExpanded] = useState(false);
   const [activeSyncs, setActiveSyncs] = useState<SyncRun[]>([]);
   const [isCancelling, setIsCancelling] = useState(false);
   const [cancellingRunId, setCancellingRunId] = useState<string | null>(null);
@@ -99,15 +99,15 @@ export function SyncResultsPanel() {
     [],
   );
 
-  const fetchRuns = async () => {
+  const fetchRuns = useCallback(async () => {
     // Active/running syncs
-	    const { data: active } = await supabase
-	      .from("sync_runs")
-	      .select(SYNC_RUN_SELECT)
-	      .in("status", ["running", "continuing"])
-	      .order("started_at", { ascending: false })
-	      .limit(25);
-    
+    const { data: active } = await supabase
+      .from("sync_runs")
+      .select(SYNC_RUN_SELECT)
+      .in("status", ["running", "continuing"])
+      .order("started_at", { ascending: false })
+      .limit(25);
+
     setActiveSyncs((active || []) as unknown as SyncRun[]);
 
     // Recent completed/failed syncs (last hour)
@@ -121,7 +121,7 @@ export function SyncResultsPanel() {
       .limit(10);
 
     setRecentRuns((recent || []) as unknown as SyncRun[]);
-    
+
     // Failed AND paused syncs with checkpoint (resumable) - last 24 hours
     const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
     const { data: failed } = await supabase
@@ -132,16 +132,17 @@ export function SyncResultsPanel() {
       .gte("started_at", oneDayAgo)
       .order("started_at", { ascending: false })
       .limit(10);
-    
+
     // Filter to only those with real checkpoint data (canResume or cursor)
     const typedFailed = (failed || []) as unknown as SyncRun[];
     const resumableFailed = typedFailed.filter((run) => {
       const cp = run.checkpoint as Record<string, unknown> | null;
       return cp && (cp.canResume === true || cp.cursor || cp.runningTotal);
     });
-    
+
     setFailedResumable(resumableFailed);
-  };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- SYNC_RUN_SELECT is a module-level constant
+  }, []);
 
   useEffect(() => {
     fetchRuns();
@@ -151,7 +152,7 @@ export function SyncResultsPanel() {
       fetchRuns();
     }, 30_000);
     return () => clearInterval(interval);
-  }, [SYNC_RUN_SELECT]);
+  }, [fetchRuns]);
 
   // Adaptive polling: faster only while something is actually running.
   useEffect(() => {
@@ -161,7 +162,7 @@ export function SyncResultsPanel() {
       fetchRuns();
     }, 10_000);
     return () => clearInterval(interval);
-  }, [activeSyncs.length, SYNC_RUN_SELECT]);
+  }, [activeSyncs.length, fetchRuns]);
 
   // Subscribe to realtime changes
   useEffect(() => {
@@ -185,13 +186,13 @@ export function SyncResultsPanel() {
       if (refetchDebounceRef.current) window.clearTimeout(refetchDebounceRef.current);
       supabase.removeChannel(channel);
     };
-  }, [SYNC_RUN_SELECT]);
+  }, [fetchRuns]);
 
   const getSourceConfig = (source: string) => {
-    return SOURCE_CONFIG[source] || { 
-      label: source, 
-      icon: RefreshCw, 
-      color: "text-muted-foreground" 
+    return SOURCE_CONFIG[source] || {
+      label: source,
+      icon: RefreshCw,
+      color: "text-muted-foreground"
     };
   };
 
@@ -236,17 +237,17 @@ export function SyncResultsPanel() {
   };
 
   const getProgressPercent = (sync: SyncRun): number => {
-    const checkpoint = (typeof sync.checkpoint === 'object' && sync.checkpoint !== null) 
-      ? sync.checkpoint as Record<string, unknown> 
+    const checkpoint = (typeof sync.checkpoint === 'object' && sync.checkpoint !== null)
+      ? sync.checkpoint as Record<string, unknown>
       : null;
-    
+
     // If we have runningTotal, estimate based on typical patterns
     const runningTotal = checkpoint?.runningTotal as number || sync.total_fetched || 0;
-    
+
     // Estimate progress - cap at 95% until actually complete
     if (sync.status === 'completed') return 100;
     if (runningTotal === 0) return 5;
-    
+
     // Rough estimate: assume ~1000 transactions max for most syncs
     const estimated = Math.min(95, Math.round((runningTotal / 1000) * 100));
     return Math.max(estimated, 10);
@@ -258,7 +259,7 @@ export function SyncResultsPanel() {
     const diffMs = now.getTime() - startDate.getTime();
     const seconds = Math.floor(diffMs / 1000);
     const minutes = Math.floor(seconds / 60);
-    
+
     if (minutes >= 15) return `${minutes}m ⚠️ (posiblemente atascado)`;
     if (minutes > 0) return `${minutes}m ${seconds % 60}s`;
     return `${seconds}s`;
@@ -282,24 +283,24 @@ export function SyncResultsPanel() {
       }
 
       const { data: runningData, error: runningError } = await cancelQuery.select();
-      
+
       if (runningError) {
         console.error('Error cancelling via DB:', runningError);
       }
-      
+
       const cancelledCount = runningData?.length || 0;
-      
+
       // STEP 2: Also call edge functions to stop any in-flight processing
       if (source === 'all') {
         // Call cancel endpoints in parallel but don't wait for all
         Promise.allSettled([
-          invokeWithAdminKey<{ success: boolean }, { forceCancel: boolean }>('fetch-stripe', { forceCancel: true }).catch(() => {}),
-          invokeWithAdminKey<{ success: boolean }, { forceCancel: boolean }>('fetch-paypal', { forceCancel: true }).catch(() => {}),
-          invokeWithAdminKey<{ ok: boolean }, { forceCancel: boolean }>('sync-ghl', { forceCancel: true }).catch(() => {}),
-          invokeWithAdminKey<{ ok: boolean }, { forceCancel: boolean }>('sync-manychat', { forceCancel: true }).catch(() => {}),
-          invokeWithAdminKey<{ success: boolean }, { forceCancel: boolean }>('sync-command-center', { forceCancel: true }).catch(() => {}),
+          invokeWithAdminKey<{ success: boolean }, { forceCancel: boolean }>('fetch-stripe', { forceCancel: true }).catch(() => { }),
+          invokeWithAdminKey<{ success: boolean }, { forceCancel: boolean }>('fetch-paypal', { forceCancel: true }).catch(() => { }),
+          invokeWithAdminKey<{ ok: boolean }, { forceCancel: boolean }>('sync-ghl', { forceCancel: true }).catch(() => { }),
+          invokeWithAdminKey<{ ok: boolean }, { forceCancel: boolean }>('sync-manychat', { forceCancel: true }).catch(() => { }),
+          invokeWithAdminKey<{ success: boolean }, { forceCancel: boolean }>('sync-command-center', { forceCancel: true }).catch(() => { }),
         ]);
-        
+
         toast.success('Sincronizaciones canceladas', {
           description: `${cancelledCount} proceso(s) marcados como cancelados`,
         });
@@ -320,17 +321,17 @@ export function SyncResultsPanel() {
 
         const endpoint = endpointBySource[source];
         if (endpoint) {
-          invokeWithAdminKey<{ success: boolean }, { forceCancel: boolean }>(endpoint, { forceCancel: true }).catch(() => {});
+          invokeWithAdminKey<{ success: boolean }, { forceCancel: boolean }>(endpoint, { forceCancel: true }).catch(() => { });
         }
-        
+
         toast.success('Sync cancelado', {
           description: `Sincronización de ${getSourceConfig(source).label} cancelada`,
         });
       }
-      
+
       // Refresh the list
       fetchRuns();
-      
+
     } catch (error) {
       console.error('Cancel sync error:', error);
       toast.error('Error al cancelar', {
@@ -394,7 +395,7 @@ export function SyncResultsPanel() {
         })
         .in('status', ['running', 'continuing', 'paused'])
         .select('id, source');
-      
+
       if (error) {
         console.error('Error killing zombies:', error);
         toast.error('Error al desbloquear', {
@@ -404,14 +405,14 @@ export function SyncResultsPanel() {
       }
 
       const killedCount = killedSyncs?.length || 0;
-      
+
       toast.success(`☠️ ${killedCount} proceso(s) eliminados`, {
         description: 'Todos los syncs zombies han sido marcados como fallidos. Ahora puedes reiniciar.',
       });
 
       // Refresh the list
       fetchRuns();
-      
+
     } catch (error) {
       console.error('Force kill error:', error);
       toast.error('Error al forzar desbloqueo', {
@@ -429,11 +430,11 @@ export function SyncResultsPanel() {
       const checkpoint = sync.checkpoint as Record<string, unknown> | null;
       const cursor = checkpoint?.cursor as unknown;
       const runningTotal = checkpoint?.runningTotal as number || 0;
-      
+
       // Map source to edge function - now pass syncRunId to resume existing run!
       let endpoint = '';
       let payload: Record<string, unknown> = {};
-      
+
       switch (sync.source) {
         case 'stripe':
           endpoint = 'fetch-stripe';
@@ -442,7 +443,7 @@ export function SyncResultsPanel() {
             toast.error('No hay punto de reanudación', { description: 'El sync no tiene un cursor guardado para continuar.' });
             return;
           }
-          payload = { 
+          payload = {
             syncRunId: sync.id,
             resumeFromCursor: cursor as string
           };
@@ -491,7 +492,7 @@ export function SyncResultsPanel() {
             }
 
             if (ghlCursor) {
-              payload = { 
+              payload = {
                 syncRunId: sync.id,
                 stageOnly: stageOnlyForGhl,
                 resumeFromCursor: ghlCursor
@@ -529,7 +530,7 @@ export function SyncResultsPanel() {
             toast.error('No hay punto de reanudación', { description: 'El sync no tiene un cursor guardado para continuar.' });
             return;
           }
-          payload = { 
+          payload = {
             syncRunId: sync.id,
             resumeFromCursor: cursor as string
           };
@@ -567,9 +568,9 @@ export function SyncResultsPanel() {
       }
 
       // Start resume (don't modify the sync record - the edge function handles it)
-      const result = await invokeWithAdminKey<{ 
+      const result = await invokeWithAdminKey<{
         ok?: boolean;
-        success?: boolean; 
+        success?: boolean;
         run_id?: string;
         syncRunId?: string;
         resumedFrom?: number;
@@ -584,7 +585,7 @@ export function SyncResultsPanel() {
         toast.error('Error al reanudar', { description: msg });
         return;
       }
-      
+
       if (result?.success || result?.ok || result?.status === 'resumed') {
         toast.success('✅ Sync reanudado', {
           description: `Continuando desde ${runningTotal.toLocaleString()} registros procesados`,
@@ -594,10 +595,10 @@ export function SyncResultsPanel() {
           description: 'El proceso debería continuar en segundo plano.',
         });
       }
-      
+
       // Wait a moment for DB to update, then refresh
       setTimeout(() => fetchRuns(), 1500);
-      
+
     } catch (error) {
       console.error('Resume sync error:', error);
       toast.error('Error al reanudar', {
@@ -641,6 +642,9 @@ export function SyncResultsPanel() {
           <RefreshCw className={`h-4 w-4 text-primary ${activeSyncs.length > 0 ? 'animate-spin' : ''}`} />
           <span className="text-sm font-medium text-foreground">
             Estado de Sincronización
+          </span>
+          <span className="text-xs text-muted-foreground hidden sm:inline ml-1">
+            · Stripe, PayPal, GHL, ManyChat
           </span>
           {activeSyncs.length > 0 && (
             <Badge variant="outline" className="bg-blue-500/10 text-blue-400 border-blue-500/30 text-xs">
@@ -710,7 +714,7 @@ export function SyncResultsPanel() {
                     )}
                     Cancelar todo
                   </Button>
-                  
+
                   {/* KILL SWITCH - Emergency button */}
                   {hasPotentialZombies && (
                     <AlertDialog>
@@ -745,7 +749,7 @@ export function SyncResultsPanel() {
                         </AlertDialogHeader>
                         <AlertDialogFooter>
                           <AlertDialogCancel className="border-border">Cancelar</AlertDialogCancel>
-                          <AlertDialogAction 
+                          <AlertDialogAction
                             onClick={handleForceKillAllZombies}
                             className="bg-amber-600 hover:bg-amber-700 text-white"
                           >
@@ -763,48 +767,48 @@ export function SyncResultsPanel() {
                 const Icon = config.icon;
                 const progress = getProgressPercent(sync);
                 const elapsed = getElapsedTime(sync.started_at);
-                
+
                 // Extract detailed info from checkpoint
-                const checkpoint = (typeof sync.checkpoint === 'object' && sync.checkpoint !== null) 
-                  ? sync.checkpoint as Record<string, unknown> 
+                const checkpoint = (typeof sync.checkpoint === 'object' && sync.checkpoint !== null)
+                  ? sync.checkpoint as Record<string, unknown>
                   : null;
-                
+
                 const page = checkpoint?.page as number | undefined;
                 const chunkIndex = checkpoint?.chunkIndex as number | undefined;
                 const totalChunks = checkpoint?.totalChunks as number | undefined;
                 const runningTotal = checkpoint?.runningTotal as number | undefined;
                 const lastActivity = checkpoint?.lastActivity as string | undefined;
-                
+
                 // Build dynamic status message
                 const getStatusMessage = () => {
                   const fetched = sync.total_fetched || runningTotal || 0;
                   const inserted = sync.total_inserted || 0;
-                  
+
                   if (fetched === 0 && inserted === 0) {
                     return 'Iniciando conexión...';
                   }
-                  
+
                   const parts = [];
-                  
+
                   // Show chunk/batch progress
                   if (totalChunks && chunkIndex !== undefined) {
                     parts.push(`Lote ${chunkIndex + 1}/${totalChunks}`);
                   } else if (page) {
                     parts.push(`Página ${page}`);
                   }
-                  
+
                   // Show counts
                   if (fetched > 0) parts.push(`${fetched.toLocaleString()} procesados`);
                   if (inserted > 0) parts.push(`${inserted.toLocaleString()} insertados`);
-                  
+
                   return parts.length > 0 ? parts.join(' • ') : 'Procesando...';
                 };
-                
+
                 // Check for stale sync (no activity in 2+ minutes)
-                const isStale = lastActivity 
-                  ? (Date.now() - new Date(lastActivity).getTime()) > 2 * 60 * 1000 
+                const isStale = lastActivity
+                  ? (Date.now() - new Date(lastActivity).getTime()) > 2 * 60 * 1000
                   : false;
-                
+
                 return (
                   <div key={sync.id} className="bg-zinc-900/50 rounded-lg p-3 space-y-2">
                     <div className="flex items-center justify-between">
@@ -822,29 +826,29 @@ export function SyncResultsPanel() {
                           </Badge>
                         )}
                       </div>
-	                      <div className="flex items-center gap-2">
-	                        <span className="text-xs text-muted-foreground">{elapsed}</span>
-	                        {isStale && (
-	                          <Button
-	                            variant="ghost"
-	                            size="sm"
-	                            onClick={() => handleResumeSync(sync)}
-	                            disabled={isResuming === sync.id}
-	                            className="h-7 px-2 text-xs text-emerald-400 hover:text-emerald-300 hover:bg-emerald-500/10"
-	                            title="Reanudar este sync"
-	                          >
-	                            {isResuming === sync.id ? (
-	                              <Loader2 className="h-3 w-3 mr-1 animate-spin" />
-	                            ) : (
-	                              <PlayCircle className="h-3 w-3 mr-1" />
-	                            )}
-	                            Reanudar
-	                          </Button>
-	                        )}
-	                        <AlertDialog>
-	                          <AlertDialogTrigger asChild>
-	                            <Button
-	                              variant="ghost"
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-muted-foreground">{elapsed}</span>
+                        {isStale && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleResumeSync(sync)}
+                            disabled={isResuming === sync.id}
+                            className="h-7 px-2 text-xs text-emerald-400 hover:text-emerald-300 hover:bg-emerald-500/10"
+                            title="Reanudar este sync"
+                          >
+                            {isResuming === sync.id ? (
+                              <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                            ) : (
+                              <PlayCircle className="h-3 w-3 mr-1" />
+                            )}
+                            Reanudar
+                          </Button>
+                        )}
+                        <AlertDialog>
+                          <AlertDialogTrigger asChild>
+                            <Button
+                              variant="ghost"
                               size="sm"
                               disabled={cancellingRunId === sync.id}
                               className="h-7 px-2 text-xs text-red-400 hover:text-red-300 hover:bg-red-500/10"
@@ -880,21 +884,21 @@ export function SyncResultsPanel() {
                         </AlertDialog>
                       </div>
                     </div>
-                    
+
                     {/* Progress bar with pulse animation */}
                     <div className="relative">
                       <Progress value={progress} className="h-2 bg-zinc-800" />
-                      <div 
+                      <div
                         className="absolute top-0 left-0 h-2 bg-blue-400/30 rounded-full animate-pulse"
                         style={{ width: `${Math.min(progress + 5, 100)}%` }}
                       />
                     </div>
-                    
+
                     {/* Dynamic status message */}
                     <p className="text-xs text-muted-foreground">
                       {getStatusMessage()}
                     </p>
-                    
+
                     {/* Inline error display */}
                     {sync.error_message && (
                       <div className="mt-2 p-2 bg-red-500/10 rounded border border-red-500/20">
@@ -918,7 +922,7 @@ export function SyncResultsPanel() {
               {recentRuns.map((sync) => {
                 const config = getSourceConfig(sync.source);
                 const Icon = config.icon;
-                
+
                 return (
                   <div key={sync.id} className="px-4 py-3 flex items-center justify-between gap-4">
                     <div className="flex items-center gap-3 min-w-0 flex-1">
@@ -932,7 +936,7 @@ export function SyncResultsPanel() {
                         </p>
                       </div>
                     </div>
-                    
+
                     <div className="flex items-center gap-3 flex-shrink-0">
                       <div className="text-right">
                         <p className="text-sm font-medium">
@@ -970,7 +974,7 @@ export function SyncResultsPanel() {
                 const lastActivity = checkpoint?.lastActivity as string | undefined;
                 const chunkNum = checkpoint?.chunk as number | undefined;
                 const isPaused = sync.status === 'paused';
-                
+
                 return (
                   <div key={sync.id} className="px-4 py-3">
                     <div className="flex items-center justify-between gap-4">
@@ -979,8 +983,8 @@ export function SyncResultsPanel() {
                         <div className="min-w-0">
                           <div className="flex items-center gap-2">
                             <p className="text-sm font-medium truncate">{config.label}</p>
-                            <Badge variant="outline" className={isPaused 
-                              ? "bg-amber-500/10 text-amber-400 border-amber-500/30 text-xs" 
+                            <Badge variant="outline" className={isPaused
+                              ? "bg-amber-500/10 text-amber-400 border-amber-500/30 text-xs"
                               : "bg-red-500/10 text-red-400 border-red-500/30 text-xs"
                             }>
                               {isPaused ? '⏸️ Pausado' : '❌ Fallido'}
@@ -993,7 +997,7 @@ export function SyncResultsPanel() {
                           </p>
                         </div>
                       </div>
-                      
+
                       <Button
                         variant="default"
                         size="sm"
@@ -1009,7 +1013,7 @@ export function SyncResultsPanel() {
                         Reanudar
                       </Button>
                     </div>
-                    
+
                     {/* Error message if present */}
                     {sync.error_message && (
                       <div className="mt-2 p-2 bg-zinc-800/50 rounded text-xs text-muted-foreground">

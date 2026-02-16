@@ -8,11 +8,11 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { 
-  MessageSquare, 
-  Send, 
-  Phone, 
-  Mail, 
+import {
+  MessageSquare,
+  Send,
+  Phone,
+  Mail,
   Search,
   ArrowLeft,
   Check,
@@ -31,23 +31,23 @@ import { sendNativeSms, supportsNativeSms, isNativeApp, getPlatform } from "@/li
 
 // VRP Style: Neutral zinc palette for all channels
 const channelConfig = {
-  sms: { 
-    icon: Phone, 
-    color: "bg-zinc-700", 
+  sms: {
+    icon: Phone,
+    color: "bg-zinc-700",
     textColor: "text-white",
-    label: "SMS" 
+    label: "SMS"
   },
-  whatsapp: { 
-    icon: MessageSquare, 
-    color: "bg-zinc-700", 
+  whatsapp: {
+    icon: MessageSquare,
+    color: "bg-zinc-700",
     textColor: "text-white",
-    label: "WhatsApp" 
+    label: "WhatsApp"
   },
-  email: { 
-    icon: Mail, 
-    color: "bg-zinc-700", 
+  email: {
+    icon: Mail,
+    color: "bg-zinc-700",
     textColor: "text-white",
-    label: "Email" 
+    label: "Email"
   },
 };
 
@@ -114,7 +114,7 @@ export default function MessagesPage() {
         .filter((m) => m.direction === "inbound" && !m.read_at)
         .forEach((m) => markAsRead.mutate(m.id));
     }
-  }, [selectedConversation, messages]);
+  }, [selectedConversation, messages, markAsRead]);
 
   // Set default channel based on last conversation channel
   useEffect(() => {
@@ -193,11 +193,11 @@ export default function MessagesPage() {
   const groupMessagesByDate = (msgs: Message[]) => {
     const groups: { date: string; messages: Message[] }[] = [];
     let currentDate = "";
-    
+
     const sortedMsgs = [...msgs].sort(
       (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
     );
-    
+
     for (const msg of sortedMsgs) {
       const msgDate = format(new Date(msg.created_at), "yyyy-MM-dd");
       if (msgDate !== currentDate) {
@@ -215,7 +215,7 @@ export default function MessagesPage() {
     const today = new Date();
     const yesterday = new Date(today);
     yesterday.setDate(yesterday.getDate() - 1);
-    
+
     if (format(date, "yyyy-MM-dd") === format(today, "yyyy-MM-dd")) {
       return "Hoy";
     } else if (format(date, "yyyy-MM-dd") === format(yesterday, "yyyy-MM-dd")) {
@@ -224,11 +224,11 @@ export default function MessagesPage() {
     return format(date, "EEEE, d 'de' MMMM", { locale: es });
   };
 
-  const windowOpen = selectedConversation?.last_inbound_at 
-    ? hasOpenWindow(selectedConversation.last_inbound_at) 
+  const windowOpen = selectedConversation?.last_inbound_at
+    ? hasOpenWindow(selectedConversation.last_inbound_at)
     : false;
-  const timeLeft = selectedConversation?.last_inbound_at 
-    ? getWindowTimeLeft(selectedConversation.last_inbound_at) 
+  const timeLeft = selectedConversation?.last_inbound_at
+    ? getWindowTimeLeft(selectedConversation.last_inbound_at)
     : null;
 
   return (
@@ -270,14 +270,14 @@ export default function MessagesPage() {
               ) : (
                 <div className="divide-y">
                   {filteredConversations?.map((conv) => {
-                    const convWindowOpen = conv.last_inbound_at 
-                      ? hasOpenWindow(conv.last_inbound_at) 
+                    const convWindowOpen = conv.last_inbound_at
+                      ? hasOpenWindow(conv.last_inbound_at)
                       : false;
-                    const convTimeLeft = conv.last_inbound_at 
-                      ? getWindowTimeLeft(conv.last_inbound_at) 
+                    const convTimeLeft = conv.last_inbound_at
+                      ? getWindowTimeLeft(conv.last_inbound_at)
                       : null;
                     const ChannelIcon = channelConfig[conv.last_channel as keyof typeof channelConfig]?.icon || MessageSquare;
-                    
+
                     return (
                       <button
                         key={conv.client_id || "unknown"}
@@ -384,7 +384,7 @@ export default function MessagesPage() {
                       </p>
                     </div>
                   </div>
-                  
+
                   {/* Window status - VRP Semantic */}
                   {windowOpen ? (
                     <Tooltip>
@@ -439,13 +439,13 @@ export default function MessagesPage() {
                               </span>
                             </div>
                           </div>
-                          
+
                           {/* Messages for this date */}
                           <div className="space-y-3">
                             {group.messages.map((msg) => {
                               const channel = channelConfig[msg.channel as keyof typeof channelConfig];
                               const ChannelIcon = channel?.icon || MessageSquare;
-                              
+
                               return (
                                 <div
                                   key={msg.id}
@@ -465,8 +465,8 @@ export default function MessagesPage() {
                                     <p className="text-sm whitespace-pre-wrap">{msg.body}</p>
                                     <div className={cn(
                                       "flex items-center gap-1.5 mt-1 text-xs",
-                                      msg.direction === "outbound" 
-                                        ? "text-primary-foreground/70 justify-end" 
+                                      msg.direction === "outbound"
+                                        ? "text-primary-foreground/70 justify-end"
                                         : "text-muted-foreground"
                                     )}>
                                       <span>
@@ -477,8 +477,8 @@ export default function MessagesPage() {
                                         <TooltipTrigger asChild>
                                           <span className={cn(
                                             "flex items-center gap-0.5",
-                                            msg.direction === "outbound" 
-                                              ? "text-primary-foreground/70" 
+                                            msg.direction === "outbound"
+                                              ? "text-primary-foreground/70"
                                               : channel?.textColor
                                           )}>
                                             <ChannelIcon className="h-3 w-3" />
@@ -558,7 +558,7 @@ export default function MessagesPage() {
                     </span>
                   )}
                 </div>
-                
+
                 <form
                   onSubmit={(e) => {
                     e.preventDefault();
@@ -570,16 +570,16 @@ export default function MessagesPage() {
                     placeholder={
                       selectedChannel === "native"
                         ? "Escribe un mensaje (se abrirá tu app de mensajes)..."
-                        : windowOpen || selectedChannel === "sms" 
-                          ? "Escribe un mensaje..." 
+                        : windowOpen || selectedChannel === "sms"
+                          ? "Escribe un mensaje..."
                           : "Escribe un mensaje (se usará plantilla si aplica)..."
                     }
                     value={newMessage}
                     onChange={(e) => setNewMessage(e.target.value)}
                     disabled={sendMessage.isPending}
                   />
-                  <Button 
-                    type="submit" 
+                  <Button
+                    type="submit"
                     size="icon"
                     disabled={!newMessage.trim() || sendMessage.isPending}
                     className="bg-primary hover:bg-primary/90"

@@ -28,7 +28,7 @@ const TIME_RANGE_OPTIONS: { value: TimeRange; label: string; description: string
 function getDateRangeForTimeRange(timeRange: TimeRange): { startDate: string | null; endDate: string | null } {
   const now = new Date();
   const endDate = now.toISOString();
-  
+
   switch (timeRange) {
     case '24h': {
       const start = new Date(now.getTime() - 24 * 60 * 60 * 1000);
@@ -187,99 +187,9 @@ export function SyncOrchestrator() {
     }
   }, [countsMode, applyCountsPayload, updateCountsMode]);
 
-  // Check for active syncs on mount and start polling
-  const checkActiveSync = useCallback(async (source: string) => {
-    try {
-      const { data: activeRun } = await supabase
-        .from('sync_runs')
-        .select('id, status, total_fetched, checkpoint, error_message')
-        .eq('source', source)
-        .in('status', ['running', 'continuing', 'paused'])
-        .order('started_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-
-      if (activeRun) {
-        const checkpoint = activeRun.checkpoint as { 
-          chunk?: number; 
-          runningTotal?: number; 
-          lastActivity?: string;
-          canResume?: boolean;
-        } | null;
-        
-        setSyncStatuses(prev => ({
-          ...prev,
-          [source]: {
-            ...prev[source],
-            status: activeRun.status as SyncStatus['status'],
-            processed: checkpoint?.runningTotal || activeRun.total_fetched || 0,
-            syncRunId: activeRun.id,
-            chunk: checkpoint?.chunk,
-            lastActivity: checkpoint?.lastActivity,
-            canResume: activeRun.status === 'paused' || checkpoint?.canResume,
-            error: activeRun.error_message || undefined
-          }
-        }));
-
-        // Start polling if running
-        if (activeRun.status === 'running' || activeRun.status === 'continuing') {
-          startPolling(source, activeRun.id);
-        }
-      }
-    } catch (error) {
-      console.error(`Error checking active ${source} sync:`, error);
-    }
-  }, []);
-
-  // Check for active unification on mount
-  const checkActiveUnification = useCallback(async () => {
-    try {
-      const { data: activeRun } = await supabase
-        .from('sync_runs')
-        .select('id, status, total_fetched, total_inserted, checkpoint, metadata, error_message')
-        .eq('source', 'bulk_unify')
-        .in('status', ['running', 'continuing', 'paused'])
-        .order('started_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-
-      if (activeRun) {
-        const checkpoint = activeRun.checkpoint as { 
-          chunk?: number; 
-          progressPct?: number;
-          rate?: string;
-          estimatedRemainingSeconds?: number;
-          canResume?: boolean;
-        } | null;
-        
-        const metadata = activeRun.metadata as { pending?: { total?: number } } | null;
-        const totalPending = metadata?.pending?.total || pendingCounts.total;
-        
-        setIsUnifying(activeRun.status !== 'paused');
-        setUnifyProgress(checkpoint?.progressPct || 0);
-        setUnifyStats({
-          processed: activeRun.total_fetched || 0,
-          merged: activeRun.total_inserted || 0,
-          rate: checkpoint?.rate || '0/s',
-          eta: checkpoint?.estimatedRemainingSeconds || 0,
-          syncRunId: activeRun.id,
-          chunk: checkpoint?.chunk || 0,
-          canResume: activeRun.status === 'paused' || checkpoint?.canResume || false,
-          error: activeRun.error_message || null,
-        });
-
-        if (activeRun.status === 'running' || activeRun.status === 'continuing') {
-          startUnifyPolling(activeRun.id, totalPending);
-        }
-      }
-    } catch (error) {
-      console.error('Error checking active unification:', error);
-    }
-  }, [pendingCounts.total]);
-
   // Polling logic for real-time updates
   const pollingIntervals = useRef<Record<string, NodeJS.Timeout>>({});
-  
+
   const startPolling = useCallback((source: string, syncRunId: string) => {
     if (pollingIntervals.current[source]) {
       clearInterval(pollingIntervals.current[source]);
@@ -295,15 +205,15 @@ export function SyncOrchestrator() {
 
         if (!syncRun) return;
 
-        const checkpoint = syncRun.checkpoint as { 
-          chunk?: number; 
-          runningTotal?: number; 
+        const checkpoint = syncRun.checkpoint as {
+          chunk?: number;
+          runningTotal?: number;
           lastActivity?: string;
           canResume?: boolean;
         } | null;
 
         const processed = checkpoint?.runningTotal || syncRun.total_fetched || 0;
-        
+
         setSyncStatuses(prev => ({
           ...prev,
           [source]: {
@@ -320,19 +230,19 @@ export function SyncOrchestrator() {
         if (['completed', 'completed_with_errors', 'failed', 'cancelled'].includes(syncRun.status)) {
           clearInterval(pollingIntervals.current[source]);
           delete pollingIntervals.current[source];
-          
+
           if (syncRun.status === 'completed' || syncRun.status === 'completed_with_errors') {
             toast.success(`${source.toUpperCase()}: ${processed.toLocaleString()} registros sincronizados`);
           } else if (syncRun.status === 'failed') {
             toast.error(`${source.toUpperCase()}: Error - ${syncRun.error_message || 'Unknown'}`);
           }
-          
+
           setSyncStatuses(prev => ({
             ...prev,
             [source]: {
               ...prev[source],
-              status: syncRun.status === 'completed' || syncRun.status === 'completed_with_errors' 
-                ? 'completed' 
+              status: syncRun.status === 'completed' || syncRun.status === 'completed_with_errors'
+                ? 'completed'
                 : syncRun.status === 'paused' ? 'paused' : 'error'
             }
           }));
@@ -376,7 +286,7 @@ export function SyncOrchestrator() {
 
         const currentProcessed = syncRun.total_fetched || 0;
         const syncError = syncRun.error_message ? String(syncRun.error_message) : null;
-        
+
         // Detect stalled progress
         if (currentProcessed === lastProcessed) {
           stalledCount++;
@@ -384,10 +294,10 @@ export function SyncOrchestrator() {
           stalledCount = 0;
           lastProcessed = currentProcessed;
         }
-        
-        const progress = checkpoint.progressPct || 
+
+        const progress = checkpoint.progressPct ||
           (totalPending > 0 ? Math.min((currentProcessed / totalPending) * 100, 100) : 0);
-        
+
         setUnifyProgress(progress);
         setUnifyStats(prev => ({
           ...prev,
@@ -430,19 +340,110 @@ export function SyncOrchestrator() {
         pollingTimeoutRef.current = setTimeout(poll, 5000);
       }
     };
-    
+
     poll();
   }, [fetchCounts]);
 
   // Cleanup polling on unmount
   useEffect(() => {
+    const intervals = pollingIntervals.current;
     return () => {
-      Object.values(pollingIntervals.current).forEach(clearInterval);
+      Object.values(intervals).forEach(clearInterval);
       if (pollingTimeoutRef.current) {
         clearTimeout(pollingTimeoutRef.current);
       }
     };
   }, []);
+
+  // Check for active syncs on mount and start polling
+  const checkActiveSync = useCallback(async (source: string) => {
+    try {
+      const { data: activeRun } = await supabase
+        .from('sync_runs')
+        .select('id, status, total_fetched, checkpoint, error_message')
+        .eq('source', source)
+        .in('status', ['running', 'continuing', 'paused'])
+        .order('started_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (activeRun) {
+        const checkpoint = activeRun.checkpoint as {
+          chunk?: number;
+          runningTotal?: number;
+          lastActivity?: string;
+          canResume?: boolean;
+        } | null;
+
+        setSyncStatuses(prev => ({
+          ...prev,
+          [source]: {
+            ...prev[source],
+            status: activeRun.status as SyncStatus['status'],
+            processed: checkpoint?.runningTotal || activeRun.total_fetched || 0,
+            syncRunId: activeRun.id,
+            chunk: checkpoint?.chunk,
+            lastActivity: checkpoint?.lastActivity,
+            canResume: activeRun.status === 'paused' || checkpoint?.canResume,
+            error: activeRun.error_message || undefined
+          }
+        }));
+
+        // Start polling if running
+        if (activeRun.status === 'running' || activeRun.status === 'continuing') {
+          startPolling(source, activeRun.id);
+        }
+      }
+    } catch (error) {
+      console.error(`Error checking active ${source} sync:`, error);
+    }
+  }, [startPolling]);
+
+  // Check for active unification on mount
+  const checkActiveUnification = useCallback(async () => {
+    try {
+      const { data: activeRun } = await supabase
+        .from('sync_runs')
+        .select('id, status, total_fetched, total_inserted, checkpoint, metadata, error_message')
+        .eq('source', 'bulk_unify')
+        .in('status', ['running', 'continuing', 'paused'])
+        .order('started_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (activeRun) {
+        const checkpoint = activeRun.checkpoint as {
+          chunk?: number;
+          progressPct?: number;
+          rate?: string;
+          estimatedRemainingSeconds?: number;
+          canResume?: boolean;
+        } | null;
+
+        const metadata = activeRun.metadata as { pending?: { total?: number } } | null;
+        const totalPending = metadata?.pending?.total || pendingCounts.total;
+
+        setIsUnifying(activeRun.status !== 'paused');
+        setUnifyProgress(checkpoint?.progressPct || 0);
+        setUnifyStats({
+          processed: activeRun.total_fetched || 0,
+          merged: activeRun.total_inserted || 0,
+          rate: checkpoint?.rate || '0/s',
+          eta: checkpoint?.estimatedRemainingSeconds || 0,
+          syncRunId: activeRun.id,
+          chunk: checkpoint?.chunk || 0,
+          canResume: activeRun.status === 'paused' || checkpoint?.canResume || false,
+          error: activeRun.error_message || null,
+        });
+
+        if (activeRun.status === 'running' || activeRun.status === 'continuing') {
+          startUnifyPolling(activeRun.id, totalPending);
+        }
+      }
+    } catch (error) {
+      console.error('Error checking active unification:', error);
+    }
+  }, [pendingCounts.total, startUnifyPolling]);
 
   useEffect(() => {
     fetchCounts();
@@ -456,7 +457,7 @@ export function SyncOrchestrator() {
   // Sync GHL (Stage Only)
   const syncGHL = async () => {
     setSyncStatuses(prev => ({ ...prev, ghl: { ...prev.ghl, status: 'running', processed: 0 } }));
-    
+
     let hasMore = true;
     let startAfterId: string | null = null;
     let startAfter: number | null = null;
@@ -466,11 +467,11 @@ export function SyncOrchestrator() {
     try {
       while (hasMore) {
         const { data, error } = await supabase.functions.invoke('sync-ghl', {
-          body: { 
-            stageOnly: true, 
-            startAfterId, 
+          body: {
+            stageOnly: true,
+            startAfterId,
             startAfter,
-            syncRunId 
+            syncRunId
           }
         });
 
@@ -483,9 +484,9 @@ export function SyncOrchestrator() {
         startAfterId = data.nextStartAfterId;
         startAfter = data.nextStartAfter;
 
-        setSyncStatuses(prev => ({ 
-          ...prev, 
-          ghl: { ...prev.ghl, processed: totalProcessed, syncRunId } 
+        setSyncStatuses(prev => ({
+          ...prev,
+          ghl: { ...prev.ghl, processed: totalProcessed, syncRunId }
         }));
 
         if (hasMore) {
@@ -493,17 +494,17 @@ export function SyncOrchestrator() {
         }
       }
 
-      setSyncStatuses(prev => ({ 
-        ...prev, 
-        ghl: { ...prev.ghl, status: 'completed', processed: totalProcessed } 
+      setSyncStatuses(prev => ({
+        ...prev,
+        ghl: { ...prev.ghl, status: 'completed', processed: totalProcessed }
       }));
       toast.success(`GHL: ${totalProcessed} contactos descargados`);
       fetchCounts();
     } catch (error) {
       const errorMessage = formatUnknownError(error, { maxLen: 400, includeDetails: true });
-      setSyncStatuses(prev => ({ 
-        ...prev, 
-        ghl: { ...prev.ghl, status: 'error', error: errorMessage } 
+      setSyncStatuses(prev => ({
+        ...prev,
+        ghl: { ...prev.ghl, status: 'error', error: errorMessage }
       }));
       toast.error(`Error GHL: ${errorMessage}`);
     }
@@ -512,7 +513,7 @@ export function SyncOrchestrator() {
   // Sync ManyChat (Stage Only)
   const syncManyChat = async () => {
     setSyncStatuses(prev => ({ ...prev, manychat: { ...prev.manychat, status: 'running', processed: 0 } }));
-    
+
     let hasMore = true;
     let cursor = 0;
     let syncRunId: string | null = null;
@@ -521,10 +522,10 @@ export function SyncOrchestrator() {
     try {
       while (hasMore) {
         const { data, error } = await supabase.functions.invoke('sync-manychat', {
-          body: { 
-            stageOnly: true, 
+          body: {
+            stageOnly: true,
             cursor,
-            syncRunId 
+            syncRunId
           }
         });
 
@@ -536,9 +537,9 @@ export function SyncOrchestrator() {
         hasMore = data.hasMore === true;
         cursor = parseInt(data.nextCursor || '0', 10);
 
-        setSyncStatuses(prev => ({ 
-          ...prev, 
-          manychat: { ...prev.manychat, processed: totalProcessed, syncRunId } 
+        setSyncStatuses(prev => ({
+          ...prev,
+          manychat: { ...prev.manychat, processed: totalProcessed, syncRunId }
         }));
 
         if (hasMore) {
@@ -546,17 +547,17 @@ export function SyncOrchestrator() {
         }
       }
 
-      setSyncStatuses(prev => ({ 
-        ...prev, 
-        manychat: { ...prev.manychat, status: 'completed', processed: totalProcessed } 
+      setSyncStatuses(prev => ({
+        ...prev,
+        manychat: { ...prev.manychat, status: 'completed', processed: totalProcessed }
       }));
       toast.success(`ManyChat: ${totalProcessed} contactos descargados`);
       fetchCounts();
     } catch (error) {
       const errorMessage = formatUnknownError(error, { maxLen: 400, includeDetails: true });
-      setSyncStatuses(prev => ({ 
-        ...prev, 
-        manychat: { ...prev.manychat, status: 'error', error: errorMessage } 
+      setSyncStatuses(prev => ({
+        ...prev,
+        manychat: { ...prev.manychat, status: 'error', error: errorMessage }
       }));
       toast.error(`Error ManyChat: ${errorMessage}`);
     }
@@ -564,19 +565,19 @@ export function SyncOrchestrator() {
 
   // Sync Stripe with time range (Full History with Backend Auto-Chain)
   const syncStripe = async (resume = false, timeRange: TimeRange = 'all') => {
-    setSyncStatuses(prev => ({ 
-      ...prev, 
-      stripe: { ...prev.stripe, status: 'running', processed: resume ? prev.stripe.processed : 0 } 
+    setSyncStatuses(prev => ({
+      ...prev,
+      stripe: { ...prev.stripe, status: 'running', processed: resume ? prev.stripe.processed : 0 }
     }));
-    
+
     try {
       let requestBody: Record<string, unknown>;
-      
+
       if (resume) {
         requestBody = { resumeSync: true };
       } else {
         const { startDate, endDate } = getDateRangeForTimeRange(timeRange);
-        requestBody = { 
+        requestBody = {
           fetchAll: true,
           ...(startDate && { startDate }),
           ...(endDate && { endDate })
@@ -591,29 +592,29 @@ export function SyncOrchestrator() {
       if (!data?.success) throw new Error(data?.error || data?.message || 'Error desconocido');
 
       const syncRunId = data.syncRunId;
-      
-      setSyncStatuses(prev => ({ 
-        ...prev, 
-        stripe: { 
-          ...prev.stripe, 
+
+      setSyncStatuses(prev => ({
+        ...prev,
+        stripe: {
+          ...prev.stripe,
           syncRunId,
           processed: resume ? (data.resumedFrom || prev.stripe.processed) : 0
-        } 
+        }
       }));
 
       if (syncRunId) {
         startPolling('stripe', syncRunId);
         const rangeLabel = TIME_RANGE_OPTIONS.find(o => o.value === timeRange)?.label || 'Todo';
-        toast.success(resume 
-          ? `Stripe: Reanudando desde ${(data.resumedFrom || 0).toLocaleString()} registros` 
+        toast.success(resume
+          ? `Stripe: Reanudando desde ${(data.resumedFrom || 0).toLocaleString()} registros`
           : `Stripe: Sincronización iniciada (${rangeLabel})`
         );
       }
     } catch (error) {
       const errorMessage = formatUnknownError(error, { maxLen: 400, includeDetails: true });
-      setSyncStatuses(prev => ({ 
-        ...prev, 
-        stripe: { ...prev.stripe, status: 'error', error: errorMessage } 
+      setSyncStatuses(prev => ({
+        ...prev,
+        stripe: { ...prev.stripe, status: 'error', error: errorMessage }
       }));
       toast.error(`Error Stripe: ${errorMessage}`);
     }
@@ -625,7 +626,7 @@ export function SyncOrchestrator() {
   // Sync PayPal
   const syncPayPal = async () => {
     setSyncStatuses(prev => ({ ...prev, paypal: { ...prev.paypal, status: 'running', processed: 0 } }));
-    
+
     try {
       const { data, error } = await supabase.functions.invoke('fetch-paypal', {
         body: { mode: 'full' }
@@ -643,16 +644,16 @@ export function SyncOrchestrator() {
         return;
       }
 
-      setSyncStatuses(prev => ({ 
-        ...prev, 
-        paypal: { ...prev.paypal, status: 'completed', processed: data?.synced || 0 } 
+      setSyncStatuses(prev => ({
+        ...prev,
+        paypal: { ...prev.paypal, status: 'completed', processed: data?.synced || 0 }
       }));
       toast.success(`PayPal: ${data?.synced || 0} transacciones sincronizadas`);
     } catch (error) {
       const errorMessage = formatUnknownError(error, { maxLen: 400, includeDetails: true });
-      setSyncStatuses(prev => ({ 
-        ...prev, 
-        paypal: { ...prev.paypal, status: 'error', error: errorMessage } 
+      setSyncStatuses(prev => ({
+        ...prev,
+        paypal: { ...prev.paypal, status: 'error', error: errorMessage }
       }));
       toast.error(`Error PayPal: ${errorMessage}`);
     }
@@ -664,7 +665,7 @@ export function SyncOrchestrator() {
     setIsUnifying(true);
     setUnifyProgress(0);
     setUnifyStats({ processed: 0, merged: 0, rate: '0/s', eta: 0, syncRunId: null, chunk: 0, canResume: false, error: null });
-    
+
     // Show immediate feedback
     toast.info('Iniciando unificación masiva...');
 
@@ -680,7 +681,7 @@ export function SyncOrchestrator() {
         if (SYNC_DEBUG) console.error('[SyncOrchestrator] Function invoke error:', error);
         throw error;
       }
-      
+
       if (!data?.ok) {
         if (SYNC_DEBUG) console.error('[SyncOrchestrator] Response not ok:', data);
         throw new Error(data?.error || data?.message || 'La función retornó un error desconocido');
@@ -690,7 +691,7 @@ export function SyncOrchestrator() {
         duration: 8000,
         description: `${(data.pending?.total || 0).toLocaleString()} registros pendientes`
       });
-      
+
       if (data?.syncRunId) {
         if (SYNC_DEBUG) console.log('[SyncOrchestrator] Starting polling for syncRunId:', data.syncRunId);
         setUnifyStats(prev => ({ ...prev, syncRunId: data.syncRunId }));
@@ -702,7 +703,7 @@ export function SyncOrchestrator() {
     } catch (error) {
       if (SYNC_DEBUG) console.error('[SyncOrchestrator] unifyAll failed:', error);
       setIsUnifying(false);
-      
+
       const errorMessage = formatUnknownError(error, { maxLen: 600, includeDetails: true });
       toast.error(`❌ Error al iniciar unificación`, {
         duration: 10000,
@@ -718,7 +719,7 @@ export function SyncOrchestrator() {
       return;
     }
     setIsUnifying(true);
-    
+
     try {
       const { data, error } = await supabase.functions.invoke('bulk-unify-contacts', {
         body: { syncRunId: unifyStats.syncRunId, sources: ['ghl', 'manychat', 'csv'], batchSize: 50 }
@@ -728,7 +729,7 @@ export function SyncOrchestrator() {
       if (!data?.ok) throw new Error(data?.error || 'Unknown error');
 
       toast.success(data.message || 'Reanudando unificación...');
-      
+
       if (data?.syncRunId) {
         setUnifyStats(prev => ({ ...prev, syncRunId: data.syncRunId, canResume: false }));
         startUnifyPolling(data.syncRunId, pendingCounts.total);
@@ -742,8 +743,8 @@ export function SyncOrchestrator() {
   // Cancel unification
   const cancelUnification = async () => {
     try {
-      await supabase.functions.invoke('bulk-unify-contacts', { 
-        body: unifyStats.syncRunId 
+      await supabase.functions.invoke('bulk-unify-contacts', {
+        body: unifyStats.syncRunId
           ? { syncRunId: unifyStats.syncRunId, forceCancel: true }
           : { forceCancel: true }
       });
@@ -764,7 +765,7 @@ export function SyncOrchestrator() {
       await supabase.functions.invoke('sync-ghl', { body: { forceCancel: true } });
       await supabase.functions.invoke('sync-manychat', { body: { forceCancel: true } });
       await supabase.functions.invoke('bulk-unify-contacts', { body: { forceCancel: true } });
-      
+
       setSyncStatuses({
         stripe: { source: 'stripe', status: 'idle', processed: 0 },
         paypal: { source: 'paypal', status: 'idle', processed: 0 },
@@ -879,7 +880,7 @@ export function SyncOrchestrator() {
                   </div>
                 )}
                 {getStatusBadge(syncStatuses.stripe.status)}
-                
+
                 {(syncStatuses.stripe.status === 'idle' || syncStatuses.stripe.status === 'completed' || syncStatuses.stripe.status === 'error') && (
                   <div className="mt-3 mb-2">
                     <Select value={stripeTimeRange} onValueChange={(value: TimeRange) => setStripeTimeRange(value)}>
@@ -899,10 +900,10 @@ export function SyncOrchestrator() {
                     </Select>
                   </div>
                 )}
-                
+
                 {syncStatuses.stripe.status === 'paused' || syncStatuses.stripe.canResume ? (
-                  <Button 
-                    className="w-full mt-2 bg-amber-600 hover:bg-amber-700" 
+                  <Button
+                    className="w-full mt-2 bg-amber-600 hover:bg-amber-700"
                     size="sm"
                     onClick={resumeStripe}
                   >
@@ -910,8 +911,8 @@ export function SyncOrchestrator() {
                     Reanudar ({syncStatuses.stripe.processed.toLocaleString()})
                   </Button>
                 ) : (
-                  <Button 
-                    className="w-full mt-2" 
+                  <Button
+                    className="w-full mt-2"
                     size="sm"
                     onClick={handleSyncStripe}
                     disabled={syncStatuses.stripe.status === 'running' || syncStatuses.stripe.status === 'continuing'}
@@ -942,8 +943,8 @@ export function SyncOrchestrator() {
                 <div className="text-2xl font-bold">{syncStatuses.paypal.processed.toLocaleString()}</div>
                 <div className="text-sm text-muted-foreground mb-3">transacciones</div>
                 {getStatusBadge(syncStatuses.paypal.status)}
-                <Button 
-                  className="w-full mt-3" 
+                <Button
+                  className="w-full mt-3"
                   size="sm"
                   onClick={syncPayPal}
                   disabled={syncStatuses.paypal.status === 'running'}
@@ -966,8 +967,8 @@ export function SyncOrchestrator() {
                   en raw ({rawCounts.ghl_unprocessed.toLocaleString()} sin procesar)
                 </div>
                 {getStatusBadge(syncStatuses.ghl.status)}
-                <Button 
-                  className="w-full mt-3" 
+                <Button
+                  className="w-full mt-3"
                   size="sm"
                   onClick={syncGHL}
                   disabled={syncStatuses.ghl.status === 'running'}
@@ -990,8 +991,8 @@ export function SyncOrchestrator() {
                   en raw ({rawCounts.manychat_unprocessed.toLocaleString()} sin procesar)
                 </div>
                 {getStatusBadge(syncStatuses.manychat.status)}
-                <Button 
-                  className="w-full mt-3" 
+                <Button
+                  className="w-full mt-3"
                   size="sm"
                   onClick={syncManyChat}
                   disabled={syncStatuses.manychat.status === 'running'}
@@ -1060,7 +1061,7 @@ export function SyncOrchestrator() {
                 <span className="text-sm font-bold text-primary">{Math.round(unifyProgress)}%</span>
               </div>
               <Progress value={unifyProgress} className="h-3 mb-4" />
-              
+
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-center text-sm">
                 <div>
                   <div className="font-bold text-lg">{unifyStats.processed.toLocaleString()}</div>
@@ -1091,7 +1092,7 @@ export function SyncOrchestrator() {
                   <p className="text-sm text-orange-600 mb-2">
                     El proceso se pausó y puede reanudarse desde donde quedó.
                   </p>
-                  <Button 
+                  <Button
                     className="w-full bg-amber-600 hover:bg-amber-700"
                     onClick={resumeUnification}
                   >
@@ -1104,8 +1105,8 @@ export function SyncOrchestrator() {
           )}
 
           <div className="flex gap-4">
-            <Button 
-              size="lg" 
+            <Button
+              size="lg"
               onClick={unifyAll}
               disabled={isUnifying || pendingCounts.total === 0}
               className="flex-1"

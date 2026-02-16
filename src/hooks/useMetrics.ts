@@ -66,19 +66,30 @@ export function useMetrics() {
       // Use timezone-aware date calculation matching server (America/Mexico_City)
       // Get current time and calculate dates using Mexico City timezone offset
       const now = new Date();
-      
+
       // Calculate first day of month in Mexico City time
       const firstDayOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-      
-      // Start of today in Mexico City time (UTC-6, accounting for DST)
-      // The server RPCs use America/Mexico_City, so we need to match
-      const mexicoOffsetHours = -6; // CST (adjust if DST is needed)
-      const utcNow = new Date(now.getTime() + now.getTimezoneOffset() * 60000);
-      const mexicoNow = new Date(utcNow.getTime() + mexicoOffsetHours * 3600000);
+
+      // Start of today in Mexico City time (DST-aware)
+      // Dynamically compute the UTC offset for America/Mexico_City
+      const mexicoFormatter = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/Mexico_City',
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', second: '2-digit',
+        hour12: false,
+      });
+      const mexicoParts = mexicoFormatter.formatToParts(now);
+      const getPart = (type: string) => mexicoParts.find(p => p.type === type)?.value ?? '0';
+      const mexicoNow = new Date(
+        +getPart('year'), +getPart('month') - 1, +getPart('day'),
+        +getPart('hour'), +getPart('minute'), +getPart('second')
+      );
+      // Offset in ms = (local Mexico date interpreted as UTC) - actual UTC
+      const mexicoOffsetMs = mexicoNow.getTime() - now.getTime();
       const startOfTodayMexico = new Date(mexicoNow.getFullYear(), mexicoNow.getMonth(), mexicoNow.getDate());
       // Convert back to UTC for database query
-      const startOfTodayUTC = new Date(startOfTodayMexico.getTime() - mexicoOffsetHours * 3600000);
-      
+      const startOfTodayUTC = new Date(startOfTodayMexico.getTime() - mexicoOffsetMs);
+
       // OPTIMIZATION: Use kpi_sales_summary RPC if available, fallback to limited query
       let salesMonthUSD = 0;
       let salesMonthMXN = 0;
@@ -91,7 +102,7 @@ export function useMetrics() {
         // Try RPC first (server-side aggregation - instant)
         // Note: RPC may not be in types yet, using type assertion
         const { data: salesSummary, error: rpcError } = await supabase.rpc('kpi_sales_summary' as any);
-        
+
         // Normalize: accept both object and array formats for compatibility
         if (!rpcError && salesSummary) {
           const salesArray = Array.isArray(salesSummary) ? salesSummary : [salesSummary];
@@ -121,7 +132,7 @@ export function useMetrics() {
             const txDate = tx.stripe_created_at ? new Date(tx.stripe_created_at) : null;
             const isToday = txDate && txDate >= startOfTodayUTC;
             const isRefund = tx.status === 'refunded';
-            
+
             if (tx.currency?.toLowerCase() === 'mxn') {
               if (isRefund) {
                 refundsMonthMXN += amountInCurrency;
@@ -147,7 +158,7 @@ export function useMetrics() {
       const salesMonthTotal = salesMonthUSD + (salesMonthMXN * MXN_TO_USD);
       const salesTodayTotal = salesTodayUSD + (salesTodayMXN * MXN_TO_USD);
       const refundsMonthTotal = refundsMonthUSD + (refundsMonthMXN * MXN_TO_USD);
-      
+
       // NET Revenue = Gross - Refunds
       const netRevenueMonthUSD = salesMonthUSD - refundsMonthUSD;
       const netRevenueMonthMXN = salesMonthMXN - refundsMonthMXN;
@@ -164,10 +175,10 @@ export function useMetrics() {
       let finalCustomerCount = 0;
       let finalChurnCount = 0;
       let finalConvertedCount = 0;
-      
+
       try {
         const { data: dashboardData, error: dashboardError } = await supabase.rpc('dashboard_metrics' as any);
-        
+
         // Normalize: accept both object and array formats for compatibility
         if (!dashboardError && dashboardData) {
           const metricsArray = Array.isArray(dashboardData) ? dashboardData : [dashboardData];
@@ -179,7 +190,7 @@ export function useMetrics() {
             finalCustomerCount = dbMetrics.customer_count ?? 0;
             finalChurnCount = dbMetrics.churn_count ?? 0;
             finalConvertedCount = dbMetrics.converted_count ?? 0;
-            
+
             // Use recovery list from RPC (optimized - no client JOIN)
             if (dbMetrics.recovery_list && Array.isArray(dbMetrics.recovery_list)) {
               recoveryList = dbMetrics.recovery_list.map((r: any) => ({
@@ -198,7 +209,7 @@ export function useMetrics() {
       } catch (rpcError) {
         console.error('Error calling dashboard_metrics RPC:', rpcError);
       }
-      
+
       const conversionRate = finalTrialCount > 0 ? (finalConvertedCount / finalTrialCount) * 100 : 0;
 
       setMetrics({
@@ -233,14 +244,14 @@ export function useMetrics() {
   useEffect(() => {
     fetchMetrics();
   }, [fetchMetrics]);
-  
+
   // OPTIMIZATION: Use polling instead of Realtime to avoid AbortError issues
   // Realtime was causing "signal is aborted without reason" errors
   useEffect(() => {
     const interval = setInterval(() => {
       fetchMetrics();
     }, 60000); // Refresh every 60 seconds
-    
+
     return () => clearInterval(interval);
   }, [fetchMetrics]);
 

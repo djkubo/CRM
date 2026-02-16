@@ -42,7 +42,7 @@ export function useSyncQueue() {
     startedAt: null,
     estimatedTotalTime: 45,
   });
-  
+
   const abortRef = useRef(false);
 
   const updateStep = useCallback((stepId: SyncStep, updates: Partial<SyncQueueStep>) => {
@@ -66,20 +66,20 @@ export function useSyncQueue() {
   }, []);
 
   // Execute PayPal sync (7 days)
-  const executePayPal = async (): Promise<{ success: boolean; processed: number }> => {
+  const executePayPal = useCallback(async (): Promise<{ success: boolean; processed: number }> => {
     const endDate = new Date().toISOString();
     const startDate = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-    
+
     const { data, error } = await supabase.functions.invoke('fetch-paypal', {
       body: { startDate, endDate, mode: 'full' }
     });
-    
+
     if (error) throw error;
     return { success: true, processed: data?.synced || 0 };
-  };
+  }, []);
 
   // Execute GHL sync (full history with pagination)
-  const executeGHL = async (): Promise<{ success: boolean; processed: number }> => {
+  const executeGHL = useCallback(async (): Promise<{ success: boolean; processed: number }> => {
     let hasMore = true;
     let startAfterId: string | null = null;
     let startAfter: number | null = null;
@@ -108,10 +108,10 @@ export function useSyncQueue() {
     }
 
     return { success: true, processed: totalProcessed };
-  };
+  }, [updateStep]);
 
   // Execute ManyChat sync
-  const executeManyChat = async (): Promise<{ success: boolean; processed: number }> => {
+  const executeManyChat = useCallback(async (): Promise<{ success: boolean; processed: number }> => {
     let hasMore = true;
     let cursor = 0;
     let syncRunId: string | null = null;
@@ -138,10 +138,10 @@ export function useSyncQueue() {
     }
 
     return { success: true, processed: totalProcessed };
-  };
+  }, [updateStep]);
 
   // Execute Unify All
-  const executeUnify = async (): Promise<{ success: boolean; processed: number }> => {
+  const executeUnify = useCallback(async (): Promise<{ success: boolean; processed: number }> => {
     const { data, error } = await supabase.functions.invoke('bulk-unify-contacts', {
       body: { sources: ['ghl', 'manychat', 'csv'], batchSize: 2000 }
     });
@@ -179,14 +179,14 @@ export function useSyncQueue() {
     }
 
     return { success: true, processed: totalProcessed };
-  };
+  }, [updateStep]);
 
   // Execute Cleanup
-  const executeCleanup = async (): Promise<{ success: boolean; processed: number }> => {
+  const executeCleanup = useCallback(async (): Promise<{ success: boolean; processed: number }> => {
     const { error } = await supabase.rpc('cleanup_old_data');
     if (error) throw error;
     return { success: true, processed: 0 };
-  };
+  }, []);
 
   // Main execution function
   const startFullRecovery = useCallback(async () => {
@@ -223,8 +223,8 @@ export function useSyncQueue() {
 
       try {
         const result = await executors[step.id]();
-        updateStep(step.id, { 
-          status: 'completed', 
+        updateStep(step.id, {
+          status: 'completed',
           processed: result.processed,
           completedAt: new Date()
         });
@@ -233,7 +233,7 @@ export function useSyncQueue() {
         const errorMessage = formatUnknownError(error, { maxLen: 400, includeDetails: true });
         updateStep(step.id, { status: 'error', error: errorMessage });
         toast.error(`❌ ${step.label}: ${errorMessage}`);
-        
+
         // Continue with next step despite errors
         console.error(`Error in ${step.id}:`, error);
       }
@@ -260,7 +260,7 @@ export function useSyncQueue() {
     if (!abortRef.current) {
       toast.success('🎉 Recuperación Completa finalizada', { duration: 8000 });
     }
-  }, [state.isRunning, updateStep, calculateProgress]);
+  }, [state.isRunning, updateStep, calculateProgress, executePayPal, executeGHL, executeManyChat, executeUnify, executeCleanup]);
 
   const cancelRecovery = useCallback(() => {
     abortRef.current = true;

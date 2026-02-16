@@ -86,6 +86,7 @@ export function useAnalyticsTransactions(options: Options = {}) {
     if (!query.hasNextPage) return;
     if (query.isFetchingNextPage) return;
     query.fetchNextPage();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- Intentional: auto-drain uses stable query fields to avoid infinite loops
   }, [query.status, query.hasNextPage, query.isFetchingNextPage, query.fetchNextPage]);
 
   const pages = query.data?.pages ?? [];

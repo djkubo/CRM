@@ -3,11 +3,11 @@ import { useNavigate } from 'react-router-dom';
 import { supabase } from '@/integrations/supabase/client';
 import { useDailyKPIs, TimeFilter } from '@/hooks/useDailyKPIs';
 import { useRevenuePipeline } from '@/hooks/useRevenuePipeline';
-import { 
-  DollarSign, 
-  UserPlus, 
-  RefreshCw, 
-  ArrowRightCircle, 
+import {
+  DollarSign,
+  UserPlus,
+  RefreshCw,
+  ArrowRightCircle,
   AlertTriangle,
   XCircle,
   Loader2,
@@ -39,10 +39,10 @@ import { openWhatsApp, getRecoveryMessage } from './RecoveryTable';
 import { invokeWithAdminKey } from '@/lib/adminApi';
 import { SyncResultsPanel } from './SyncResultsPanel';
 import { APP_PATHS } from "@/config/appPaths";
-import type { 
-  FetchStripeBody, 
-  FetchStripeResponse, 
-  FetchPayPalBody, 
+import type {
+  FetchStripeBody,
+  FetchStripeResponse,
+  FetchPayPalBody,
   FetchPayPalResponse,
   FetchSubscriptionsResponse,
   FetchInvoicesBody,
@@ -63,33 +63,33 @@ const syncRangeLabels: Record<SyncRange, string> = {
 
 function getSyncDateRange(range: SyncRange): { startDate: Date; endDate: Date; fetchAll: boolean; maxPages: number } {
   const now = new Date();
-  
+
   switch (range) {
     case 'today':
-      return { 
-        startDate: subDays(now, 1), 
-        endDate: now, 
+      return {
+        startDate: subDays(now, 1),
+        endDate: now,
         fetchAll: true,
-        maxPages: 5 
+        maxPages: 5
       };
     case '7d':
-      return { 
-        startDate: subDays(now, 7), 
-        endDate: now, 
+      return {
+        startDate: subDays(now, 7),
+        endDate: now,
         fetchAll: true,
-        maxPages: 20 
+        maxPages: 20
       };
     case 'month':
-      return { 
-        startDate: subMonths(now, 1), 
-        endDate: now, 
+      return {
+        startDate: subMonths(now, 1),
+        endDate: now,
         fetchAll: true,
-        maxPages: 50 
+        maxPages: 50
       };
     case 'full':
-      return { 
-        startDate: subYears(now, 5), 
-        endDate: now, 
+      return {
+        startDate: subYears(now, 5),
+        endDate: now,
         fetchAll: true,
         maxPages: 500 // Allow up to 50k transactions
       };
@@ -248,7 +248,7 @@ export function DashboardHome() {
         .order('completed_at', { ascending: false })
         .limit(1)
         .maybeSingle();
-      
+
       if (data?.completed_at) {
         setLastSync(new Date(data.completed_at));
       }
@@ -259,7 +259,7 @@ export function DashboardHome() {
     // Subscribe to sync_runs changes for real-time updates
     const channel = supabase
       .channel('sync-status-dashboard')
-      .on('postgres_changes', 
+      .on('postgres_changes',
         { event: '*', schema: 'public', table: 'sync_runs' },
         (payload) => {
           if (payload.eventType !== 'UPDATE') return;
@@ -303,7 +303,7 @@ export function DashboardHome() {
   const handleForceCancel = async () => {
     try {
       setSyncProgress('Cancelando todos los syncs...');
-      
+
       // Cancel ALL sync sources in parallel
       const cancelResults = await Promise.allSettled([
         invokeWithAdminKey<{ success: boolean; cancelled: number; message?: string }, { forceCancel: boolean }>(
@@ -323,7 +323,7 @@ export function DashboardHome() {
           { forceCancel: true }
         ),
       ]);
-      
+
       // Count total cancelled
       let totalCancelled = 0;
       for (const result of cancelResults) {
@@ -332,7 +332,7 @@ export function DashboardHome() {
           totalCancelled += val.cancelled || 0;
         }
       }
-      
+
       toast.success('Todos los syncs cancelados', {
         description: `Se cancelaron ${totalCancelled} sincronizaciones en total`,
       });
@@ -354,11 +354,11 @@ export function DashboardHome() {
       toast.warning('Ya hay una sincronización en progreso');
       return;
     }
-    
+
     setIsSyncing(true);
     setSyncStatus(null);
     setSyncProgress('');
-    
+
     // Show appropriate toast based on range size
     const isLargeRange = range === 'month' || range === 'full';
     if (isLargeRange) {
@@ -374,7 +374,7 @@ export function DashboardHome() {
       // Use sync-command-center for orchestrated sync
       setSyncProgress('Iniciando sincronización completa...');
       console.log('[Command Center] Starting sync with mode:', range);
-      
+
       const commandCenterData = await invokeWithAdminKey<SyncCommandCenterResponse, SyncCommandCenterBody>(
         'sync-command-center',
         {
@@ -475,7 +475,7 @@ export function DashboardHome() {
           const error = stepResult?.error || 'Error desconocido';
           return `${step}: ${error === 'Timeout' ? 'Se agotó el tiempo' : error}`;
         }).join(', ');
-        
+
         toast.warning(`Sincronización completada con ${errorsCount} error(es)`, {
           description: errorDetails,
           duration: 8000,
@@ -485,7 +485,7 @@ export function DashboardHome() {
           description: `Stripe: ${stripeCount.toLocaleString()}, PayPal: ${paypalLabel}, Subs: ${subsCount.toLocaleString()}, Facturas: ${invoicesCount.toLocaleString()}`,
         });
       }
-      
+
       // Invalidate all queries
       queryClient.invalidateQueries({ queryKey: ['transactions'] });
       queryClient.invalidateQueries({ queryKey: ['clients'] });
@@ -494,15 +494,15 @@ export function DashboardHome() {
       queryClient.invalidateQueries({ queryKey: ['metrics'] });
       queryClient.invalidateQueries({ queryKey: ['daily-kpis'] });
       queryClient.invalidateQueries({ queryKey: ['sync-runs'] });
-      
+
       refetch();
     } catch (error) {
       console.error('Sync error:', error);
       setSyncStatus('warning');
       setSyncProgress('');
-      
+
       const errorMessage = error instanceof Error ? error.message : 'Error desconocido en sincronización';
-      
+
       // Handle 409 sync_already_running error with action button
       if (errorMessage.includes('sync_already_running') || errorMessage.includes('sync en progreso')) {
         toast.warning('Sincronización en progreso', {
@@ -576,7 +576,7 @@ export function DashboardHome() {
       value: kpis.trialsStartedToday,
       icon: Clock,
       color: 'neutral',  // VRP: Neutral instead of blue
-      subtitle: 'iniciados',
+      subtitle: 'iniciados hoy',
       navigateTo: 'subscriptions',
     },
     {
@@ -613,7 +613,7 @@ export function DashboardHome() {
       value: kpis.cancellationsToday,
       icon: XCircle,
       color: 'amber',
-      subtitle: 'suscripciones',
+      subtitle: 'canceladas hoy',
       isNegative: true,
       navigateTo: 'subscriptions',
     },
@@ -645,18 +645,17 @@ export function DashboardHome() {
                 Centro de Comando
               </h1>
             </div>
-            
+
             {/* Time filter - clean pill style */}
             <div className="flex rounded-md border border-border overflow-hidden">
               {(['today', '7d', 'month', 'all'] as TimeFilter[]).map((f) => (
                 <button
                   key={f}
                   onClick={() => setFilter(f)}
-                  className={`px-3 md:px-4 py-2 text-xs md:text-sm font-medium transition-colors whitespace-nowrap touch-feedback ${
-                    filter === f
+                  className={`px-3 md:px-4 py-2 text-xs md:text-sm font-medium transition-colors whitespace-nowrap touch-feedback ${filter === f
                       ? 'bg-primary text-primary-foreground'
                       : 'text-muted-foreground hover:text-foreground hover:bg-accent'
-                  }`}
+                    }`}
                 >
                   {filterLabels[f]}
                 </button>
@@ -739,7 +738,7 @@ export function DashboardHome() {
       </div>
 
       {/* B) 8 KPI Cards - Clean, minimal */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-3">
         {cards.map((card, index) => {
           const colors = getColorClasses(card.color);
           const Icon = card.icon;
@@ -761,13 +760,12 @@ export function DashboardHome() {
             <div
               key={index}
               onClick={() => card.navigateTo && handleNavigate(card.navigateTo)}
-              className={`rounded-lg border ${
-                isWarningCard 
-                  ? 'border-red-500/30 bg-red-500/5' 
+              className={`rounded-lg border ${isWarningCard
+                  ? 'border-red-500/30 bg-red-500/5'
                   : isHighlightCard
-                  ? 'border-primary/30 bg-primary/5'
-                  : 'border-border bg-card'
-              } p-4 transition-all hover:bg-accent/50 cursor-pointer touch-feedback group`}
+                    ? 'border-primary/30 bg-primary/5'
+                    : 'border-border bg-card'
+                } p-4 transition-all hover:bg-accent/50 cursor-pointer touch-feedback group`}
             >
               <div className={`inline-flex p-2 rounded-md ${colors.bg} mb-2`}>
                 <Icon className={`h-4 w-4 ${colors.icon}`} />
@@ -776,13 +774,12 @@ export function DashboardHome() {
                 {card.title}
                 <ChevronRight className="h-3 w-3 opacity-0 group-hover:opacity-100 transition-opacity" />
               </p>
-              <p className={`text-lg md:text-xl font-semibold ${
-                card.isNegative 
-                  ? 'text-red-400' 
-                  : isHighlightCard 
-                  ? 'text-primary' 
-                  : 'text-foreground'
-              }`}>
+              <p className={`text-lg md:text-xl font-semibold ${card.isNegative
+                  ? 'text-red-400'
+                  : isHighlightCard
+                    ? 'text-primary'
+                    : 'text-foreground'
+                }`}>
                 {card.value}
               </p>
               <p className={`text-[10px] ${colors.text} mt-0.5`}>{card.subtitle}</p>
@@ -801,7 +798,7 @@ export function DashboardHome() {
           <div className="flex items-center justify-between p-4 border-b border-border">
             <div className="flex items-center gap-2">
               <AlertTriangle className="h-4 w-4 text-primary" />
-              <h3 className="text-sm font-medium text-foreground">Fallos con Tel</h3>
+              <h3 className="text-sm font-medium text-foreground">Pagos Fallidos</h3>
             </div>
             <Button variant="ghost" size="sm" onClick={() => handleNavigate('recovery')} className="text-xs gap-1 touch-feedback">
               Ver <ChevronRight className="h-3 w-3" />
@@ -857,7 +854,7 @@ export function DashboardHome() {
           <div className="flex items-center justify-between p-4 border-b border-border">
             <div className="flex items-center gap-2">
               <FileText className="h-4 w-4 text-primary" />
-              <h3 className="text-sm font-medium text-foreground">Por Cobrar</h3>
+              <h3 className="text-sm font-medium text-foreground">Facturas Próximas (72h)</h3>
             </div>
             <Button variant="ghost" size="sm" onClick={() => handleNavigate('invoices')} className="text-xs gap-1 touch-feedback">
               Ver <ChevronRight className="h-3 w-3" />
