@@ -2735,7 +2735,21 @@ export type Database = {
         }[]
       }
       cleanup_stuck_syncs: { Args: never; Returns: Json }
-      dashboard_metrics: { Args: never; Returns: Json }
+      dashboard_metrics: {
+        Args: never
+        Returns: {
+          churn_count: number
+          converted_count: number
+          customer_count: number
+          lead_count: number
+          recovery_list: Json
+          sales_month_mxn: number
+          sales_month_usd: number
+          sales_today_mxn: number
+          sales_today_usd: number
+          trial_count: number
+        }[]
+      }
       data_quality_checks: {
         Args: never
         Returns: {
@@ -2769,10 +2783,6 @@ export type Database = {
             }
             Returns: Json
           }
-      get_client_360: {
-        Args: { p_client_id: string; p_limits?: Json }
-        Returns: Json
-      }
       get_staging_counts_accurate: { Args: never; Returns: Json }
       get_staging_counts_fast: { Args: never; Returns: Json }
       get_subscription_metrics: {
@@ -2879,7 +2889,17 @@ export type Database = {
           transaction_count: number
         }[]
       }
-      kpi_sales_summary: { Args: never; Returns: Json }
+      kpi_sales_summary: {
+        Args: never
+        Returns: {
+          refunds_mxn: number
+          refunds_usd: number
+          sales_mxn: number
+          sales_usd: number
+          today_mxn: number
+          today_usd: number
+        }[]
+      }
       kpi_trial_to_paid: {
         Args: { p_range?: string }
         Returns: {
@@ -2888,12 +2908,23 @@ export type Database = {
           total_revenue: number
         }[]
       }
-      kpi_trials_started: {
-        Args: { p_end_date?: string; p_range?: string; p_start_date?: string }
-        Returns: {
-          trial_count: number
-        }[]
-      }
+      kpi_trials_started:
+        | {
+            Args: { p_range?: string }
+            Returns: {
+              trial_count: number
+            }[]
+          }
+        | {
+            Args: {
+              p_end_date?: string
+              p_range?: string
+              p_start_date?: string
+            }
+            Returns: {
+              trial_count: number
+            }[]
+          }
       match_knowledge: {
         Args: {
           match_count: number

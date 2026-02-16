@@ -77,7 +77,7 @@ export function CustomerDrawer({ client, open, onOpenChange, debtAmount = 0 }: C
     queryKey: ['client-360', client?.id],
     queryFn: async () => {
       if (!client?.id) return null;
-      const { data, error } = await supabase.rpc('get_client_360', {
+      const { data, error } = await supabase.rpc('get_client_360' as any, {
         p_client_id: client.id,
         // Default limits are already safe server-side; we can override if needed.
         p_limits: {
