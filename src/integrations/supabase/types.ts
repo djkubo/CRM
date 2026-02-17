@@ -1118,6 +1118,33 @@ export type Database = {
         }
         Relationships: []
       }
+      exchange_rates: {
+        Row: {
+          base_currency: string
+          fetched_at: string
+          id: string
+          rate: number
+          source: string | null
+          target_currency: string
+        }
+        Insert: {
+          base_currency: string
+          fetched_at?: string
+          id?: string
+          rate: number
+          source?: string | null
+          target_currency: string
+        }
+        Update: {
+          base_currency?: string
+          fetched_at?: string
+          id?: string
+          rate?: number
+          source?: string | null
+          target_currency?: string
+        }
+        Relationships: []
+      }
       flow_executions: {
         Row: {
           client_id: string | null
@@ -2427,6 +2454,7 @@ export type Database = {
           source: string
           started_at: string
           status: string
+          timeout_at: string | null
           total_conflicts: number | null
           total_fetched: number | null
           total_inserted: number | null
@@ -2443,6 +2471,7 @@ export type Database = {
           source: string
           started_at?: string
           status?: string
+          timeout_at?: string | null
           total_conflicts?: number | null
           total_fetched?: number | null
           total_inserted?: number | null
@@ -2459,6 +2488,7 @@ export type Database = {
           source?: string
           started_at?: string
           status?: string
+          timeout_at?: string | null
           total_conflicts?: number | null
           total_fetched?: number | null
           total_inserted?: number | null
@@ -2759,6 +2789,10 @@ export type Database = {
           percentage: number
           status: string
         }[]
+      }
+      get_exchange_rate: {
+        Args: { p_base: string; p_target: string }
+        Returns: number
       }
       get_revenue_by_plan: {
         Args: { limit_count?: number }
