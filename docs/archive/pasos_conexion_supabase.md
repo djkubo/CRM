@@ -27,8 +27,8 @@ export VITE_SUPABASE_PUBLISHABLE_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
 **Opción B - Archivo .env.local:**
 ```env
 VITE_SUPABASE_URL=https://tu-proyecto.supabase.co
-SUPABASE_SERVICE_ROLE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
-VITE_SUPABASE_PUBLISHABLE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+SUPABASE_SERVICE_ROLE_KEY=<SERVICE_ROLE_KEY>
+VITE_SUPABASE_PUBLISHABLE_KEY=<PUBLISHABLE_KEY>
 ```
 
 ⚠️ **Nota de Seguridad:** Nunca compartas las credenciales en código fuente. Usa siempre variables de entorno.
@@ -48,8 +48,8 @@ nano .env.local
 
 ```env
 VITE_SUPABASE_URL=https://tu-proyecto.supabase.co
-SUPABASE_SERVICE_ROLE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
-VITE_SUPABASE_PUBLISHABLE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+SUPABASE_SERVICE_ROLE_KEY=<SERVICE_ROLE_KEY>
+VITE_SUPABASE_PUBLISHABLE_KEY=<PUBLISHABLE_KEY>
 ```
 
 ### Paso 3: Ejecuta Script de Prueba

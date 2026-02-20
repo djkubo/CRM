@@ -45,7 +45,7 @@ O agrégalas a tu archivo `.env.local`:
 
 ```env
 VITE_SUPABASE_URL=https://tu-proyecto.supabase.co
-SUPABASE_SERVICE_ROLE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+SUPABASE_SERVICE_ROLE_KEY=<SERVICE_ROLE_KEY>
 ```
 
 ---
