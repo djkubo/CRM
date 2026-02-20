@@ -201,6 +201,7 @@ export function DashboardHome() {
         }
       }
 
+      const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
       const sorted = rows
         .map((inv) => {
           const candidates = [
@@ -215,7 +216,7 @@ export function DashboardHome() {
           const targetMs = candidates.length ? Math.min(...candidates) : Number.POSITIVE_INFINITY;
           return { inv, targetMs };
         })
-        .filter((x) => x.targetMs !== Number.POSITIVE_INFINITY)
+        .filter((x) => x.targetMs !== Number.POSITIVE_INFINITY && x.targetMs > thirtyDaysAgo)
         .sort((a, b) => a.targetMs - b.targetMs)
         .slice(0, 10)
         .map((x) => x.inv);

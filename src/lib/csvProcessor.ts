@@ -226,7 +226,8 @@ export function calculateLifecycleStage(history: ClientHistory): LifecycleStage 
   }
   
   // Priority 3: Has failed transactions or expired subscription = CHURN
-  if (history.hasExpiredOrCanceledSubscription || history.hasFailedTransaction) {
+  // only when there is no active paid plan.
+  if ((history.hasExpiredOrCanceledSubscription || history.hasFailedTransaction) && !history.hasActivePaidPlan) {
     return 'CHURN';
   }
   

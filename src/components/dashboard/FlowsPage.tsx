@@ -4,16 +4,18 @@ import { FlowBuilder } from '@/components/flows/FlowBuilder';
 import type { AutomationFlow } from '@/hooks/useAutomationFlows';
 
 export default function FlowsPage() {
-  const [editingFlow, setEditingFlow] = useState<AutomationFlow | null>(null);
+  const [selectedFlow, setSelectedFlow] = useState<AutomationFlow | null>(null);
 
-  if (editingFlow) {
+  if (selectedFlow) {
     return (
-      <FlowBuilder
-        flow={editingFlow}
-        onBack={() => setEditingFlow(null)}
-      />
+      <div className="h-[calc(100vh-8rem)] min-h-[680px] overflow-hidden rounded-xl border border-border/50 bg-card">
+        <FlowBuilder
+          flow={selectedFlow}
+          onBack={() => setSelectedFlow(null)}
+        />
+      </div>
     );
   }
 
-  return <FlowsList onSelectFlow={(flow) => setEditingFlow(flow)} />;
+  return <FlowsList onSelectFlow={setSelectedFlow} />;
 }
