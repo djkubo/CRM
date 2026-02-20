@@ -6,7 +6,7 @@ import { RevenueByPlanChart } from "./RevenueByPlanChart";
 import { SourceAnalytics } from "./SourceAnalytics";
 import { AnalyzeButton } from "./AnalyzeButton";
 import { AIInsightsWidget } from "../AIInsightsWidget";
-import { Sparkles, BarChart3 } from "lucide-react";
+import { Sparkles, BarChart3, Loader2 } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { startOfMonth, subMonths } from "date-fns";
@@ -31,7 +31,7 @@ function getMonthsForPeriod(period: AnalyticsPeriod): number {
 
 export function AnalyticsPanel() {
   const [period, setPeriod] = useState<AnalyticsPeriod>("30d");
-  
+
   const monthsToShow = getMonthsForPeriod(period);
   // A bit of extra history improves churn/reactivation accuracy in charts.
   const monthsLookback = Math.max(monthsToShow + 2, 3); // >= ~90 days
@@ -103,18 +103,11 @@ export function AnalyticsPanel() {
         </div>
       </div>
 
-      {/* Loading/progress hint (auto-draining pages in the background) */}
+      {/* Loading hint (background data sync – no live counters to avoid erratic UI) */}
       {(txQuery.isFetching || subsQuery.isFetching) && (
-        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border/50 bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
-          <span className="font-medium text-foreground">Cargando métricas ({periodLabel})…</span>
-          <span>
-            Transacciones: {txQuery.loadedCount.toLocaleString()}
-            {typeof txQuery.totalCount === "number" ? ` / ${txQuery.totalCount.toLocaleString()}` : ""}
-          </span>
-          <span className="hidden sm:inline">
-            Suscripciones activas: {subsQuery.loadedCount.toLocaleString()}
-            {typeof subsQuery.totalCount === "number" ? ` / ${subsQuery.totalCount.toLocaleString()}` : ""}
-          </span>
+        <div className="flex items-center gap-2 rounded-lg border border-border/50 bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+          <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
+          <span className="font-medium text-foreground">Actualizando datos en segundo plano…</span>
         </div>
       )}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 sm:p-4 rounded-xl border border-border bg-card">
@@ -162,30 +155,30 @@ export function AnalyticsPanel() {
 
         <TabsContent value="source" className="space-y-4 sm:space-y-6">
           {/* Source Attribution Analytics */}
-          <SourceAnalytics period={period} />
+          <SourceAnalytics period={period} transactions={transactions} />
         </TabsContent>
 
         <TabsContent value="ltv" className="space-y-4 sm:space-y-6">
           {/* LTV Metrics Row - Usa historial completo para calcular Churn/LTV correctamente */}
-          <LTVMetrics 
-            transactions={transactions} 
-            activeSubscriptions={activeSubscriptions} 
+          <LTVMetrics
+            transactions={transactions}
+            activeSubscriptions={activeSubscriptions}
           />
 
           {/* Revenue by Plan Chart - Pareto Analysis */}
           <RevenueByPlanChart />
 
           {/* MRR Movements Chart */}
-          <MRRMovementsChart 
-            transactions={transactions} 
+          <MRRMovementsChart
+            transactions={transactions}
             monthsToShow={monthsToShow}
           />
         </TabsContent>
 
         <TabsContent value="cohorts" className="space-y-4 sm:space-y-6">
           {/* Cohort Retention Table */}
-          <CohortRetentionTable 
-            transactions={transactions} 
+          <CohortRetentionTable
+            transactions={transactions}
             monthsToShow={monthsToShow}
           />
         </TabsContent>

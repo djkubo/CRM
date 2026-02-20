@@ -54,13 +54,27 @@ const pickMetaDate = (meta: Record<string, unknown> | null, keys: string[]): str
   return null;
 };
 
+const SYNC_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+
 const buildSyncStateFromRuns = (runs: SyncRunRow[]): SyncStateRow[] => {
   const latestBySource = new Map<SyncSource, SyncRunRow>();
+  const now = Date.now();
 
   for (const run of runs) {
     const source = run.source as SyncSource;
     if (!KNOWN_SOURCES.includes(source)) continue;
-    if (!["completed", "completed_with_errors", "skipped"].includes(run.status)) continue;
+
+    // Include running status but detect zombies (running > 10 min)
+    const isZombie = run.status === 'running' &&
+      (now - Date.parse(run.started_at)) > SYNC_TIMEOUT_MS;
+
+    if (isZombie) {
+      // Treat zombie runs as failed
+      run.status = 'failed';
+      run.completed_at = new Date(Date.parse(run.started_at) + SYNC_TIMEOUT_MS).toISOString();
+    }
+
+    if (!["completed", "completed_with_errors", "skipped", "failed"].includes(run.status)) continue;
 
     const current = latestBySource.get(source);
     const runTs = Date.parse(run.completed_at ?? run.started_at);
@@ -80,16 +94,18 @@ const buildSyncStateFromRuns = (runs: SyncRunRow[]): SyncStateRow[] => {
     const rangeStart = pickMetaDate(meta, ["rangeStart", "startDate", "originalStartDate", "backfillStart"]);
     const rangeEnd = pickMetaDate(meta, ["rangeEnd", "endDate", "originalEndDate", "freshUntil"]);
 
+    const isFailedRun = run.status === 'failed';
+
     fallbackRows.push({
       source,
       backfill_start: rangeStart ?? completedAt,
       fresh_until: rangeEnd ?? completedAt,
-      last_success_at: completedAt,
-      last_success_run_id: run.id,
+      last_success_at: isFailedRun ? null : completedAt,
+      last_success_run_id: isFailedRun ? null : run.id,
       last_success_status: run.status,
       last_success_meta: (run.metadata ?? {}) as Json,
-      last_error_at: null,
-      last_error_message: null,
+      last_error_at: isFailedRun ? completedAt : null,
+      last_error_message: isFailedRun ? 'Sync timed out (zombie detected)' : null,
       updated_at: completedAt,
     });
   }
@@ -102,7 +118,7 @@ async function loadSyncStateFallbackFromRuns(): Promise<SyncStateRow[]> {
     .from("sync_runs")
     .select("id, source, status, started_at, completed_at, metadata")
     .in("source", KNOWN_SOURCES)
-    .in("status", ["completed", "completed_with_errors", "skipped"])
+    .in("status", ["completed", "completed_with_errors", "skipped", "running"])
     .order("completed_at", { ascending: false, nullsFirst: false })
     .limit(400);
 

@@ -4,7 +4,7 @@ import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, PieChart, Pie, Cell, 
 import { DollarSign, Loader2, Target, TrendingUp, Users } from "lucide-react";
 
 import { supabase } from "@/integrations/supabase/client";
-import { useAnalyticsTransactions } from "@/hooks/useAnalyticsTransactions";
+import type { AnalyticsTransaction } from "@/hooks/useAnalyticsTransactions";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -36,6 +36,8 @@ export type AnalyticsPeriod = "7d" | "30d" | "90d" | "all";
 
 interface SourceAnalyticsProps {
   period?: AnalyticsPeriod;
+  /** Pre-loaded transactions from parent – avoids a duplicate auto-draining query. */
+  transactions?: AnalyticsTransaction[];
 }
 
 function getDaysForPeriod(period: AnalyticsPeriod): number {
@@ -53,7 +55,7 @@ function getDaysForPeriod(period: AnalyticsPeriod): number {
   }
 }
 
-export function SourceAnalytics({ period = "30d" }: SourceAnalyticsProps) {
+export function SourceAnalytics({ period = "30d", transactions: parentTransactions }: SourceAnalyticsProps) {
   const [activeTab, setActiveTab] = useState("overview");
   const [payingClients, setPayingClients] = useState<Array<{ email: string; acquisition_source: string | null; total_spend: number | null }>>([]);
   const [payingClientsLoading, setPayingClientsLoading] = useState(false);
@@ -65,13 +67,25 @@ export function SourceAnalytics({ period = "30d" }: SourceAnalyticsProps) {
     return new Date(Date.now() - periodDays * 24 * 60 * 60 * 1000).toISOString();
   }, [periodDays]);
 
-  // Period transactions (successful only) - paged, auto-draining.
-  const txQuery = useAnalyticsTransactions({
-    startDate: periodStartIso,
-    statuses: ["succeeded", "paid"],
-    pageSize: 1000,
-    maxPages: period === "all" ? 200 : 50,
-  });
+  // Use pre-loaded transactions from parent (avoids duplicate auto-draining query).
+  // Filter by period locally since the parent may have fetched a wider range.
+  const periodTransactions = useMemo(() => {
+    if (!parentTransactions) return [];
+    return parentTransactions.filter(tx => {
+      if (!tx.stripe_created_at) return false;
+      return tx.stripe_created_at >= periodStartIso;
+    });
+  }, [parentTransactions, periodStartIso]);
+
+  // Thin wrapper so the rest of the component can reference txQuery.transactions without a full rewrite.
+  const txQuery = useMemo(() => ({
+    transactions: periodTransactions,
+    isLoading: false,
+    isFetchingNextPage: false,
+    hasNextPage: false,
+    reachedMaxPages: false,
+    error: null,
+  }), [periodTransactions]);
 
   const payingEmails = useMemo(() => {
     const s = new Set<string>();
@@ -84,12 +98,8 @@ export function SourceAnalytics({ period = "30d" }: SourceAnalyticsProps) {
 
   // Fetch the client records for paying emails so we can map revenue -> acquisition_source and compute LTV.
   useEffect(() => {
-    const isTxComplete =
-      !txQuery.isLoading &&
-      !txQuery.isFetchingNextPage &&
-      (txQuery.hasNextPage === false || txQuery.reachedMaxPages === true);
-
-    if (!isTxComplete) return;
+    // Parent-provided transactions are already fully loaded.
+    if (!parentTransactions || parentTransactions.length === 0) return;
 
     let cancelled = false;
     const run = async () => {
@@ -138,7 +148,7 @@ export function SourceAnalytics({ period = "30d" }: SourceAnalyticsProps) {
       cancelled = true;
     };
     // Depend on full payingEmails ref (already memoized via useMemo) to avoid stale closure.
-  }, [periodStartIso, txQuery.isLoading, txQuery.isFetchingNextPage, txQuery.hasNextPage, txQuery.reachedMaxPages, payingEmails]);
+  }, [periodStartIso, parentTransactions, payingEmails]);
 
   // Registrations in period (clients created within range)
   const registrationsQuery = useInfiniteQuery({
@@ -379,7 +389,7 @@ export function SourceAnalytics({ period = "30d" }: SourceAnalyticsProps) {
   }, [metrics]);
 
   const isLoading =
-    txQuery.isLoading ||
+    (!parentTransactions) ||
     registrationsQuery.isLoading ||
     trialsQuery.isLoading ||
     payingClientsLoading;

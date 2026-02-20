@@ -34,12 +34,12 @@ function parseJwtClaims(token: string): { sub?: string; email?: string; exp?: nu
 
 async function verifyAdmin(req: Request): Promise<{ valid: boolean; userId?: string; error?: string }> {
   const authHeader = req.headers.get('Authorization');
-  
+
   if (!authHeader) {
     logger.warn('No Authorization header present');
     return { valid: false, error: 'Missing Authorization header' };
   }
-  
+
   if (!authHeader.startsWith('Bearer ')) {
     logger.warn('Invalid Authorization format', { prefix: authHeader.substring(0, 20) });
     return { valid: false, error: 'Invalid Authorization format' };
@@ -77,13 +77,13 @@ async function verifyAdmin(req: Request): Promise<{ valid: boolean; userId?: str
   // Verify admin status using RPC (this validates the token server-side)
   // deno-lint-ignore no-explicit-any
   const { data: isAdmin, error: adminError } = await (supabase as any).rpc('is_admin');
-  
+
   if (adminError) {
     logger.warn('Admin check failed', { error: adminError.message, code: adminError.code });
     // If admin check fails, it means the token is invalid
     return { valid: false, error: `Admin verification failed: ${adminError.message}` };
   }
-  
+
   if (!isAdmin) {
     logger.warn('User is not admin', { userId: claims.sub });
     return { valid: false, error: 'Not authorized as admin' };
@@ -111,7 +111,7 @@ function normalizeHeader(h: string): string {
 
 function findColumnIndex(headers: string[], patterns: string[]): number {
   const normalizedHeaders = headers.map(normalizeHeader);
-  
+
   for (const pattern of patterns) {
     const normalizedPattern = normalizeHeader(pattern);
     const exactIdx = normalizedHeaders.findIndex(h => h === normalizedPattern);
@@ -119,7 +119,7 @@ function findColumnIndex(headers: string[], patterns: string[]): number {
     const containsIdx = normalizedHeaders.findIndex(h => h.includes(normalizedPattern));
     if (containsIdx !== -1) return containsIdx;
   }
-  
+
   return -1;
 }
 
@@ -127,7 +127,7 @@ function parseCSVLine(line: string): string[] {
   const result: string[] = [];
   let current = '';
   let inQuotes = false;
-  
+
   for (let i = 0; i < line.length; i++) {
     const char = line[i];
     if (char === '"') {
@@ -144,48 +144,48 @@ function parseCSVLine(line: string): string[] {
       current += char;
     }
   }
-  
+
   result.push(current.trim());
   return result;
 }
 
 function detectCSVType(headers: string[]): CSVType {
   const normalized = headers.map(h => h.toLowerCase().trim());
-  
+
   const hasCNT = normalized.some(h => h.startsWith('cnt_'));
   const hasPP = normalized.some(h => h.startsWith('pp_'));
   const hasST = normalized.some(h => h.startsWith('st_'));
   const hasSUB = normalized.some(h => h.startsWith('sub_'));
   const hasUSR = normalized.some(h => h.startsWith('usr_'));
   const hasAutoMaster = normalized.some(h => h.startsWith('auto_'));
-  
+
   const prefixCount = [hasCNT, hasPP, hasST, hasSUB, hasUSR].filter(Boolean).length;
   if (prefixCount >= 2 || hasAutoMaster) {
     return 'master';
   }
-  
+
   if (normalized.some(h => h.includes('contact id') || h === 'ghl_contact_id')) {
     return 'ghl';
   }
-  
-  if (normalized.includes('id') && normalized.includes('amount') && 
-      (normalized.includes('payment_intent') || normalized.includes('customer') || normalized.includes('status'))) {
+
+  if (normalized.includes('id') && normalized.includes('amount') &&
+    (normalized.includes('payment_intent') || normalized.includes('customer') || normalized.includes('status'))) {
     return 'stripe_payments';
   }
-  
-  if (normalized.some(h => h.includes('customer_id') || h === 'customer') && 
-      normalized.includes('email') && !normalized.includes('amount')) {
+
+  if (normalized.some(h => h.includes('customer_id') || h === 'customer') &&
+    normalized.includes('email') && !normalized.includes('amount')) {
     return 'stripe_customers';
   }
-  
+
   if (normalized.some(h => h === 'nombre' || h === 'transaction id' || h.includes('correo electrónico'))) {
     return 'paypal';
   }
-  
+
   if (normalized.some(h => h.includes('subscription')) && normalized.some(h => h.includes('plan'))) {
     return 'subscriptions';
   }
-  
+
   return 'auto';
 }
 
@@ -200,7 +200,7 @@ async function stageCSVDataUltraFast(
   supabase: AnySupabaseClient
 ): Promise<{ staged: number; errors: number }> {
   const startTime = Date.now();
-  
+
   // Find email/phone columns for basic indexing
   const emailIdx = findColumnIndex(headers, ['email', 'correo electronico', 'correo', 'customer_email', 'auto_master_email']);
   const phoneIdx = findColumnIndex(headers, ['phone', 'telefono', 'tel', 'auto_phone']);
@@ -217,14 +217,14 @@ async function stageCSVDataUltraFast(
     raw_data: Record<string, string>;
     processing_status: string;
   }[] = [];
-  
+
   for (let i = 1; i < lines.length; i++) {
     const line = lines[i];
     if (!line.trim()) continue;
 
     try {
       const values = parseCSVLine(line);
-      
+
       // Build raw_data object - store everything
       const rawData: Record<string, string> = {};
       for (let j = 0; j < headers.length && j < values.length; j++) {
@@ -235,11 +235,11 @@ async function stageCSVDataUltraFast(
       // Extract email for basic lookup (minimal validation)
       let email = emailIdx >= 0 ? values[emailIdx]?.replace(/"/g, '').trim().toLowerCase() : null;
       if (email && !email.includes('@')) email = null;
-      
+
       // Extract phone (no normalization - do it in merge phase)
       let phone = phoneIdx >= 0 ? values[phoneIdx]?.replace(/"/g, '').trim() : null;
       if (phone && phone.length < 7) phone = null;
-      
+
       const fullName = nameIdx >= 0 ? values[nameIdx]?.replace(/"/g, '').trim() || null : null;
 
       stagingRows.push({
@@ -261,11 +261,11 @@ async function stageCSVDataUltraFast(
   const BATCH_SIZE = 1000;
   let stagedCount = 0;
   let errorCount = 0;
-  
+
   for (let i = 0; i < stagingRows.length; i += BATCH_SIZE) {
     const batch = stagingRows.slice(i, i + BATCH_SIZE);
     const { error } = await supabase.from('csv_imports_raw').insert(batch);
-    
+
     if (error) {
       logger.error(`Staging batch failed`, error);
       errorCount += batch.length;
@@ -304,64 +304,68 @@ Deno.serve(async (req) => {
     let { csvText } = body;
     const { csvType: requestedType, filename, isChunk, chunkIndex, totalChunks, storageKey } = body;
 
-    // If storageKey provided, download CSV from Storage bucket
+    // If storageKey provided, read CSV from Storage bucket instead of body
     if (storageKey && !csvText) {
       const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
       const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
       const storageClient = createClient(supabaseUrl, supabaseServiceKey);
 
+      logger.info('Reading CSV from Storage', { storageKey });
       const { data: fileData, error: dlError } = await storageClient
         .storage.from('csv-imports')
         .download(storageKey);
+
       if (dlError || !fileData) {
         return new Response(
           JSON.stringify({ ok: false, error: `Storage download failed: ${dlError?.message || 'File not found'}` }),
           { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         );
       }
+
       csvText = await fileData.text();
+      logger.info('CSV loaded from Storage', { bytes: csvText.length, storageKey });
     }
 
     if (!csvText) {
       return new Response(
-        JSON.stringify({ ok: false, error: 'No CSV text provided' }),
+        JSON.stringify({ ok: false, error: 'No CSV text provided. Send csvText or storageKey.' }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    logger.info('Processing CSV', { 
-      filename, 
-      requestedType, 
-      isChunk, 
-      chunkIndex, 
+    logger.info('Processing CSV', {
+      filename,
+      requestedType,
+      isChunk,
+      chunkIndex,
       totalChunks,
-      textLength: csvText.length 
+      textLength: csvText.length
     });
 
     // Parse CSV - handle different line endings and empty lines
     const rawLines = csvText.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
     const lines = rawLines.filter((l: string) => l.trim().length > 0);
-    
+
     logger.info('CSV lines parsed', { rawLineCount: rawLines.length, filteredLineCount: lines.length, firstLinePreview: lines[0]?.substring(0, 100) });
-    
+
     if (lines.length < 2) {
       // Check if it might be semicolon-delimited
       const firstLine = lines[0] || '';
       const semicolonCount = (firstLine.match(/;/g) || []).length;
       const commaCount = (firstLine.match(/,/g) || []).length;
-      
-      logger.warn('CSV validation failed', { 
-        lineCount: lines.length, 
-        semicolonCount, 
+
+      logger.warn('CSV validation failed', {
+        lineCount: lines.length,
+        semicolonCount,
         commaCount,
         firstLineLength: firstLine.length,
         csvTextLength: csvText.length
       });
-      
+
       return new Response(
-        JSON.stringify({ 
-          ok: false, 
-          error: `CSV debe tener encabezado y al menos una fila de datos. Recibido: ${lines.length} líneas. ¿El archivo usa punto y coma (;) como delimitador?` 
+        JSON.stringify({
+          ok: false,
+          error: `CSV debe tener encabezado y al menos una fila de datos. Recibido: ${lines.length} líneas. ¿El archivo usa punto y coma (;) como delimitador?`
         }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
@@ -371,11 +375,11 @@ Deno.serve(async (req) => {
     const detectedType = detectCSVType(headers);
     const csvType = requestedType || detectedType;
 
-    logger.info('CSV parsed', { 
-      rows: lines.length - 1, 
-      headers: headers.length, 
-      detectedType, 
-      usingType: csvType 
+    logger.info('CSV parsed', {
+      rows: lines.length - 1,
+      headers: headers.length,
+      detectedType,
+      usingType: csvType
     });
 
     // Create service role client for direct inserts
@@ -387,7 +391,7 @@ Deno.serve(async (req) => {
     // The frontend sends import_id for all chunks after the first one
     let importId: string;
     const providedImportId = body.importId;
-    
+
     if (providedImportId) {
       // Use the import_id from frontend (for chunks after the first)
       importId = providedImportId;
@@ -403,7 +407,7 @@ Deno.serve(async (req) => {
         .order('started_at', { ascending: false })
         .limit(1)
         .single();
-      
+
       if (findError || !existingRun) {
         logger.error('Could not find existing import run for chunk', new Error(`baseFilename=${baseFilename}, chunkIndex=${chunkIndex}, findError=${findError?.message}`));
         return new Response(
@@ -411,14 +415,14 @@ Deno.serve(async (req) => {
           { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         );
       }
-      
+
       importId = existingRun.id;
       logger.info('Found existing importId', { importId, chunkIndex });
     } else {
       // First chunk or non-chunked: Create new import run
       importId = crypto.randomUUID();
       const baseFilename = filename?.replace(/_chunk_\d+$/, '') || `import_${Date.now()}`;
-      
+
       const { error: insertError } = await supabase.from('csv_import_runs').insert({
         id: importId,
         filename: baseFilename,
@@ -439,7 +443,7 @@ Deno.serve(async (req) => {
           { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         );
       }
-      
+
       logger.info('Created new import run', { importId, baseFilename });
     }
 
@@ -464,7 +468,7 @@ Deno.serve(async (req) => {
     }).eq('id', importId);
 
     const duration = Date.now() - startTime;
-    
+
     logger.info('Chunk processed', {
       importId,
       staged: result.staged,
@@ -492,7 +496,7 @@ Deno.serve(async (req) => {
   } catch (error) {
     const errMsg = error instanceof Error ? error.message : String(error);
     logger.error('Processing failed', error instanceof Error ? error : new Error(errMsg));
-    
+
     return new Response(
       JSON.stringify({ ok: false, error: errMsg }),
       { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }

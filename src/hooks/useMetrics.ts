@@ -154,7 +154,18 @@ export function useMetrics() {
         console.error('Error fetching sales data:', salesError);
       }
 
-      const MXN_TO_USD = 0.05;
+      // Dynamic exchange rate from DB (fallback to 0.05 if RPC not available)
+      let MXN_TO_USD = 0.05;
+      try {
+        const { data: rateData } = await supabase.rpc('get_exchange_rate' as any, {
+          p_base: 'MXN', p_target: 'USD'
+        });
+        if (rateData && typeof rateData === 'number' && rateData > 0) {
+          MXN_TO_USD = rateData;
+        }
+      } catch {
+        // RPC not deployed yet — use fallback
+      }
       const salesMonthTotal = salesMonthUSD + (salesMonthMXN * MXN_TO_USD);
       const salesTodayTotal = salesTodayUSD + (salesTodayMXN * MXN_TO_USD);
       const refundsMonthTotal = refundsMonthUSD + (refundsMonthMXN * MXN_TO_USD);

@@ -184,26 +184,44 @@ export function useSendMessage() {
       if (msgError) throw msgError;
 
       // Route WhatsApp through whatsapp-bridge, SMS through send-sms
-      let sendError: Error | null = null;
+      let sendErrorMessage: string | null = null;
       if (channel === "whatsapp") {
-        const { error } = await supabase.functions.invoke("whatsapp-bridge", {
+        const { data, error } = await supabase.functions.invoke("whatsapp-bridge", {
           body: { action: "send", to, message: body, client_id: clientId },
         });
-        sendError = error;
+        if (error) {
+          sendErrorMessage = error.message || "No se pudo enviar por WhatsApp";
+        } else {
+          const payload = (data || {}) as {
+            ok?: boolean;
+            success?: boolean;
+            message?: string;
+            error?: string;
+          };
+          const isOk = payload.ok ?? payload.success ?? true;
+          if (!isOk) {
+            sendErrorMessage =
+              payload.error ||
+              payload.message ||
+              "No se pudo enviar por WhatsApp";
+          }
+        }
       } else {
         const { error } = await supabase.functions.invoke("send-sms", {
           body: { to, message: body, client_id: clientId },
         });
-        sendError = error;
+        if (error) {
+          sendErrorMessage = error.message || "No se pudo enviar por SMS";
+        }
       }
 
-      if (sendError) {
+      if (sendErrorMessage) {
         // Update message status to failed
         await supabase
           .from("messages")
           .update({ status: "failed" })
           .eq("id", message.id);
-        throw sendError;
+        throw new Error(sendErrorMessage);
       }
 
       // Update status to sent

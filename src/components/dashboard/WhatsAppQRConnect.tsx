@@ -6,11 +6,118 @@ import { Smartphone, Loader2, CheckCircle2, XCircle, RefreshCw, Unplug } from "l
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 
+type BridgeAction = "status" | "connect" | "disconnect";
+
 interface WhatsAppStatus {
   is_connected: boolean;
   phone_number: string | null;
   qr_code: string | null;
   session_exists: boolean;
+}
+
+interface BridgePayload {
+  ok?: boolean;
+  success?: boolean;
+  message?: string;
+  error?: unknown;
+  status?: unknown;
+  data?: unknown;
+  raw?: unknown;
+  is_connected?: unknown;
+  connected?: unknown;
+  isConnected?: unknown;
+  phone_number?: unknown;
+  phone?: unknown;
+  phoneNumber?: unknown;
+  qr_code?: unknown;
+  qr?: unknown;
+  qrCode?: unknown;
+  session_exists?: unknown;
+  sessionExists?: unknown;
+  session?: unknown;
+}
+
+function readFromSources(sources: Array<Record<string, unknown>>, keys: string[]): unknown {
+  for (const source of sources) {
+    for (const key of keys) {
+      if (source[key] !== undefined && source[key] !== null) return source[key];
+    }
+  }
+  return null;
+}
+
+function toStatus(payload: BridgePayload): WhatsAppStatus | null {
+  const nestedStatus =
+    payload.status && typeof payload.status === "object" ? (payload.status as Record<string, unknown>) : {};
+  const nestedData =
+    payload.data && typeof payload.data === "object" ? (payload.data as Record<string, unknown>) : {};
+  const nestedRaw =
+    payload.raw && typeof payload.raw === "object" ? (payload.raw as Record<string, unknown>) : {};
+  const root = payload as unknown as Record<string, unknown>;
+
+  const sources = [nestedStatus, nestedData, root, nestedRaw];
+
+  const connectedRaw = readFromSources(sources, ["is_connected", "connected", "isConnected"]);
+  const phoneRaw = readFromSources(sources, ["phone_number", "phone", "phoneNumber"]);
+  const qrRaw = readFromSources(sources, ["qr_code", "qr", "qrCode"]);
+  const sessionRaw = readFromSources(sources, ["session_exists", "sessionExists", "session"]);
+
+  const hasAnyStatusField =
+    connectedRaw !== null || phoneRaw !== null || qrRaw !== null || sessionRaw !== null;
+  if (!hasAnyStatusField) return null;
+
+  const isConnected =
+    typeof connectedRaw === "boolean"
+      ? connectedRaw
+      : typeof connectedRaw === "string"
+        ? connectedRaw.toLowerCase() === "true" || connectedRaw.toLowerCase() === "connected"
+        : Boolean(connectedRaw);
+
+  const phone =
+    typeof phoneRaw === "string" && phoneRaw.trim().length > 0
+      ? phoneRaw.trim()
+      : null;
+  const qrCode =
+    typeof qrRaw === "string" && qrRaw.trim().length > 0
+      ? qrRaw.trim()
+      : null;
+
+  const sessionExists =
+    typeof sessionRaw === "boolean"
+      ? sessionRaw
+      : typeof sessionRaw === "string"
+        ? sessionRaw.toLowerCase() === "true" || sessionRaw.toLowerCase() === "connected"
+        : isConnected || !!phone;
+
+  return {
+    is_connected: isConnected,
+    phone_number: phone,
+    qr_code: qrCode,
+    session_exists: sessionExists,
+  };
+}
+
+function payloadError(payload: BridgePayload): string | null {
+  if (payload.ok === false || payload.success === false) {
+    if (typeof payload.message === "string" && payload.message.trim()) return payload.message;
+    if (typeof payload.error === "string" && payload.error.trim()) return payload.error;
+    if (payload.error && typeof payload.error === "object") {
+      const maybeError = payload.error as Record<string, unknown>;
+      if (typeof maybeError.message === "string" && maybeError.message.trim()) return maybeError.message;
+    }
+    return "Error en puente de WhatsApp";
+  }
+  return null;
+}
+
+async function callWhatsAppBridge(action: BridgeAction): Promise<BridgePayload> {
+  const { data, error } = await supabase.functions.invoke("whatsapp-bridge", {
+    body: { action },
+  });
+  if (error) {
+    throw new Error(error.message || "No se pudo conectar con el puente de WhatsApp");
+  }
+  return (data || {}) as BridgePayload;
 }
 
 export function WhatsAppQRConnect() {
@@ -20,28 +127,32 @@ export function WhatsAppQRConnect() {
   const [connecting, setConnecting] = useState(false);
   const cooldownUntilRef = useRef(0);
 
-  const invoke = useCallback(async (action: string) => {
-    const { data, error } = await supabase.functions.invoke("whatsapp-bridge", {
-      body: { action },
-    });
-    if (error) throw error;
-    return data;
-  }, []);
-
-  const fetchStatus = useCallback(async () => {
+  const fetchStatus = useCallback(async (force = false) => {
     const now = Date.now();
-    if (now < cooldownUntilRef.current) return;
+    if (!force && now < cooldownUntilRef.current) return;
 
     try {
-      const data = await invoke("status");
-      setStatus(data as WhatsAppStatus);
+      const payload = await callWhatsAppBridge("status");
+      const bridgeError = payloadError(payload);
+      const nextStatus = toStatus(payload);
+      if (bridgeError && !nextStatus) {
+        throw new Error(bridgeError);
+      }
+      if (!nextStatus) {
+        throw new Error("Respuesta inválida desde el puente de WhatsApp");
+      }
+      setStatus(nextStatus);
       setStatusError(null);
       cooldownUntilRef.current = 0;
-    } catch {
-      setStatusError("No se pudo conectar con el servicio de WhatsApp. Intenta de nuevo en unos segundos.");
+    } catch (err) {
+      const message =
+        err instanceof Error
+          ? err.message
+          : "No se pudo conectar con el servicio de WhatsApp";
+      setStatusError(`${message}. Intenta de nuevo en unos segundos.`);
       cooldownUntilRef.current = now + 30_000;
     }
-  }, [invoke]);
+  }, []);
 
   // Polling cuando hay QR o está conectando
   useEffect(() => {
@@ -68,10 +179,25 @@ export function WhatsAppQRConnect() {
     setConnecting(true);
     setLoading(true);
     try {
-      await invoke("connect");
-      toast.info("Generando código QR...");
-    } catch {
-      toast.error("Error al iniciar conexión");
+      const payload = await callWhatsAppBridge("connect");
+      const bridgeError = payloadError(payload);
+      if (bridgeError) throw new Error(bridgeError);
+
+      const nextStatus = toStatus(payload);
+      if (nextStatus) {
+        setStatus(nextStatus);
+        if (nextStatus.is_connected) {
+          setConnecting(false);
+          toast.success("¡WhatsApp conectado exitosamente!");
+        } else {
+          toast.info("Generando código QR...");
+        }
+      } else {
+        toast.info("Generando código QR...");
+        await fetchStatus(true);
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Error al iniciar conexión");
       setConnecting(false);
     } finally {
       setLoading(false);
@@ -81,11 +207,16 @@ export function WhatsAppQRConnect() {
   const handleDisconnect = async () => {
     setLoading(true);
     try {
-      await invoke("disconnect");
-      setStatus(null);
+      const payload = await callWhatsAppBridge("disconnect");
+      const bridgeError = payloadError(payload);
+      if (bridgeError) throw new Error(bridgeError);
+
+      const nextStatus = toStatus(payload);
+      setStatus(nextStatus || null);
+      setConnecting(false);
       toast.success("WhatsApp desconectado");
-    } catch {
-      toast.error("Error al desconectar");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Error al desconectar");
     } finally {
       setLoading(false);
     }

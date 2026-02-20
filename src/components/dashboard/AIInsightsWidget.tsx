@@ -68,12 +68,29 @@ const priorityColors: Record<string, string> = {
   low: 'bg-blue-500/20 text-blue-400 border-blue-500/30',
 };
 
+// Segments where amounts are stored in cents and need /100 conversion
+const CENTS_SEGMENTS = new Set(['pagos_fallidos', 'clientes_vip', 'cancelaciones', 'conversiones_nuevas', 'riesgo_churn']);
+
+function formatAmount(amount: number, segment: string): string {
+  const value = CENTS_SEGMENTS.has(segment) ? amount / 100 : amount;
+  return value >= 1000
+    ? `$${value.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`
+    : `$${value.toFixed(2)}`;
+}
+
+function getClientDisplayName(client: ActionableClient): string {
+  if (client.name && client.name !== 'Desconocido' && client.name.trim() !== '') {
+    return client.name;
+  }
+  return client.email || 'Sin identificar';
+}
+
 function downloadCSV(segment: ActionableSegment) {
-  const headers = ['Email', 'Nombre', 'Monto', 'Fecha', 'Razón'];
+  const headers = ['Email', 'Nombre', 'Monto USD', 'Fecha', 'Razón'];
   const rows = segment.clients.map(c => [
     c.email,
     c.name,
-    c.amount?.toString() || '',
+    c.amount !== undefined ? (CENTS_SEGMENTS.has(segment.segment) ? (c.amount / 100).toFixed(2) : c.amount.toString()) : '',
     c.date || '',
     c.reason || '',
   ]);
@@ -88,13 +105,13 @@ function downloadCSV(segment: ActionableSegment) {
   link.href = URL.createObjectURL(blob);
   link.download = `${segment.segment}_${new Date().toISOString().split('T')[0]}.csv`;
   link.click();
-  
+
   toast.success(`Descargado: ${segment.count} clientes`);
 }
 
 function SegmentCard({ segment }: { segment: ActionableSegment }) {
   const Icon = segmentIcons[segment.segment] || Users;
-  
+
   return (
     <div className="p-3 sm:p-4 rounded-lg bg-background/50 border border-border/30 hover:border-primary/30 transition-colors">
       <div className="flex items-start justify-between mb-2 sm:mb-3">
@@ -127,22 +144,17 @@ function SegmentCard({ segment }: { segment: ActionableSegment }) {
       {segment.clients.length > 0 && (
         <>
           <div className="space-y-1 mb-2 sm:mb-3 max-h-24 sm:max-h-32 overflow-y-auto">
-            {segment.clients.slice(0, 5).map((client, idx) => {
-              const isFinancialSegment = ['pagos_fallidos', 'clientes_vip', 'cancelaciones', 'conversiones_nuevas', 'riesgo_churn'].includes(segment.segment);
-              const displayAmount = client.amount !== undefined ? (isFinancialSegment ? client.amount / 100 : client.amount) : undefined;
-              const displayName = client.name && client.name !== 'Desconocido' ? client.name : client.email;
-              return (
+            {segment.clients.slice(0, 5).map((client, idx) => (
               <div key={idx} className="flex items-center justify-between text-[10px] sm:text-xs py-0.5 sm:py-1 px-1.5 sm:px-2 rounded bg-background/30">
                 <div className="flex items-center gap-1.5 sm:gap-2 truncate min-w-0">
                   <span className="text-muted-foreground">{idx + 1}.</span>
-                  <span className="text-foreground truncate">{displayName}</span>
+                  <span className="text-foreground truncate">{getClientDisplayName(client)}</span>
                 </div>
-                {displayAmount !== undefined && (
-                  <span className="text-emerald-400 font-medium shrink-0 ml-1">${displayAmount.toFixed(0)}</span>
+                {client.amount !== undefined && (
+                  <span className="text-emerald-400 font-medium shrink-0 ml-1">{formatAmount(client.amount, segment.segment)}</span>
                 )}
               </div>
-              );
-            })}
+            ))}
             {segment.clients.length > 5 && (
               <p className="text-[10px] sm:text-xs text-muted-foreground text-center py-0.5 sm:py-1">
                 +{segment.clients.length - 5} más...
@@ -228,7 +240,7 @@ export function AIInsightsWidget() {
     <div className="rounded-xl border border-border/50 bg-gradient-to-br from-[#1a1f36] via-[#1a1f36] to-primary/5 p-4 sm:p-6 relative overflow-hidden">
       {/* Glow effect */}
       <div className="absolute top-0 right-0 w-24 h-24 sm:w-32 sm:h-32 bg-primary/10 rounded-full blur-3xl" />
-      
+
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-0 mb-4 sm:mb-6 relative">
         <div className="flex items-center gap-2 sm:gap-3">

@@ -110,27 +110,52 @@ export function useSyncQueue() {
     return { success: true, processed: totalProcessed };
   }, [updateStep]);
 
-  // Execute ManyChat sync
+  // Execute ManyChat sync (with rate-limit retry)
   const executeManyChat = useCallback(async (): Promise<{ success: boolean; processed: number }> => {
     let hasMore = true;
     let cursor = 0;
     let syncRunId: string | null = null;
     let totalProcessed = 0;
+    const MAX_RETRIES = 3;
+    const RETRY_DELAY_MS = 60_000; // 60 seconds for rate limit cooldown
 
     while (hasMore && !abortRef.current) {
-      const { data, error } = await supabase.functions.invoke('sync-manychat', {
-        body: { stageOnly: true, cursor, syncRunId }
-      });
+      let retries = 0;
+      let pageSuccess = false;
 
-      if (error) throw error;
-      if (!data?.ok) throw new Error(data?.error || 'ManyChat sync failed');
+      while (!pageSuccess && retries < MAX_RETRIES) {
+        try {
+          const { data, error } = await supabase.functions.invoke('sync-manychat', {
+            body: { stageOnly: true, cursor, syncRunId }
+          });
 
-      totalProcessed += data.staged || data.processed || 0;
-      syncRunId = data.syncRunId;
-      hasMore = data.hasMore === true;
-      cursor = parseInt(data.nextCursor || '0', 10);
+          if (error) {
+            const errMsg = typeof error === 'object' && error.message ? error.message : String(error);
+            // Detect rate limit (429) or "too many requests"
+            if (errMsg.includes('429') || errMsg.toLowerCase().includes('rate') || errMsg.toLowerCase().includes('too many')) {
+              retries++;
+              if (retries < MAX_RETRIES) {
+                console.warn(`[ManyChat] Rate limited, retry ${retries}/${MAX_RETRIES} in ${RETRY_DELAY_MS / 1000}s`);
+                await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
+                continue;
+              }
+            }
+            throw error;
+          }
+          if (!data?.ok) throw new Error(data?.error || 'ManyChat sync failed');
 
-      updateStep('manychat', { processed: totalProcessed });
+          totalProcessed += data.staged || data.processed || 0;
+          syncRunId = data.syncRunId;
+          hasMore = data.hasMore === true;
+          cursor = parseInt(data.nextCursor || '0', 10);
+          pageSuccess = true;
+
+          updateStep('manychat', { processed: totalProcessed });
+        } catch (err) {
+          if (retries >= MAX_RETRIES - 1) throw err;
+          retries++;
+        }
+      }
 
       if (hasMore) {
         await new Promise(resolve => setTimeout(resolve, 200));
@@ -140,7 +165,7 @@ export function useSyncQueue() {
     return { success: true, processed: totalProcessed };
   }, [updateStep]);
 
-  // Execute Unify All
+  // Execute Unify All (with max-poll guard to prevent infinite polling)
   const executeUnify = useCallback(async (): Promise<{ success: boolean; processed: number }> => {
     const { data, error } = await supabase.functions.invoke('bulk-unify-contacts', {
       body: { sources: ['ghl', 'manychat', 'csv'], batchSize: 2000 }
@@ -149,15 +174,18 @@ export function useSyncQueue() {
     if (error) throw error;
     if (!data?.ok) throw new Error(data?.error || 'Unify failed');
 
-    // Poll for completion
+    // Poll for completion with max iterations (60 × 5s = 5 min ceiling)
     const syncRunId = data.syncRunId;
     if (!syncRunId) return { success: true, processed: 0 };
 
     let completed = false;
     let totalProcessed = 0;
+    let pollCount = 0;
+    const MAX_POLLS = 60; // 60 × 5s = 5 minutes max
 
-    while (!completed && !abortRef.current) {
+    while (!completed && !abortRef.current && pollCount < MAX_POLLS) {
       await new Promise(resolve => setTimeout(resolve, 5000));
+      pollCount++;
 
       const { data: syncRun } = await supabase
         .from('sync_runs')
@@ -176,6 +204,10 @@ export function useSyncQueue() {
           throw new Error(`Unify ${syncRun.status}`);
         }
       }
+    }
+
+    if (!completed && pollCount >= MAX_POLLS) {
+      throw new Error('Unify timed out after 5 minutes of polling');
     }
 
     return { success: true, processed: totalProcessed };
