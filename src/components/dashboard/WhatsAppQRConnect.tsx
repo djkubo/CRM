@@ -281,7 +281,7 @@ export function WhatsAppQRConnect() {
             </div>
             
             <div className="flex gap-2">
-              <Button variant="outline" size="sm" onClick={fetchStatus} className="flex-1">
+              <Button variant="outline" size="sm" onClick={() => fetchStatus()} className="flex-1">
                 <RefreshCw className="h-4 w-4 mr-2" />
                 Actualizar
               </Button>
