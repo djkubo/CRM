@@ -48,11 +48,9 @@ export function SubscriptionsPage() {
     revenueByPlan,
     totalActiveRevenue,
     totalActiveCount,
-    mrrBreakdown,
     statusBreakdown,
     revenueAtRisk,
     atRiskCount,
-    atRiskBreakdown,
     stripeCount,
     paypalCount,
     isSyncing,
@@ -134,25 +132,21 @@ export function SubscriptionsPage() {
         </div>
         <div className="flex items-center gap-3 justify-between sm:justify-end">
           {/* MRR Display */}
-            <div className="text-left sm:text-right">
-              <p className="text-lg md:text-2xl font-bold text-foreground">
-                ${(totalActiveRevenue / 100).toLocaleString('en-US', { minimumFractionDigits: 0 })}
+          <div className="text-left sm:text-right">
+            <p className="text-lg md:text-2xl font-bold text-foreground">
+              ${(totalActiveRevenue / 100).toLocaleString('en-US', { minimumFractionDigits: 0 })}
+            </p>
+            <p className="text-[10px] md:text-xs text-muted-foreground">MRR ({totalActiveCount} activas)</p>
+          </div>
+          {/* Revenue at Risk - NEW */}
+          {revenueAtRisk > 0 && (
+            <div className="text-left sm:text-right border-l border-red-500/30 pl-3">
+              <p className="text-lg md:text-2xl font-bold text-red-400">
+                ${(revenueAtRisk / 100).toLocaleString('en-US', { minimumFractionDigits: 0 })}
               </p>
-              <p className="text-[10px] md:text-xs text-muted-foreground">
-                MRR USD eq. ({totalActiveCount} activas) · USD ${(mrrBreakdown.usd).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })} · MXN ${(mrrBreakdown.mxn).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
-              </p>
+              <p className="text-[10px] md:text-xs text-red-400/70">En Riesgo ({atRiskCount})</p>
             </div>
-            {/* Revenue at Risk - NEW */}
-            {revenueAtRisk > 0 && (
-              <div className="text-left sm:text-right border-l border-red-500/30 pl-3">
-                <p className="text-lg md:text-2xl font-bold text-red-400">
-                  ${(revenueAtRisk / 100).toLocaleString('en-US', { minimumFractionDigits: 0 })}
-                </p>
-                <p className="text-[10px] md:text-xs text-red-400/70">
-                  En Riesgo USD eq. ({atRiskCount}) · USD ${(atRiskBreakdown.usd).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })} · MXN ${(atRiskBreakdown.mxn).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
-                </p>
-              </div>
-            )}
+          )}
           <div className="flex items-center gap-2">
             {/* Provider breakdown */}
             <div className="hidden sm:flex items-center gap-2 text-xs mr-2">
@@ -215,7 +209,7 @@ export function SubscriptionsPage() {
             </div>
             <div className="flex-1">
               <h3 className="font-semibold text-red-400 text-sm md:text-base">
-                Ingresos en riesgo (USD eq.): ${(revenueAtRisk / 100).toLocaleString('en-US', { minimumFractionDigits: 0 })}/mes
+                Ingresos en riesgo: ${(revenueAtRisk / 100).toLocaleString('en-US', { minimumFractionDigits: 0 })}/mes
               </h3>
               <p className="text-[10px] md:text-xs text-red-400/70 mt-0.5">
                 {statusBreakdown.past_due} pagos vencidos + {statusBreakdown.unpaid} impagos = {atRiskCount} clientes requieren atención

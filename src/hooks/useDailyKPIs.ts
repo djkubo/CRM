@@ -29,10 +29,8 @@ export interface DailyKPIs {
   trialConversionRevenue: number; // subscriptions-based (no currency breakdown)
   // NEW: Real-time MRR and Revenue at Risk
   mrr: number;
-  mrrByCurrency: MoneyByCurrency;
   mrrActiveCount: number;
   revenueAtRisk: number;
-  revenueAtRiskByCurrency: MoneyByCurrency;
   revenueAtRiskCount: number;
 }
 
@@ -53,10 +51,8 @@ const defaultKPIs: DailyKPIs = {
   renewalRevenue: { usd: 0, mxn: 0 },
   trialConversionRevenue: 0,
   mrr: 0,
-  mrrByCurrency: { usd: 0, mxn: 0 },
   mrrActiveCount: 0,
   revenueAtRisk: 0,
-  revenueAtRiskByCurrency: { usd: 0, mxn: 0 },
   revenueAtRiskCount: 0,
 };
 
@@ -120,82 +116,7 @@ async function countClients(start: string, end: string): Promise<number> {
   return count || 0;
 }
 
-async function getMxnToUsdRate(): Promise<number> {
-  try {
-    const { data } = await (supabase.rpc as any)('get_exchange_rate', {
-      p_base: 'MXN',
-      p_target: 'USD',
-    });
-
-    if (typeof data === 'number' && data > 0) {
-      return data;
-    }
-  } catch {
-    /* ignore */
-  }
-  return 0.05;
-}
-
-async function getMrrSummary(): Promise<{
-  mrr: number;
-  mrrByCurrency: MoneyByCurrency;
-  mrrActiveCount: number;
-  revenueAtRisk: number;
-  revenueAtRiskByCurrency: MoneyByCurrency;
-  revenueAtRiskCount: number;
-}> {
-  const mxnToUsdRate = await getMxnToUsdRate();
-
-  // Preferred path: currency-aware calculations
-  try {
-    if (shouldTryRpc('kpi_mrr')) {
-      const { data: mrrRows, error: mrrError } = await (supabase.rpc as any)('kpi_mrr');
-      if (mrrError) throw mrrError;
-      markRpcOk('kpi_mrr');
-
-      const mrrByCurrency: MoneyByCurrency = { usd: 0, mxn: 0 };
-      let mrrActiveCount = 0;
-      for (const row of mrrRows || []) {
-        const currency = typeof row.currency === 'string' ? row.currency.toLowerCase() : 'usd';
-        const amountMajor = toNumber(row.mrr) / 100;
-        if (currency === 'mxn') mrrByCurrency.mxn += amountMajor;
-        else mrrByCurrency.usd += amountMajor;
-        mrrActiveCount += toNumber(row.active_subscriptions);
-      }
-
-      const { data: atRiskRows, error: atRiskError } = await supabase
-        .from('subscriptions')
-        .select('amount, currency')
-        .in('status', ['past_due', 'unpaid'])
-        .limit(5000);
-
-      if (atRiskError) throw atRiskError;
-
-      const revenueAtRiskByCurrency: MoneyByCurrency = { usd: 0, mxn: 0 };
-      for (const row of atRiskRows || []) {
-        const currency = typeof row.currency === 'string' ? row.currency.toLowerCase() : 'usd';
-        const amountMajor = toNumber(row.amount) / 100;
-        if (currency === 'mxn') revenueAtRiskByCurrency.mxn += amountMajor;
-        else revenueAtRiskByCurrency.usd += amountMajor;
-      }
-
-      const mrrUsdEq = mrrByCurrency.usd + (mrrByCurrency.mxn * mxnToUsdRate);
-      const atRiskUsdEq = revenueAtRiskByCurrency.usd + (revenueAtRiskByCurrency.mxn * mxnToUsdRate);
-
-      return {
-        mrr: mrrUsdEq,
-        mrrByCurrency,
-        mrrActiveCount,
-        revenueAtRisk: atRiskUsdEq,
-        revenueAtRiskByCurrency,
-        revenueAtRiskCount: (atRiskRows || []).length,
-      };
-    }
-  } catch {
-    markRpcFailed('kpi_mrr');
-  }
-
-  // Fallback path: legacy summary RPC (may be mixed-currency)
+async function getMrrSummary(): Promise<{ mrr: number; mrrActiveCount: number; revenueAtRisk: number; revenueAtRiskCount: number }> {
   try {
     if (shouldTryRpc('kpi_mrr_summary')) {
       const { data, error } = await (supabase.rpc as any)('kpi_mrr_summary');
@@ -206,10 +127,8 @@ async function getMrrSummary(): Promise<{
         if (mrrSummary) {
           return {
             mrr: (mrrSummary.mrr || 0) / 100,
-            mrrByCurrency: { usd: (mrrSummary.mrr || 0) / 100, mxn: 0 },
             mrrActiveCount: mrrSummary.active_count || 0,
             revenueAtRisk: (mrrSummary.at_risk_amount || 0) / 100,
-            revenueAtRiskByCurrency: { usd: (mrrSummary.at_risk_amount || 0) / 100, mxn: 0 },
             revenueAtRiskCount: (mrrSummary.at_risk_count || 0),
           };
         }
@@ -226,10 +145,8 @@ async function getMrrSummary(): Promise<{
         if (fallbackMrr?.[0]) {
           return {
             mrr: (fallbackMrr[0].mrr || 0) / 100,
-            mrrByCurrency: { usd: (fallbackMrr[0].mrr || 0) / 100, mxn: 0 },
             mrrActiveCount: fallbackMrr[0].active_subscriptions || 0,
             revenueAtRisk: 0,
-            revenueAtRiskByCurrency: { usd: 0, mxn: 0 },
             revenueAtRiskCount: 0,
           };
         }
@@ -239,14 +156,7 @@ async function getMrrSummary(): Promise<{
       /* ignore */
     }
   }
-  return {
-    mrr: 0,
-    mrrByCurrency: { usd: 0, mxn: 0 },
-    mrrActiveCount: 0,
-    revenueAtRisk: 0,
-    revenueAtRiskByCurrency: { usd: 0, mxn: 0 },
-    revenueAtRiskCount: 0,
-  };
+  return { mrr: 0, mrrActiveCount: 0, revenueAtRisk: 0, revenueAtRiskCount: 0 };
 }
 
 function toNumber(value: unknown): number {
@@ -550,10 +460,8 @@ export function useDailyKPIs(filter: TimeFilter = 'today') {
         renewalRevenue,
         trialConversionRevenue,
         mrr: mrrData.mrr,
-        mrrByCurrency: mrrData.mrrByCurrency,
         mrrActiveCount: mrrData.mrrActiveCount,
         revenueAtRisk: mrrData.revenueAtRisk,
-        revenueAtRiskByCurrency: mrrData.revenueAtRiskByCurrency,
         revenueAtRiskCount: mrrData.revenueAtRiskCount,
       });
     } catch (err) {

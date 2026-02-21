@@ -1,12 +1,5 @@
-import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
-import { useMxnToUsdRate } from "@/hooks/useMxnToUsdRate";
-import {
-  DEFAULT_MXN_TO_USD_RATE,
-  normalizeCurrency,
-  toUsdEquivalentFromCents,
-} from "@/lib/currency";
 
 export type SourceFilter = 'stripe' | 'unified' | 'paypal';
 export type UnifiedInvoiceStatus = 'all' | 'draft' | 'open' | 'paid' | 'void' | 'uncollectible' | 'pending' | 'failed';
@@ -57,35 +50,6 @@ interface UseUnifiedInvoicesOptions {
   pageSize?: number;
 }
 
-interface CurrencyTotalsCents {
-  usd: number;
-  mxn: number;
-  other: number;
-}
-
-const emptyCurrencyTotals = (): CurrencyTotalsCents => ({ usd: 0, mxn: 0, other: 0 });
-
-function addToCurrencyTotals(
-  totals: CurrencyTotalsCents,
-  amountCents: number,
-  currency: string | null | undefined
-) {
-  const amount = Number(amountCents) || 0;
-  const curr = normalizeCurrency(currency);
-
-  if (curr === "usd") {
-    totals.usd += amount;
-    return;
-  }
-
-  if (curr === "mxn") {
-    totals.mxn += amount;
-    return;
-  }
-
-  totals.other += amount;
-}
-
 /**
  * REFACTORED: Single Source of Truth
  * Now queries ONLY the `invoices` table (Stripe + PayPal are both stored there).
@@ -101,7 +65,6 @@ export function useUnifiedInvoices(options: UseUnifiedInvoicesOptions = {}) {
     page = 1,
     pageSize = 50,
   } = options;
-  const { data: mxnToUsdRate = DEFAULT_MXN_TO_USD_RATE } = useMxnToUsdRate();
 
   // Calculate range for pagination
   const from = (page - 1) * pageSize;
@@ -207,7 +170,7 @@ export function useUnifiedInvoices(options: UseUnifiedInvoicesOptions = {}) {
     queryKey: ["unified-invoices-summary", sourceFilter, startDate, endDate],
     queryFn: async () => {
       // Build base query for summary (no pagination, just counts)
-      let baseFilter = supabase.from("invoices").select("status, amount_due, amount_paid, stripe_invoice_id, automatically_finalizes_at, currency", { count: 'exact' });
+      let baseFilter = supabase.from("invoices").select("status, amount_due, amount_paid, stripe_invoice_id, automatically_finalizes_at", { count: 'exact' });
       
       if (sourceFilter === 'stripe') {
         baseFilter = baseFilter.like('stripe_invoice_id', 'in_%');
@@ -231,19 +194,19 @@ export function useUnifiedInvoices(options: UseUnifiedInvoicesOptions = {}) {
         uncollectible: 0,
       };
 
-      const pendingTotals = emptyCurrencyTotals();
-      const paidTotals = emptyCurrencyTotals();
-      const uncollectibleTotals = emptyCurrencyTotals();
+      let totalPending = 0;
+      let totalPaid = 0;
+      let totalUncollectible = 0;
       let stripeCount = 0;
       let paypalCount = 0;
-      const stripePaidTotals = emptyCurrencyTotals();
-      const paypalPaidTotals = emptyCurrencyTotals();
-      const stripePendingTotals = emptyCurrencyTotals();
-      const paypalPendingTotals = emptyCurrencyTotals();
+      let stripePaid = 0;
+      let paypalPaid = 0;
+      let stripePending = 0;
+      let paypalPending = 0;
 
       const next72Hours = new Date();
       next72Hours.setHours(next72Hours.getHours() + 72);
-      const next72hTotals = emptyCurrencyTotals();
+      let totalNext72h = 0;
       let invoicesNext72hCount = 0;
 
       for (const inv of allInvoices) {
@@ -260,21 +223,21 @@ export function useUnifiedInvoices(options: UseUnifiedInvoicesOptions = {}) {
 
         // Totals
         if (inv.status === 'open' || inv.status === 'draft' || inv.status === 'pending') {
-          addToCurrencyTotals(pendingTotals, inv.amount_due || 0, inv.currency);
-          if (isPayPal) addToCurrencyTotals(paypalPendingTotals, inv.amount_due || 0, inv.currency);
-          else addToCurrencyTotals(stripePendingTotals, inv.amount_due || 0, inv.currency);
+          totalPending += inv.amount_due;
+          if (isPayPal) paypalPending += inv.amount_due;
+          else stripePending += inv.amount_due;
         } else if (inv.status === 'paid') {
-          addToCurrencyTotals(paidTotals, inv.amount_paid || 0, inv.currency);
-          if (isPayPal) addToCurrencyTotals(paypalPaidTotals, inv.amount_paid || 0, inv.currency);
-          else addToCurrencyTotals(stripePaidTotals, inv.amount_paid || 0, inv.currency);
+          totalPaid += inv.amount_paid || 0;
+          if (isPayPal) paypalPaid += inv.amount_paid || 0;
+          else stripePaid += inv.amount_paid || 0;
         } else if (inv.status === 'uncollectible' || inv.status === 'failed') {
-          addToCurrencyTotals(uncollectibleTotals, inv.amount_due || 0, inv.currency);
+          totalUncollectible += inv.amount_due;
         }
 
         // Next 72 hours (Stripe drafts)
         if (!isPayPal && ['open', 'draft'].includes(inv.status) && inv.automatically_finalizes_at) {
           if (new Date(inv.automatically_finalizes_at) <= next72Hours) {
-            addToCurrencyTotals(next72hTotals, inv.amount_due || 0, inv.currency);
+            totalNext72h += inv.amount_due;
             invoicesNext72hCount++;
           }
         }
@@ -282,50 +245,20 @@ export function useUnifiedInvoices(options: UseUnifiedInvoicesOptions = {}) {
 
       return {
         statusCounts,
-        pendingTotals,
-        paidTotals,
-        uncollectibleTotals,
+        totalPending: totalPending / 100,
+        totalPaid: totalPaid / 100,
+        totalUncollectible: totalUncollectible / 100,
         uncollectibleCount: statusCounts.uncollectible,
-        next72hTotals,
+        totalNext72h: totalNext72h / 100,
         invoicesNext72hCount,
         stripeCount,
         paypalCount,
-        stripeTotals: { pending: stripePendingTotals, paid: stripePaidTotals },
-        paypalTotals: { pending: paypalPendingTotals, paid: paypalPaidTotals },
+        stripeTotals: { pending: stripePending / 100, paid: stripePaid / 100 },
+        paypalTotals: { pending: paypalPending / 100, paid: paypalPaid / 100 },
       };
     },
     staleTime: 30000, // Cache for 30 seconds
   });
-
-  const convertCurrencyTotals = useMemo(() => {
-    const toMajor = (totals: CurrencyTotalsCents) => ({
-      usd: totals.usd / 100,
-      mxn: totals.mxn / 100,
-      other: totals.other / 100,
-      usdEquivalent:
-        toUsdEquivalentFromCents(totals.usd, "usd", mxnToUsdRate) +
-        toUsdEquivalentFromCents(totals.mxn, "mxn", mxnToUsdRate) +
-        toUsdEquivalentFromCents(totals.other, "usd", mxnToUsdRate),
-    });
-
-    const pending = toMajor(summaryData?.pendingTotals || emptyCurrencyTotals());
-    const paid = toMajor(summaryData?.paidTotals || emptyCurrencyTotals());
-    const uncollectible = toMajor(summaryData?.uncollectibleTotals || emptyCurrencyTotals());
-    const next72h = toMajor(summaryData?.next72hTotals || emptyCurrencyTotals());
-    const stripePending = toMajor(summaryData?.stripeTotals?.pending || emptyCurrencyTotals());
-    const stripePaid = toMajor(summaryData?.stripeTotals?.paid || emptyCurrencyTotals());
-    const paypalPending = toMajor(summaryData?.paypalTotals?.pending || emptyCurrencyTotals());
-    const paypalPaid = toMajor(summaryData?.paypalTotals?.paid || emptyCurrencyTotals());
-
-    return {
-      pending,
-      paid,
-      uncollectible,
-      next72h,
-      stripeTotals: { pending: stripePending, paid: stripePaid },
-      paypalTotals: { pending: paypalPending, paid: paypalPaid },
-    };
-  }, [summaryData, mxnToUsdRate]);
 
   return {
     invoices,
@@ -337,21 +270,17 @@ export function useUnifiedInvoices(options: UseUnifiedInvoicesOptions = {}) {
     totalCount,
     totalPages,
     // Summary stats (from cached summary query)
-    totalPending: convertCurrencyTotals.pending.usdEquivalent,
-    totalPaid: convertCurrencyTotals.paid.usdEquivalent,
-    totalUncollectible: convertCurrencyTotals.uncollectible.usdEquivalent,
+    totalPending: summaryData?.totalPending || 0,
+    totalPaid: summaryData?.totalPaid || 0,
+    totalUncollectible: summaryData?.totalUncollectible || 0,
     uncollectibleCount: summaryData?.uncollectibleCount || 0,
     statusCounts: summaryData?.statusCounts || { all: 0, draft: 0, open: 0, paid: 0, void: 0, uncollectible: 0 },
-    totalNext72h: convertCurrencyTotals.next72h.usdEquivalent,
+    totalNext72h: summaryData?.totalNext72h || 0,
     invoicesNext72h: [], // Deprecated - use invoicesNext72hCount
     invoicesNext72hCount: summaryData?.invoicesNext72hCount || 0,
-    pendingTotals: convertCurrencyTotals.pending,
-    paidTotals: convertCurrencyTotals.paid,
-    uncollectibleTotals: convertCurrencyTotals.uncollectible,
-    next72hTotals: convertCurrencyTotals.next72h,
     // Source breakdown
-    stripeTotals: convertCurrencyTotals.stripeTotals,
-    paypalTotals: convertCurrencyTotals.paypalTotals,
+    stripeTotals: summaryData?.stripeTotals || { pending: 0, paid: 0 },
+    paypalTotals: summaryData?.paypalTotals || { pending: 0, paid: 0 },
     stripeCount: summaryData?.stripeCount || 0,
     paypalCount: summaryData?.paypalCount || 0,
   };

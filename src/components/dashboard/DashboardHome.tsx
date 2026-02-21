@@ -39,8 +39,6 @@ import { openWhatsApp, getRecoveryMessage } from './RecoveryTable';
 import { invokeWithAdminKey } from '@/lib/adminApi';
 import { SyncResultsPanel } from './SyncResultsPanel';
 import { APP_PATHS } from "@/config/appPaths";
-import { useMxnToUsdRate } from '@/hooks/useMxnToUsdRate';
-import { DEFAULT_MXN_TO_USD_RATE } from '@/lib/currency';
 import type {
   FetchStripeBody,
   FetchStripeResponse,
@@ -119,7 +117,6 @@ export function DashboardHome() {
   const [syncStatus, setSyncStatus] = useState<SyncStatus>(null);
   const queryClient = useQueryClient();
   const invoicesDueQueryModeRef = useRef<'auto' | 'simple'>('auto');
-  const { data: mxnToUsdRate = DEFAULT_MXN_TO_USD_RATE } = useMxnToUsdRate();
 
   const recoveryPipeline = useRevenuePipeline({
     type: "recovery",
@@ -539,13 +536,6 @@ export function DashboardHome() {
   const formatMoneyInt = (value: number) =>
     value.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
 
-  const toUsdEquivalent = (money: { usd: number; mxn: number }) =>
-    money.usd + (money.mxn * mxnToUsdRate);
-
-  const netSalesUsdEq = toUsdEquivalent(kpis.netSales);
-  const newRevenueUsdEq = toUsdEquivalent(kpis.newCustomerRevenue);
-  const renewalRevenueUsdEq = toUsdEquivalent(kpis.renewalRevenue);
-
   // Card definitions with navigation targets
   const cards = [
     {
@@ -553,16 +543,22 @@ export function DashboardHome() {
       value: `$${kpis.mrr.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`,
       icon: TrendingUp,
       color: 'primary',
-      subtitle: `${kpis.mrrActiveCount.toLocaleString()} activas · USD ${formatMoneyInt(kpis.mrrByCurrency.usd)} · MXN ${formatMoneyInt(kpis.mrrByCurrency.mxn)}`,
+      subtitle: `${kpis.mrrActiveCount.toLocaleString()} activas`,
       navigateTo: 'analytics',
       isHighlight: true,
     },
     {
       title: 'Ventas Netas',
-      value: `$${formatMoneyInt(netSalesUsdEq)}`,
+      value:
+        kpis.netSales.usd !== 0
+          ? `$${formatMoneyInt(kpis.netSales.usd)}`
+          : `MXN $${formatMoneyInt(kpis.netSales.mxn)}`,
       icon: DollarSign,
       color: 'emerald',
-      subtitle: `${filterLabels[filter]} · USD eq. · USD $${formatMoneyInt(kpis.netSales.usd)} · MXN $${formatMoneyInt(kpis.netSales.mxn)}`,
+      subtitle:
+        kpis.netSales.usd !== 0 && kpis.netSales.mxn !== 0
+          ? `${filterLabels[filter]} · MXN $${formatMoneyInt(kpis.netSales.mxn)}`
+          : filterLabels[filter],
       navigateTo: 'movements',
     },
     {
@@ -570,7 +566,10 @@ export function DashboardHome() {
       value: kpis.newPayersToday,
       icon: UserPlus,
       color: 'neutral',  // VRP: All non-critical KPIs use neutral zinc
-      subtitle: `$${formatMoneyInt(newRevenueUsdEq)} USD eq. · USD $${formatMoneyInt(kpis.newCustomerRevenue.usd)} · MXN $${formatMoneyInt(kpis.newCustomerRevenue.mxn)}`,
+      subtitle:
+        kpis.newCustomerRevenue.usd !== 0
+          ? `$${formatMoneyInt(kpis.newCustomerRevenue.usd)}`
+          : `MXN $${formatMoneyInt(kpis.newCustomerRevenue.mxn)}`,
       navigateTo: 'clients',
     },
     {
@@ -586,7 +585,7 @@ export function DashboardHome() {
       value: kpis.trialConversionsToday,
       icon: ArrowRightCircle,
       color: 'neutral',  // VRP: Neutral instead of purple
-      subtitle: `${kpis.trialConversionRate.toFixed(1)}% · $${formatMoneyInt(kpis.trialConversionRevenue)} (base)`,
+      subtitle: `${kpis.trialConversionRate.toFixed(1)}% · $${formatMoneyInt(kpis.trialConversionRevenue)}`,
       navigateTo: 'subscriptions',
     },
     {
@@ -594,7 +593,10 @@ export function DashboardHome() {
       value: kpis.renewalsToday,
       icon: RefreshCw,
       color: 'neutral',  // VRP: Neutral instead of green
-      subtitle: `$${formatMoneyInt(renewalRevenueUsdEq)} USD eq. · USD $${formatMoneyInt(kpis.renewalRevenue.usd)} · MXN $${formatMoneyInt(kpis.renewalRevenue.mxn)}`,
+      subtitle:
+        kpis.renewalRevenue.usd !== 0
+          ? `$${formatMoneyInt(kpis.renewalRevenue.usd)}`
+          : `MXN $${formatMoneyInt(kpis.renewalRevenue.mxn)}`,
       navigateTo: 'subscriptions',
     },
     {
@@ -602,7 +604,7 @@ export function DashboardHome() {
       value: `$${kpis.revenueAtRisk.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`,
       icon: ShieldAlert,
       color: 'red',
-      subtitle: `${kpis.revenueAtRiskCount.toLocaleString()} suscripciones · USD ${formatMoneyInt(kpis.revenueAtRiskByCurrency.usd)} · MXN ${formatMoneyInt(kpis.revenueAtRiskByCurrency.mxn)}`,
+      subtitle: `${kpis.revenueAtRiskCount.toLocaleString()} suscripciones`,
       isNegative: true,
       navigateTo: 'recovery',
       isWarning: kpis.revenueAtRisk > 10000,

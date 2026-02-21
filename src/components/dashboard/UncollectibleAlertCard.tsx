@@ -3,19 +3,12 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 
 interface UncollectibleAlertCardProps {
   totalAmount: number;
-  breakdown: {
-    usd: number;
-    mxn: number;
-    other: number;
-    usdEquivalent: number;
-  };
   invoiceCount: number;
   isLoading?: boolean;
 }
 
 export function UncollectibleAlertCard({ 
   totalAmount, 
-  breakdown,
   invoiceCount,
   isLoading 
 }: UncollectibleAlertCardProps) {
@@ -43,7 +36,7 @@ export function UncollectibleAlertCard({
                         <p className="text-xl font-bold text-red-100">
                           ${totalAmount.toLocaleString("en-US", { minimumFractionDigits: 2 })}
                         </p>
-                        <span className="text-xs text-red-400/60">USD eq.</span>
+                        <span className="text-xs text-red-400/60">USD</span>
                       </>
                     )}
                   </div>
@@ -52,9 +45,6 @@ export function UncollectibleAlertCard({
               
               <div className="text-right">
                 <span className="text-xs text-red-400/70">{invoiceCount} facturas</span>
-                <p className="text-[10px] text-red-400/60 mt-1">
-                  USD ${breakdown.usd.toFixed(0)} · MXN ${breakdown.mxn.toFixed(0)}
-                </p>
               </div>
             </div>
           </div>

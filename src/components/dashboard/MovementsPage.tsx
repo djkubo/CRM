@@ -54,12 +54,6 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { invokeWithAdminKey } from "@/lib/adminApi";
 import { DateRange } from "react-day-picker";
-import { useMxnToUsdRate } from "@/hooks/useMxnToUsdRate";
-import {
-  DEFAULT_MXN_TO_USD_RATE,
-  formatUsd,
-  toUsdEquivalentFromCents,
-} from "@/lib/currency";
 
 interface Movement {
   id: string;
@@ -206,7 +200,6 @@ const PAGE_SIZE_OPTIONS = [50, 100, 200] as const;
 
 export function MovementsPage() {
   const { toast } = useToast();
-  const { data: mxnToUsdRate = DEFAULT_MXN_TO_USD_RATE } = useMxnToUsdRate();
   const [movements, setMovements] = useState<Movement[]>([]);
   const [disputes, setDisputes] = useState<Dispute[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -384,33 +377,11 @@ export function MovementsPage() {
     const failedMovements = movements.filter(m => ['failed', 'requires_payment_method', 'canceled'].includes(m.status));
     const refundedMovements = movements.filter(m => m.status === 'refunded');
     
-    const totalSuccessUsdEq = successMovements.reduce(
-      (sum, m) => sum + toUsdEquivalentFromCents(m.amount, m.currency, mxnToUsdRate),
-      0
-    );
-    const totalFailedUsdEq = failedMovements.reduce(
-      (sum, m) => sum + toUsdEquivalentFromCents(m.amount, m.currency, mxnToUsdRate),
-      0
-    );
-    const totalRefundedUsdEq = refundedMovements.reduce(
-      (sum, m) => sum + toUsdEquivalentFromCents(m.amount, m.currency, mxnToUsdRate),
-      0
-    );
-    const totalDisputesUsdEq = disputes.reduce(
-      (sum, d) => sum + toUsdEquivalentFromCents(d.amount, d.currency, mxnToUsdRate),
-      0
-    );
-    const netRevenueUsdEq = totalSuccessUsdEq - totalRefundedUsdEq - totalDisputesUsdEq;
-
-    const usdMxnTotals = (rows: Array<{ amount: number; currency: string | null }>) =>
-      rows.reduce(
-        (acc, row) => {
-          if ((row.currency || "usd").toLowerCase() === "mxn") acc.mxn += row.amount / 100;
-          else acc.usd += row.amount / 100;
-          return acc;
-        },
-        { usd: 0, mxn: 0 }
-      );
+    const totalSuccess = successMovements.reduce((sum, m) => sum + m.amount, 0);
+    const totalFailed = failedMovements.reduce((sum, m) => sum + m.amount, 0);
+    const totalRefunded = refundedMovements.reduce((sum, m) => sum + m.amount, 0);
+    const totalDisputes = disputes.reduce((sum, d) => sum + d.amount, 0);
+    const netRevenue = totalSuccess - totalRefunded - totalDisputes;
 
     return {
       totalCount,
@@ -418,15 +389,11 @@ export function MovementsPage() {
       failedCount: failedMovements.length,
       refundedCount: refundedMovements.length,
       disputeCount: disputes.length,
-      totalSuccessUsdEq,
-      totalFailedUsdEq,
-      totalRefundedUsdEq,
-      totalDisputesUsdEq,
-      netRevenueUsdEq,
-      successByCurrency: usdMxnTotals(successMovements),
-      failedByCurrency: usdMxnTotals(failedMovements),
-      refundedByCurrency: usdMxnTotals(refundedMovements),
-      disputesByCurrency: usdMxnTotals(disputes.map((d) => ({ amount: d.amount, currency: d.currency }))),
+      totalSuccess,
+      totalFailed,
+      totalRefunded,
+      totalDisputes,
+      netRevenue,
       bySource: {
         stripe: movements.filter(m => m.source === 'stripe' || !m.source).length,
         paypal: movements.filter(m => m.source === 'paypal').length,
@@ -434,7 +401,7 @@ export function MovementsPage() {
         dispute: disputes.length,
       },
     };
-  }, [movements, disputes, totalCount, mxnToUsdRate]);
+  }, [movements, disputes, totalCount]);
 
   if (isLoading) {
     return (
@@ -484,8 +451,7 @@ export function MovementsPage() {
             Ingresos
           </div>
           <p className="text-xl font-bold text-emerald-400">{stats.successCount}</p>
-          <p className="text-xs text-emerald-400/70">{formatUsd(stats.totalSuccessUsdEq)}</p>
-          <p className="text-[10px] text-emerald-400/60">USD eq. · USD ${stats.successByCurrency.usd.toFixed(0)} · MXN ${stats.successByCurrency.mxn.toFixed(0)}</p>
+          <p className="text-xs text-emerald-400/70">{formatAmount(stats.totalSuccess, 'usd')}</p>
         </div>
         <div className="rounded-xl border border-destructive/20 bg-destructive/5 p-4">
           <div className="flex items-center gap-2 text-destructive text-xs mb-2">
@@ -493,8 +459,7 @@ export function MovementsPage() {
             Fallidos
           </div>
           <p className="text-xl font-bold text-destructive">{stats.failedCount}</p>
-          <p className="text-xs text-destructive/70">{formatUsd(stats.totalFailedUsdEq)}</p>
-          <p className="text-[10px] text-destructive/60">USD eq. · USD ${stats.failedByCurrency.usd.toFixed(0)} · MXN ${stats.failedByCurrency.mxn.toFixed(0)}</p>
+          <p className="text-xs text-destructive/70">{formatAmount(stats.totalFailed, 'usd')}</p>
         </div>
         {/* VRP Design: Refunds use destructive (VRP Red) instead of purple */}
         <div className="rounded-xl border border-destructive/20 bg-destructive/5 p-4">
@@ -503,8 +468,7 @@ export function MovementsPage() {
             Reembolsos
           </div>
           <p className="text-xl font-bold text-destructive">{stats.refundedCount}</p>
-          <p className="text-xs text-destructive/70">-{formatUsd(stats.totalRefundedUsdEq)}</p>
-          <p className="text-[10px] text-destructive/60">USD eq. · USD ${stats.refundedByCurrency.usd.toFixed(0)} · MXN ${stats.refundedByCurrency.mxn.toFixed(0)}</p>
+          <p className="text-xs text-destructive/70">-{formatAmount(stats.totalRefunded, 'usd')}</p>
         </div>
         {/* VRP Design: Disputes use amber for warning state */}
         <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-4">
@@ -513,16 +477,15 @@ export function MovementsPage() {
             Disputas
           </div>
           <p className="text-xl font-bold text-amber-400">{stats.disputeCount}</p>
-          <p className="text-xs text-amber-400/70">-{formatUsd(stats.totalDisputesUsdEq)}</p>
-          <p className="text-[10px] text-amber-400/60">USD eq. · USD ${stats.disputesByCurrency.usd.toFixed(0)} · MXN ${stats.disputesByCurrency.mxn.toFixed(0)}</p>
+          <p className="text-xs text-amber-400/70">-{formatAmount(stats.totalDisputes, 'usd')}</p>
         </div>
         <div className="col-span-2 rounded-xl border border-primary/20 bg-primary/5 p-4">
           <div className="flex items-center gap-2 text-primary text-xs mb-2">
             <CheckCircle2 className="h-4 w-4" />
             Revenue Neto
           </div>
-          <p className="text-2xl font-bold text-primary">{formatUsd(stats.netRevenueUsdEq)}</p>
-          <p className="text-xs text-muted-foreground">Ingresos - Reembolsos - Disputas (USD eq.)</p>
+          <p className="text-2xl font-bold text-primary">{formatAmount(stats.netRevenue, 'usd')}</p>
+          <p className="text-xs text-muted-foreground">Ingresos - Reembolsos - Disputas</p>
         </div>
       </div>
 

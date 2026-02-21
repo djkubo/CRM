@@ -5,19 +5,17 @@ import { DollarSign, Loader2, Target, TrendingUp, Users } from "lucide-react";
 
 import { supabase } from "@/integrations/supabase/client";
 import type { AnalyticsTransaction } from "@/hooks/useAnalyticsTransactions";
-import { useMxnToUsdRate } from "@/hooks/useMxnToUsdRate";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
-import { DEFAULT_MXN_TO_USD_RATE, formatUsd, toUsdEquivalentFromCents } from "@/lib/currency";
 
 interface SourceMetrics {
   source: string;
   registrations: number;
   trials: number;
   customers: number;
-  revenue: number; // USD equivalent (major units)
+  revenue: number; // primary currency (major units)
   ltv: number; // major units (avg total spend)
   conversionRate: number; // registrations -> paid
   trialToPaid: number; // trials -> paid
@@ -62,7 +60,6 @@ export function SourceAnalytics({ period = "30d", transactions: parentTransactio
   const [payingClients, setPayingClients] = useState<Array<{ email: string; acquisition_source: string | null; total_spend: number | null }>>([]);
   const [payingClientsLoading, setPayingClientsLoading] = useState(false);
   const [payingClientsError, setPayingClientsError] = useState<string | null>(null);
-  const { data: mxnToUsd = DEFAULT_MXN_TO_USD_RATE } = useMxnToUsdRate();
 
   const periodDays = getDaysForPeriod(period);
   const periodLabel = period === "all" ? "12m" : period;
@@ -238,9 +235,35 @@ export function SourceAnalytics({ period = "30d", transactions: parentTransactio
     // eslint-disable-next-line react-hooks/exhaustive-deps -- using specific query fields avoids infinite loop from fetchNextPage
   }, [trialsQuery.status, trialsQuery.hasNextPage, trialsQuery.isFetchingNextPage, trialsQuery.fetchNextPage]);
 
+  const primaryCurrency = useMemo(() => {
+    const totals = new Map<string, number>();
+    for (const tx of txQuery.transactions) {
+      const c = typeof tx.currency === "string" && tx.currency ? tx.currency.toLowerCase() : "usd";
+      totals.set(c, (totals.get(c) || 0) + (tx.amount || 0));
+    }
+    let best = "usd";
+    let bestAmt = -1;
+    for (const [c, amt] of totals.entries()) {
+      if (amt > bestAmt) {
+        best = c;
+        bestAmt = amt;
+      }
+    }
+    return best;
+  }, [txQuery.transactions]);
+
   const formatMoney = (valueMajor: number) => {
+    const currency = primaryCurrency.toUpperCase();
     const amount = Number.isFinite(valueMajor) ? valueMajor : 0;
-    return formatUsd(amount, "es-MX", 0);
+    try {
+      return new Intl.NumberFormat("es-MX", {
+        style: "currency",
+        currency,
+        maximumFractionDigits: 0,
+      }).format(amount);
+    } catch {
+      return `${currency} ${amount.toLocaleString("es-MX", { maximumFractionDigits: 0 })}`;
+    }
   };
 
   const metrics = useMemo<SourceMetrics[]>(() => {
@@ -325,10 +348,8 @@ export function SourceAnalytics({ period = "30d", transactions: parentTransactio
     const rows: SourceMetrics[] = Array.from(sourceMap.entries())
       .map(([source, d]) => {
         const customers = d.customerEmails.size;
-        let revenueMajor = 0;
-        for (const [currency, cents] of d.revenueByCurrency.entries()) {
-          revenueMajor += toUsdEquivalentFromCents(cents, currency, mxnToUsd);
-        }
+        const revenueCents = d.revenueByCurrency.get(primaryCurrency) || 0;
+        const revenueMajor = revenueCents / 100;
         const ltvMajor = d.spendCount > 0 ? d.totalSpendCents / d.spendCount / 100 : 0;
 
         const conversionRate = d.registrations > 0 ? Math.round((customers / d.registrations) * 100) : 0;
@@ -349,7 +370,7 @@ export function SourceAnalytics({ period = "30d", transactions: parentTransactio
       .sort((a, b) => b.revenue - a.revenue);
 
     return rows;
-  }, [registrationsQuery.data, trialsQuery.data, payingClients, txQuery.transactions, mxnToUsd]);
+  }, [registrationsQuery.data, trialsQuery.data, payingClients, txQuery.transactions, primaryCurrency]);
 
   const totals = useMemo(() => {
     return metrics.reduce((acc, m) => ({
@@ -442,7 +463,7 @@ export function SourceAnalytics({ period = "30d", transactions: parentTransactio
                 <DollarSign className="h-4 w-4 sm:h-5 sm:w-5 text-primary" />
               </div>
               <div className="min-w-0">
-                <p className="text-[10px] sm:text-sm text-muted-foreground">Ingresos USD eq. ({periodLabel})</p>
+                <p className="text-[10px] sm:text-sm text-muted-foreground">Ingresos ({periodLabel})</p>
                 <p className="text-lg sm:text-2xl font-bold text-foreground">{formatMoney(totals.revenue)}</p>
               </div>
             </div>
@@ -541,9 +562,9 @@ export function SourceAnalytics({ period = "30d", transactions: parentTransactio
                       <YAxis stroke="#6b7280" fontSize={10} width={40} />
                       <ChartTooltip
                         content={<ChartTooltipContent />}
-                        formatter={(value) => [formatMoney(Number(value)), `Ingresos USD eq. (${periodLabel})`]}
+                        formatter={(value) => [formatMoney(Number(value)), `Ingresos (${periodLabel})`]}
                       />
-                      <Bar dataKey="revenue" name={`Ingresos USD eq. (${periodLabel})`} fill="#AA0601" radius={[4, 4, 0, 0]} />
+                      <Bar dataKey="revenue" name={`Ingresos (${periodLabel})`} fill="#AA0601" radius={[4, 4, 0, 0]} />
                     </BarChart>
                   </ResponsiveContainer>
                 </ChartContainer>

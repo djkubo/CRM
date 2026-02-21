@@ -104,10 +104,6 @@ export function InvoicesPage() {
     totalNext72h,
     invoicesNext72hCount,
     totalUncollectible,
-    pendingTotals,
-    paidTotals,
-    next72hTotals,
-    uncollectibleTotals,
     uncollectibleCount,
     statusCounts,
     stripeTotals,
@@ -290,28 +286,22 @@ export function InvoicesPage() {
             <div className="hidden sm:flex items-center gap-3 text-xs">
               <div className="flex items-center gap-1.5">
                 <StripeIcon />
-                <span className="text-muted-foreground">
-                  ${stripeTotals.paid.usdEquivalent.toLocaleString(undefined, { maximumFractionDigits: 0 })} USD eq.
-                </span>
+                <span className="text-muted-foreground">${stripeTotals.paid.toLocaleString()}</span>
               </div>
               <div className="flex items-center gap-1.5 text-[#0070ba]">
                 <PayPalIcon />
-                <span>${paypalTotals.paid.usdEquivalent.toLocaleString(undefined, { maximumFractionDigits: 0 })} USD eq.</span>
+                <span>${paypalTotals.paid.toLocaleString()}</span>
               </div>
             </div>
           )}
           <div className="flex items-center gap-3 justify-between sm:justify-end">
             <div className="text-left sm:text-right">
               <p className="text-xl md:text-2xl font-bold text-foreground">${totalPending.toLocaleString('en-US', { minimumFractionDigits: 2 })}</p>
-              <p className="text-xs text-muted-foreground">
-                Pendiente (USD eq.) · USD ${pendingTotals.usd.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })} · MXN ${pendingTotals.mxn.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
-              </p>
+              <p className="text-xs text-muted-foreground">Pendiente</p>
             </div>
             <div className="text-left sm:text-right">
               <p className="text-xl md:text-2xl font-bold text-emerald-400">${totalPaid.toLocaleString('en-US', { minimumFractionDigits: 2 })}</p>
-              <p className="text-xs text-muted-foreground">
-                Cobrado (USD eq.) · USD ${paidTotals.usd.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })} · MXN ${paidTotals.mxn.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
-              </p>
+              <p className="text-xs text-muted-foreground">Cobrado</p>
             </div>
           </div>
         </div>
@@ -322,13 +312,11 @@ export function InvoicesPage() {
         <IncomingRevenueCard
           totalNext72h={totalNext72h}
           totalPending={totalPending}
-          breakdownNext72h={next72hTotals}
           invoiceCount={invoicesNext72hCount}
           isLoading={isLoading}
         />
         <UncollectibleAlertCard
           totalAmount={totalUncollectible}
-          breakdown={uncollectibleTotals}
           invoiceCount={uncollectibleCount}
           isLoading={isLoading}
         />
