@@ -62,7 +62,7 @@ export function RevenueByPlanChart() {
             <p className="text-lg sm:text-2xl font-bold text-primary">
               ${(totalActiveRevenue / 100).toLocaleString()}
             </p>
-            <p className="text-[10px] sm:text-xs text-muted-foreground">MRR • {totalActiveCount} activas</p>
+            <p className="text-[10px] sm:text-xs text-muted-foreground">MRR USD eq. • {totalActiveCount} activas</p>
           </div>
           <Button
             variant="outline"
@@ -127,7 +127,7 @@ export function RevenueByPlanChart() {
                     fontSize: "12px",
                   }}
                   formatter={(value: any, name: string) => {
-                    if (name === "revenueUSD") return [`$${value.toLocaleString()}`, "Ingresos"];
+                    if (name === "revenueUSD") return [`$${value.toLocaleString()}`, "Ingresos (USD eq.)"];
                     if (name === "cumulative") return [`${value.toFixed(1)}%`, "Acumulado"];
                     return [value, name];
                   }}
@@ -191,7 +191,7 @@ export function RevenueByPlanChart() {
                   </div>
                   <div className="text-right shrink-0 ml-2">
                     <p className="font-semibold text-primary text-xs sm:text-sm">
-                      ${(plan.revenue / 100).toLocaleString()}
+                      ${(plan.revenue / 100).toLocaleString()} USD eq.
                     </p>
                     <Badge
                       variant="outline"

@@ -1,9 +1,15 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
 import { invokeWithAdminKey } from "@/lib/adminApi";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+import { useMxnToUsdRate } from "@/hooks/useMxnToUsdRate";
+import {
+  DEFAULT_MXN_TO_USD_RATE,
+  normalizeCurrency,
+  toUsdEquivalentFromCents,
+} from "@/lib/currency";
 
 export interface Subscription {
   id: string;
@@ -71,6 +77,12 @@ interface SubscriptionMetrics {
   paypal_count: number;
 }
 
+interface CurrencyBreakdownCents {
+  usd: number;
+  mxn: number;
+  other: number;
+}
+
 interface UseSubscriptionsOptions {
   page?: number;
   pageSize?: number;
@@ -91,6 +103,7 @@ export function useSubscriptions(options: UseSubscriptionsOptions = {}) {
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const [activeSyncId, setActiveSyncId] = useState<string | null>(null);
+  const { data: mxnToUsdRate = DEFAULT_MXN_TO_USD_RATE } = useMxnToUsdRate();
 
   // Calculate range for pagination
   const from = (page - 1) * pageSize;
@@ -219,36 +232,162 @@ export function useSubscriptions(options: UseSubscriptionsOptions = {}) {
     refetchInterval: 120000,
   });
 
-  // SERVER-SIDE: Revenue by plan from RPC
-  const { data: revenueByPlanData } = useQuery({
-    queryKey: ["revenue-by-plan"],
+  // MRR by currency (server-side, no mixed-currency sums).
+  const { data: mrrByCurrencyData } = useQuery({
+    queryKey: ["subscription-mrr-by-currency"],
     queryFn: async () => {
-      const { data, error } = await (supabase.rpc as any)('get_revenue_by_plan', { limit_count: 10 });
+      const { data, error } = await supabase.rpc("kpi_mrr");
       if (error) {
-        console.warn('get_revenue_by_plan RPC error:', error);
+        console.warn("kpi_mrr RPC error:", error);
         return [];
       }
-      return data as { plan_name: string; subscription_count: number; total_revenue: number; percentage: number }[];
+      return data || [];
     },
     staleTime: 60000,
     refetchInterval: 120000,
   });
 
-  // Transform revenue by plan to expected format
-  const revenueByPlan: PlanRevenue[] = (() => {
-    if (!revenueByPlanData) return [];
+  // At-risk by currency from subscriptions (server-side rows, client-side grouped).
+  const { data: atRiskRows } = useQuery({
+    queryKey: ["subscription-at-risk-rows"],
+    queryFn: async () => {
+      const pageSizeRows = 1000;
+      const maxRows = 20000;
+      const rows: Array<{ amount: number; currency: string | null }> = [];
+
+      for (let fromRow = 0; fromRow < maxRows; fromRow += pageSizeRows) {
+        const toRow = fromRow + pageSizeRows - 1;
+        const { data, error } = await supabase
+          .from("subscriptions")
+          .select("amount, currency")
+          .in("status", ["past_due", "unpaid"])
+          .range(fromRow, toRow);
+
+        if (error) {
+          console.warn("subscriptions at-risk query error:", error);
+          break;
+        }
+
+        if (!data || data.length === 0) break;
+        rows.push(...(data as Array<{ amount: number; currency: string | null }>));
+        if (data.length < pageSizeRows) break;
+      }
+
+      return rows;
+    },
+    staleTime: 60000,
+    refetchInterval: 120000,
+  });
+
+  // Revenue by plan from subscriptions rows (converted to USD equivalent).
+  const { data: revenueByPlanRows } = useQuery({
+    queryKey: ["revenue-by-plan"],
+    queryFn: async () => {
+      const pageSizeRows = 1000;
+      const maxRows = 20000;
+      const rows: Array<{ plan_name: string | null; amount: number; currency: string | null }> = [];
+
+      for (let fromRow = 0; fromRow < maxRows; fromRow += pageSizeRows) {
+        const toRow = fromRow + pageSizeRows - 1;
+        const { data, error } = await supabase
+          .from("subscriptions")
+          .select("plan_name, amount, currency")
+          .in("status", ["active", "trialing"])
+          .range(fromRow, toRow);
+
+        if (error) {
+          console.warn("subscriptions revenue-by-plan query error:", error);
+          break;
+        }
+
+        if (!data || data.length === 0) break;
+        rows.push(...(data as Array<{ plan_name: string | null; amount: number; currency: string | null }>));
+        if (data.length < pageSizeRows) break;
+      }
+
+      return rows;
+    },
+    staleTime: 60000,
+    refetchInterval: 120000,
+  });
+
+  const aggregateByCurrency = (
+    rows: Array<{ amount: number; currency: string | null }>
+  ): CurrencyBreakdownCents => {
+    const totals: CurrencyBreakdownCents = { usd: 0, mxn: 0, other: 0 };
+    for (const row of rows) {
+      const amount = Number(row.amount) || 0;
+      const currency = normalizeCurrency(row.currency);
+      if (currency === "usd") totals.usd += amount;
+      else if (currency === "mxn") totals.mxn += amount;
+      else totals.other += amount;
+    }
+    return totals;
+  };
+
+  const toMajorBreakdown = (totals: CurrencyBreakdownCents) => ({
+    usd: totals.usd / 100,
+    mxn: totals.mxn / 100,
+    other: totals.other / 100,
+    usdEquivalentCents: Math.round(
+      (
+        toUsdEquivalentFromCents(totals.usd, "usd", mxnToUsdRate) +
+        toUsdEquivalentFromCents(totals.mxn, "mxn", mxnToUsdRate) +
+        toUsdEquivalentFromCents(totals.other, "usd", mxnToUsdRate)
+      ) * 100
+    ),
+  });
+
+  const mrrBreakdown = useMemo(() => {
+    const totals: CurrencyBreakdownCents = { usd: 0, mxn: 0, other: 0 };
+    for (const row of mrrByCurrencyData || []) {
+      const amount = Number((row as any).mrr) || 0;
+      const currency = normalizeCurrency((row as any).currency);
+      if (currency === "usd") totals.usd += amount;
+      else if (currency === "mxn") totals.mxn += amount;
+      else totals.other += amount;
+    }
+    return toMajorBreakdown(totals);
+  }, [mrrByCurrencyData, mxnToUsdRate]);
+
+  const atRiskBreakdown = useMemo(() => {
+    const totals = aggregateByCurrency(atRiskRows || []);
+    return toMajorBreakdown(totals);
+  }, [atRiskRows, mxnToUsdRate]);
+
+  // Transform revenue by plan to expected format (all USD eq. cents).
+  const revenueByPlan: PlanRevenue[] = useMemo(() => {
+    const grouped = new Map<string, { count: number; revenueCents: number }>();
+
+    for (const row of revenueByPlanRows || []) {
+      const planName = row.plan_name || "Sin plan";
+      const revenueUsdEquivalent = toUsdEquivalentFromCents(row.amount || 0, row.currency, mxnToUsdRate);
+      const revenueUsdEquivalentCents = Math.round(revenueUsdEquivalent * 100);
+      const current = grouped.get(planName) || { count: 0, revenueCents: 0 };
+      current.count += 1;
+      current.revenueCents += revenueUsdEquivalentCents;
+      grouped.set(planName, current);
+    }
+
+    const sorted = Array.from(grouped.entries())
+      .map(([name, data]) => ({ name, count: data.count, revenue: data.revenueCents }))
+      .sort((a, b) => b.revenue - a.revenue);
+
+    const totalRevenue = sorted.reduce((sum, item) => sum + item.revenue, 0);
     let cumulative = 0;
-    return revenueByPlanData.map(plan => {
-      cumulative += Number(plan.percentage) || 0;
+
+    return sorted.slice(0, 10).map((plan) => {
+      const percentage = totalRevenue > 0 ? (plan.revenue / totalRevenue) * 100 : 0;
+      cumulative += percentage;
       return {
-        name: plan.plan_name,
-        count: Number(plan.subscription_count) || 0,
-        revenue: Number(plan.total_revenue) || 0,
-        percentage: Number(plan.percentage) || 0,
+        name: plan.name,
+        count: plan.count,
+        revenue: plan.revenue,
+        percentage,
         cumulative,
       };
     });
-  })();
+  }, [revenueByPlanRows, mxnToUsdRate]);
 
   // Status breakdown from RPC metrics
   const statusBreakdown: StatusBreakdown = {
@@ -285,9 +424,9 @@ export function useSubscriptions(options: UseSubscriptionsOptions = {}) {
   }, [refetch, queryClient]);
 
   // Use server-side metrics for accurate totals
-  const totalActiveRevenue = metrics?.mrr || 0;
+  const totalActiveRevenue = mrrBreakdown.usdEquivalentCents || metrics?.mrr || 0;
   const totalActiveCount = metrics?.active_count || 0;
-  const revenueAtRisk = metrics?.at_risk_amount || 0;
+  const revenueAtRisk = atRiskBreakdown.usdEquivalentCents || metrics?.at_risk_amount || 0;
   const atRiskCount = (metrics?.past_due_count || 0) + (metrics?.unpaid_count || 0);
 
   const syncSubscriptions = useMutation({
@@ -368,9 +507,12 @@ export function useSubscriptions(options: UseSubscriptionsOptions = {}) {
     revenueByPlan,
     totalActiveRevenue,
     totalActiveCount,
+    mrrBreakdown,
     statusBreakdown,
     revenueAtRisk,
     atRiskCount,
+    atRiskBreakdown,
+    mxnToUsdRate,
     // Provider breakdown
     stripeCount: metrics?.stripe_count || 0,
     paypalCount: metrics?.paypal_count || 0,

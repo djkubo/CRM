@@ -4,6 +4,12 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 interface IncomingRevenueCardProps {
   totalNext72h: number;
   totalPending: number;
+  breakdownNext72h: {
+    usd: number;
+    mxn: number;
+    other: number;
+    usdEquivalent: number;
+  };
   invoiceCount: number;
   isLoading?: boolean;
 }
@@ -11,6 +17,7 @@ interface IncomingRevenueCardProps {
 export function IncomingRevenueCard({ 
   totalNext72h, 
   totalPending, 
+  breakdownNext72h,
   invoiceCount,
   isLoading 
 }: IncomingRevenueCardProps) {
@@ -36,7 +43,7 @@ export function IncomingRevenueCard({
                         <p className="text-2xl font-bold text-white">
                           ${totalNext72h.toLocaleString("en-US", { minimumFractionDigits: 2 })}
                         </p>
-                        <span className="text-xs text-muted-foreground">USD</span>
+                        <span className="text-xs text-muted-foreground">USD eq.</span>
                       </>
                     )}
                   </div>
@@ -53,6 +60,9 @@ export function IncomingRevenueCard({
                     +${(totalPending - totalNext72h).toFixed(2)} después
                   </p>
                 )}
+                <p className="text-[10px] text-muted-foreground mt-1">
+                  USD ${breakdownNext72h.usd.toFixed(0)} · MXN ${breakdownNext72h.mxn.toFixed(0)}
+                </p>
               </div>
             </div>
 
