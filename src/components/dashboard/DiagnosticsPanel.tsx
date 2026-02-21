@@ -129,13 +129,19 @@ const getStatusBadge = (status: string) => {
 };
 
 function normalizeQualityChecks(rows: RawDataQualityCheck[] | null | undefined): DataQualityCheck[] {
-  return (rows || []).map((row) => ({
-    check_name: row.check_name || "unknown_check",
-    status: row.status || row.severity || "info",
-    count: typeof row.count === "number" ? row.count : (row.affected_count || 0),
-    percentage: typeof row.percentage === "number" ? row.percentage : 0,
-    details: row.details ?? {},
-  }));
+  return (rows || []).map((row) => {
+    const status = row.status || row.severity || "info";
+    const count = typeof row.count === "number" ? row.count : (row.affected_count || 0);
+    return {
+      check_name: row.check_name || "unknown_check",
+      status,
+      count,
+      percentage: typeof row.percentage === "number" ? row.percentage : 0,
+      details: row.details ?? {},
+      severity: status,
+      affected_count: count,
+    };
+  });
 }
 
 // Sync Health Panel Component
